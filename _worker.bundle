@@ -1,0 +1,3425 @@
+------formdata-undici-049117883967
+Content-Disposition: form-data; name="metadata"
+
+{"main_module":"functionsWorker-0.910654459765909.js"}
+------formdata-undici-049117883967
+Content-Disposition: form-data; name="functionsWorker-0.910654459765909.js"; filename="functionsWorker-0.910654459765909.js"
+Content-Type: application/javascript+module
+
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+
+// lib/rateLimit.ts
+var WINDOW_MS = 6e4;
+var MAX_REQUESTS = 60;
+var store = /* @__PURE__ */ new Map();
+function getClientIp(request) {
+  const ip = request.headers?.get("CF-Connecting-IP");
+  if (!ip) {
+    return "unknown";
+  }
+  return ip.trim();
+}
+__name(getClientIp, "getClientIp");
+function cleanup(now) {
+  for (const [key, entry] of store.entries()) {
+    if (now > entry.expires) {
+      store.delete(key);
+    }
+  }
+}
+__name(cleanup, "cleanup");
+function rateLimit(ip) {
+  if (ip === "unknown") {
+    return true;
+  }
+  ip = ip.trim();
+  const now = Date.now();
+  if (!Number.isSafeInteger(now)) {
+    return true;
+  }
+  if ((now & 255) === 0) {
+    cleanup(now);
+  }
+  const entry = store.get(ip);
+  if (!entry || now > entry.expires) {
+    store.set(ip, {
+      count: 1,
+      expires: now + WINDOW_MS
+    });
+    return true;
+  }
+  if (entry.count >= MAX_REQUESTS) {
+    return false;
+  }
+  entry.count++;
+  return true;
+}
+__name(rateLimit, "rateLimit");
+
+// api/time.ts
+var MIN_TIME = 15778368e5;
+var MAX_TIME = 41024448e5;
+var ALLOWED_ORIGINS = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-capsule.pages.dev"
+];
+async function getTrustedTime() {
+  if (typeof Date.now !== "function") {
+    throw new Error(
+      "[AETERNA] Trusted time violation"
+    );
+  }
+  const now = Date.now();
+  if (typeof now !== "number") {
+    throw new Error(
+      "[AETERNA] Trusted time violation"
+    );
+  }
+  if (!Number.isFinite(now) || !Number.isSafeInteger(now) || now < MIN_TIME || now > MAX_TIME) {
+    throw new Error(
+      "[AETERNA] Trusted time violation"
+    );
+  }
+  return {
+    nowUtc: now
+  };
+}
+__name(getTrustedTime, "getTrustedTime");
+function baseHeaders(origin) {
+  const allowed = origin && ALLOWED_ORIGINS.includes(origin) ? origin : void 0;
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+    "CDN-Cache-Control": "no-store",
+    "Surrogate-Control": "no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    /**
+     * resource isolation
+     */
+    "Cross-Origin-Resource-Policy": "same-origin",
+    /**
+     * authority metadata
+     */
+    "X-Aeterna-Time-Trusted": "true",
+    "X-Aeterna-Time-Authority": "primary",
+    "X-Aeterna-Time-Version": "v1"
+  };
+  if (allowed) {
+    headers["Access-Control-Allow-Origin"] = allowed;
+    headers["Timing-Allow-Origin"] = allowed;
+  }
+  return headers;
+}
+__name(baseHeaders, "baseHeaders");
+var onRequestOptions = /* @__PURE__ */ __name(async (context) => {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+    return new Response(
+      null,
+      { status: 403 }
+    );
+  }
+  return new Response(
+    null,
+    {
+      status: 204,
+      headers: baseHeaders(origin)
+    }
+  );
+}, "onRequestOptions");
+var onRequestGet = /* @__PURE__ */ __name(async (context) => {
+  try {
+    const origin = context.request.headers.get("origin") ?? "";
+    if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+      return new Response(
+        JSON.stringify({ ok: false }),
+        { status: 403 }
+      );
+    }
+    const {
+      nowUtc: now
+    } = await getTrustedTime();
+    return new Response(
+      JSON.stringify({
+        nowUtc: now
+      }),
+      {
+        status: 200,
+        headers: {
+          ...baseHeaders(origin),
+          /**
+           * RFC-compliant Date header
+           */
+          Date: new Date(now).toUTCString()
+        }
+      }
+    );
+  } catch {
+    return new Response(
+      JSON.stringify({
+        ok: false
+      }),
+      {
+        status: 500,
+        headers: baseHeaders()
+      }
+    );
+  }
+}, "onRequestGet");
+
+// ../src/lib/crypto/validators.ts
+var CAPSULE_ID_REGEX = Object.freeze(/^[a-f0-9]{64}$/);
+var SECRET_REGEX = Object.freeze(/^[a-f0-9]{64}$/);
+var CREATOR_AUTHORITY_FRAGMENT_REGEX = Object.freeze(/^[a-f0-9]{64}$/);
+var SALT_BASE_REGEX = Object.freeze(/^[a-f0-9]{32}$/);
+var TXID_REGEX = Object.freeze(/^[a-zA-Z0-9_-]{43}$/);
+var STORAGE_POINTER_REGEX = TXID_REGEX;
+var UPLOAD_TOKEN_REGEX = Object.freeze(/^[a-zA-Z0-9_-]{32,256}$/);
+var TX_HASH_REGEX = Object.freeze(/^0x[a-fA-F0-9]{64}$/);
+var ITEM_ID_REGEX = Object.freeze(/^[a-zA-Z0-9_-]{1,128}$/);
+var ISO8601_REGEX = Object.freeze(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+var ISO_TIMESTAMP_REGEX = Object.freeze(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/);
+var SHA256_REGEX = Object.freeze(/^[a-f0-9]{64}$/);
+
+// lib/business/businessQuoteStore.ts
+var QUOTE_PREFIX = "quote:";
+function quoteKey(capsuleId) {
+  return `${QUOTE_PREFIX}${capsuleId}`;
+}
+__name(quoteKey, "quoteKey");
+async function getBusinessQuote(env, capsuleId) {
+  const raw = await env.BUSINESS_QUOTES.get(
+    quoteKey(capsuleId)
+  );
+  if (!raw) {
+    return null;
+  }
+  return JSON.parse(raw);
+}
+__name(getBusinessQuote, "getBusinessQuote");
+async function createBusinessQuote(env, quote) {
+  const existing = await getBusinessQuote(
+    env,
+    quote.capsuleId
+  );
+  if (existing) {
+    return {
+      quote: existing,
+      created: false
+    };
+  }
+  await env.BUSINESS_QUOTES.put(
+    quoteKey(quote.capsuleId),
+    JSON.stringify(quote),
+    {
+      expirationTtl: Math.max(
+        60,
+        Math.ceil(
+          (quote.expiresAt - quote.createdAt) / 1e3
+        )
+      )
+    }
+  );
+  return {
+    quote,
+    created: true
+  };
+}
+__name(createBusinessQuote, "createBusinessQuote");
+async function deleteBusinessQuote(env, capsuleId) {
+  await env.BUSINESS_QUOTES.delete(
+    quoteKey(capsuleId)
+  );
+}
+__name(deleteBusinessQuote, "deleteBusinessQuote");
+
+// ../src/lib/crypto/constants.ts
+var AES_GCM_IV_LENGTH = 12;
+var AES_GCM_TAG_LENGTH = 128;
+var MAX_ENCRYPTED_VAULT_SIZE = 10 * 1024 * 1024;
+var MAX_CHUNK_SIZE = 10 * 1024 * 1024;
+var MAX_ENCRYPTED_CHUNK_SIZE = MAX_CHUNK_SIZE + AES_GCM_IV_LENGTH + AES_GCM_TAG_LENGTH / 8;
+
+// api/capsule/seal.ts
+var ARWEAVE_TXID_RE = /^[a-zA-Z0-9_-]{43}$/;
+var UPLOAD_TOKEN_REGEX2 = /^[a-zA-Z0-9_-]{32,}$/;
+var ALLOWED_MANIFEST_FIELDS = Object.freeze(/* @__PURE__ */ new Set([
+  "version",
+  "capsuleId",
+  "sealedAt",
+  "openAt",
+  "saltBase",
+  "vaultTxId",
+  "encryptedSizeBytes",
+  "description",
+  "heartbeatEnabled",
+  "heartbeatInterval",
+  "ext"
+]));
+var ALLOWED_EXT_FIELDS = Object.freeze(/* @__PURE__ */ new Set([
+  "vaultSha256"
+]));
+var MIN_TIME2 = 15778368e5;
+var MAX_TIME2 = 41024448e5;
+var SEALED_AT_TOLERANCE = 2 * 60 * 1e3;
+var HEARTBEAT_INTERVAL_MIN = 864e5;
+var HEARTBEAT_INTERVAL_MAX = 31536e8;
+var ALLOWED_ORIGINS2 = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-capsule.pages.dev"
+];
+function isPlainObject(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject, "isPlainObject");
+function debugLog(env, ...args) {
+  if (env.DEBUG === "true") {
+    console.log(...args);
+  }
+}
+__name(debugLog, "debugLog");
+function baseHeaders2(origin) {
+  const allowed = origin && ALLOWED_ORIGINS2.includes(origin) ? origin : void 0;
+  const headers = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "Surrogate-Control": "no-store",
+    "Cross-Origin-Resource-Policy": "same-site",
+    "X-Aeterna-Seal-Version": "v1",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  };
+  if (allowed) {
+    headers["Access-Control-Allow-Origin"] = allowed;
+  }
+  return headers;
+}
+__name(baseHeaders2, "baseHeaders");
+function fail(status = 400, error = "error", origin) {
+  return new Response(
+    JSON.stringify({ ok: false, error }),
+    { status, headers: baseHeaders2(origin) }
+  );
+}
+__name(fail, "fail");
+var onRequestOptions2 = /* @__PURE__ */ __name(async (context) => {
+  const origin = context.request.headers.get("origin") ?? "";
+  return new Response(null, { status: 204, headers: baseHeaders2(origin) });
+}, "onRequestOptions");
+var onRequestPost = /* @__PURE__ */ __name(async (context) => {
+  const { request, env } = context;
+  const origin = request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS2.includes(origin))
+    return fail(403, "INVALID_ORIGIN", origin);
+  const ip = getClientIp(request);
+  if (!rateLimit(ip))
+    return fail(429, "TOO_MANY_REQUESTS", origin);
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json"))
+    return fail(415, "UNSUPPORTED_MEDIA_TYPE", origin);
+  if (!env?.CAPSULE_MANIFESTS || !env?.UPLOAD_TOKENS || !env?.AUTHORITY_TOKENS)
+    return fail(503, "STORAGE_UNAVAILABLE", origin);
+  if (!env?.VERIFIED_PAYMENTS)
+    return fail(503, "STORAGE_UNAVAILABLE", origin);
+  if (!env?.BUSINESS_QUOTES)
+    return fail(503, "STORAGE_UNAVAILABLE", origin);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return fail(400, "INVALID_JSON", origin);
+  }
+  if (!isPlainObject(body))
+    return fail(400, "INVALID_BODY", origin);
+  const {
+    uploadToken,
+    manifest,
+    creatorAuthorityFragment
+  } = body;
+  if (typeof uploadToken !== "string" || !UPLOAD_TOKEN_REGEX2.test(uploadToken)) {
+    return fail(400, "INVALID_UPLOAD_TOKEN", origin);
+  }
+  if (!isPlainObject(manifest))
+    return fail(400, "INVALID_MANIFEST", origin);
+  if (typeof creatorAuthorityFragment !== "string" || !SHA256_REGEX.test(creatorAuthorityFragment)) {
+    return fail(
+      400,
+      "INVALID_CREATOR_AUTHORITY",
+      origin
+    );
+  }
+  if (!Object.keys(manifest).every(
+    (k) => ALLOWED_MANIFEST_FIELDS.has(k)
+  )) {
+    return fail(400, "INVALID_MANIFEST", origin);
+  }
+  const m = manifest;
+  if (m.version !== 1 || typeof m.capsuleId !== "string" || !CAPSULE_ID_REGEX.test(m.capsuleId) || typeof m.saltBase !== "string" || !SALT_BASE_REGEX.test(m.saltBase) || typeof m.vaultTxId !== "string" || !ARWEAVE_TXID_RE.test(m.vaultTxId) || !Number.isSafeInteger(m.openAt) || !Number.isSafeInteger(m.sealedAt) || m.openAt <= m.sealedAt || m.openAt < MIN_TIME2 || m.openAt > MAX_TIME2 || m.sealedAt < MIN_TIME2 || m.sealedAt > MAX_TIME2 || !Number.isSafeInteger(m.encryptedSizeBytes) || m.encryptedSizeBytes <= 0 || m.encryptedSizeBytes > MAX_ENCRYPTED_VAULT_SIZE) {
+    return fail(400, "INVALID_MANIFEST", origin);
+  }
+  const capsuleId = m.capsuleId;
+  const saltBase = m.saltBase;
+  const vaultTxId = m.vaultTxId;
+  const openAt = m.openAt;
+  const sealedAt = m.sealedAt;
+  const encryptedSizeBytes = m.encryptedSizeBytes;
+  if (m.description !== void 0 && (typeof m.description !== "string" || m.description.length > 500)) {
+    return fail(400, "INVALID_DESCRIPTION", origin);
+  }
+  if (m.heartbeatEnabled !== void 0 && typeof m.heartbeatEnabled !== "boolean") {
+    return fail(400, "INVALID_HEARTBEAT", origin);
+  }
+  if (m.heartbeatEnabled === true) {
+    if (!Number.isSafeInteger(m.heartbeatInterval) || m.heartbeatInterval < HEARTBEAT_INTERVAL_MIN || m.heartbeatInterval > HEARTBEAT_INTERVAL_MAX) {
+      return fail(400, "INVALID_HEARTBEAT", origin);
+    }
+  } else {
+    if (m.heartbeatInterval !== void 0) {
+      return fail(400, "INVALID_HEARTBEAT", origin);
+    }
+  }
+  if (!isPlainObject(m.ext))
+    return fail(400, "INVALID_MANIFEST_EXT", origin);
+  const ext = m.ext;
+  if (!("vaultSha256" in ext))
+    return fail(400, "INVALID_MANIFEST_EXT", origin);
+  if (!Object.keys(ext).every(
+    (k) => ALLOWED_EXT_FIELDS.has(k)
+  )) {
+    return fail(400, "INVALID_MANIFEST_EXT", origin);
+  }
+  if (typeof ext.vaultSha256 !== "string" || !SHA256_REGEX.test(ext.vaultSha256)) {
+    return fail(400, "INVALID_VAULT_HASH", origin);
+  }
+  const storedToken = await env.UPLOAD_TOKENS.get(uploadToken);
+  if (!storedToken)
+    return fail(403, "INVALID_UPLOAD_TOKEN", origin);
+  let tokenData;
+  try {
+    tokenData = JSON.parse(storedToken);
+  } catch {
+    return fail(503, "TOKEN_STORAGE_CORRUPTED", origin);
+  }
+  if (!tokenData || tokenData.capsuleId !== capsuleId || tokenData?.permissions?.uploadVault !== true) {
+    return fail(403, "UPLOAD_TOKEN_MISMATCH", origin);
+  }
+  let trustedNow;
+  try {
+    const { nowUtc } = await getTrustedTime();
+    if (!Number.isSafeInteger(nowUtc))
+      return fail(503, "TIME_UNAVAILABLE", origin);
+    trustedNow = nowUtc;
+  } catch {
+    return fail(503, "TIME_UNAVAILABLE", origin);
+  }
+  const capsulePaymentKey = "capsule:" + capsuleId;
+  const boundTxHash = await env.VERIFIED_PAYMENTS.get(capsulePaymentKey);
+  if (!boundTxHash || typeof boundTxHash !== "string")
+    return fail(402, "PAYMENT_REQUIRED", origin);
+  const paymentRecord = await env.VERIFIED_PAYMENTS.get(boundTxHash);
+  if (!paymentRecord)
+    return fail(402, "PAYMENT_RECORD_MISSING", origin);
+  let payment;
+  try {
+    payment = JSON.parse(paymentRecord);
+  } catch {
+    return fail(503, "PAYMENT_RECORD_CORRUPTED", origin);
+  }
+  if (!payment || payment.ok !== true || payment.capsuleId !== capsuleId || payment.transactionId !== boundTxHash) {
+    return fail(402, "PAYMENT_INVALID", origin);
+  }
+  if (!Number.isSafeInteger(payment.expiresAt) || payment.expiresAt <= trustedNow) {
+    return fail(402, "PAYMENT_EXPIRED", origin);
+  }
+  if (!Number.isSafeInteger(payment.sizeBytes) || payment.sizeBytes < encryptedSizeBytes) {
+    return fail(402, "PAYMENT_SIZE_MISMATCH", origin);
+  }
+  if (Math.abs(trustedNow - sealedAt) > SEALED_AT_TOLERANCE)
+    return fail(400, "INVALID_SEALED_AT", origin);
+  if (openAt <= trustedNow)
+    return fail(400, "INVALID_OPEN_AT", origin);
+  let verified = false;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      const verify = await fetch(
+        `https://gateway.irys.xyz/${vaultTxId}`,
+        {
+          method: "GET",
+          redirect: "follow",
+          cf: {
+            cacheTtl: 0,
+            cacheEverything: false
+          }
+        }
+      );
+      debugLog(
+        env,
+        "[AETERNA] Seal verify",
+        attempt,
+        verify.status,
+        verify.url
+      );
+      if (verify.ok) {
+        const contentLength = verify.headers.get("content-length");
+        if (contentLength !== null && Number(contentLength) !== encryptedSizeBytes) {
+          return fail(
+            400,
+            "VAULT_SIZE_MISMATCH",
+            origin
+          );
+        }
+        verified = true;
+        break;
+      }
+    } catch (error) {
+      debugLog(
+        env,
+        "[AETERNA] Seal verify error",
+        attempt,
+        error
+      );
+    }
+    await new Promise(
+      (resolve) => setTimeout(
+        resolve,
+        1500 * (attempt + 1)
+      )
+    );
+  }
+  if (!verified) {
+    return fail(
+      400,
+      "VAULT_NOT_AVAILABLE",
+      origin
+    );
+  }
+  const existing = await env.CAPSULE_MANIFESTS.get(capsuleId);
+  const normalized = JSON.stringify(manifest);
+  if (existing) {
+    if (existing !== normalized)
+      return fail(409, "MANIFEST_ALREADY_EXISTS_DIFFERENT", origin);
+    return new Response(
+      JSON.stringify({ ok: true }),
+      { status: 200, headers: baseHeaders2(origin) }
+    );
+  }
+  await env.CAPSULE_MANIFESTS.put(capsuleId, normalized);
+  await env.AUTHORITY_TOKENS.put(
+    capsuleId,
+    JSON.stringify({
+      fragment: creatorAuthorityFragment
+    })
+  );
+  await env.VERIFIED_PAYMENTS.delete(boundTxHash).catch(() => {
+  });
+  await env.VERIFIED_PAYMENTS.delete(capsulePaymentKey).catch(() => {
+  });
+  await deleteBusinessQuote(env, capsuleId).catch(() => {
+  });
+  await env.UPLOAD_TOKENS.delete(uploadToken).catch(() => {
+  });
+  return new Response(
+    JSON.stringify({ ok: true }),
+    { status: 200, headers: baseHeaders2(origin) }
+  );
+}, "onRequestPost");
+
+// ../src/lib/pricing.ts
+var MB = 1024 * 1024;
+var FIRST_BLOCK_MB = 20;
+var NEXT_BLOCK_MB = 20;
+var FIRST_BLOCK_PRICE = 2;
+var NEXT_BLOCK_PRICE = 1;
+var MAX_CAPSULE_SIZE = 20 * 1024 * 1024 * 1024;
+function normalizeSize(sizeBytes) {
+  if (typeof sizeBytes !== "number" || !Number.isFinite(sizeBytes) || !Number.isSafeInteger(sizeBytes) || sizeBytes < 0 || sizeBytes > MAX_CAPSULE_SIZE) {
+    throw new Error(
+      "[AETERNA] Invalid capsule size"
+    );
+  }
+  return sizeBytes;
+}
+__name(normalizeSize, "normalizeSize");
+function calculateBlocks(sizeBytes) {
+  const normalized = normalizeSize(sizeBytes);
+  if (normalized === 0) {
+    return 1;
+  }
+  const sizeMB = normalized / MB;
+  if (sizeMB <= FIRST_BLOCK_MB) {
+    return 1;
+  }
+  const extraMB = sizeMB - FIRST_BLOCK_MB;
+  const extraBlocks = Math.ceil(
+    extraMB / NEXT_BLOCK_MB
+  );
+  return 1 + extraBlocks;
+}
+__name(calculateBlocks, "calculateBlocks");
+function calculatePrice(sizeBytes) {
+  const blocks = calculateBlocks(sizeBytes);
+  let price = FIRST_BLOCK_PRICE + (blocks - 1) * NEXT_BLOCK_PRICE;
+  return Math.round(price * 100) / 100;
+}
+__name(calculatePrice, "calculatePrice");
+
+// lib/getTrustedTime.ts
+var MIN_TIME3 = 15778368e5;
+var MAX_TIME3 = 41024448e5;
+async function getTrustedTime2() {
+  const now = Date.now();
+  if (!Number.isSafeInteger(now) || now < MIN_TIME3 || now > MAX_TIME3) {
+    throw new Error(
+      "[AETERNA] Trusted server time violation"
+    );
+  }
+  return {
+    nowUtc: now
+  };
+}
+__name(getTrustedTime2, "getTrustedTime");
+
+// api/paddle/create-checkout.ts
+function getPaddleApi(bindings) {
+  return bindings.PADDLE_ENV === "live" ? "https://api.paddle.com/transactions" : "https://sandbox-api.paddle.com/transactions";
+}
+__name(getPaddleApi, "getPaddleApi");
+var ALLOWED_ORIGINS3 = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-capsule.pages.dev"
+];
+var PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+function isAllowedOrigin(origin) {
+  if (ALLOWED_ORIGINS3.includes(origin))
+    return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname)) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+__name(isAllowedOrigin, "isAllowedOrigin");
+function isPlainObject2(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject2, "isPlainObject");
+var PADDLE_CHECKOUT_HOSTNAMES = [
+  "paddle.com",
+  "buy.paddle.com",
+  "checkout.paddle.com",
+  "sandbox-buy.paddle.com"
+];
+function isPaddleCheckoutUrl(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:")
+      return false;
+    return PADDLE_CHECKOUT_HOSTNAMES.some(
+      (h) => url.hostname === h || url.hostname.endsWith(`.${h}`)
+    );
+  } catch {
+    return false;
+  }
+}
+__name(isPaddleCheckoutUrl, "isPaddleCheckoutUrl");
+function baseHeaders3(origin) {
+  return {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, no-transform",
+    "CDN-Cache-Control": "no-store",
+    "Surrogate-Control": "no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Timing-Allow-Origin": origin,
+    "X-Content-Type-Options": "nosniff",
+    "X-Aeterna-Payment-Version": "v1",
+    "Content-Security-Policy": "default-src 'self' https://cdn.paddle.com 'unsafe-inline' 'unsafe-eval'; connect-src https://sandbox-api.paddle.com https://api.paddle.com"
+  };
+}
+__name(baseHeaders3, "baseHeaders");
+function fail2(code, error, origin) {
+  return new Response(
+    JSON.stringify({ ok: false, error }),
+    {
+      status: code,
+      headers: baseHeaders3(origin)
+    }
+  );
+}
+__name(fail2, "fail");
+var onRequestOptions3 = /* @__PURE__ */ __name(async (context) => {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!isAllowedOrigin(origin)) {
+    console.error("[create-checkout] INVALID_ORIGIN (OPTIONS)", { origin });
+    return new Response(null, {
+      status: 403,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  return new Response(null, {
+    status: 204,
+    headers: baseHeaders3(origin)
+  });
+}, "onRequestOptions");
+var onRequestPost2 = /* @__PURE__ */ __name(async (context) => {
+  const { request, env } = context;
+  const bindings = env;
+  const origin = request.headers.get("origin") ?? "";
+  if (!isAllowedOrigin(origin)) {
+    console.error("[create-checkout] INVALID_ORIGIN", { origin });
+    return fail2(403, "INVALID_ORIGIN", origin);
+  }
+  const ip = getClientIp(request);
+  if (!rateLimit(ip)) {
+    console.error("[create-checkout] RATE_LIMIT", { ip });
+    return fail2(429, "TOO_MANY_REQUESTS", origin);
+  }
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    console.error("[create-checkout] INVALID_CONTENT_TYPE", { contentType });
+    return fail2(415, "UNSUPPORTED_MEDIA_TYPE", origin);
+  }
+  const apiKey = bindings.PADDLE_API_KEY;
+  const basePriceId = bindings.PADDLE_PRICE_BASE_ID;
+  const extraPriceId = bindings.PADDLE_PRICE_EXTRA_ID;
+  if (!apiKey || !basePriceId || !extraPriceId) {
+    console.error("[create-checkout] CONFIG_MISSING");
+    return fail2(500, "PADDLE_CONFIG_MISSING", origin);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    console.error("[create-checkout] INVALID_JSON");
+    return fail2(400, "INVALID_JSON", origin);
+  }
+  if (!isPlainObject2(body)) {
+    console.error("[create-checkout] INVALID_BODY_PROTOTYPE");
+    return fail2(400, "INVALID_BODY", origin);
+  }
+  const { billableSizeBytes, capsuleId, expectedAmount } = body;
+  const parsedSize = Number(billableSizeBytes);
+  if (!Number.isSafeInteger(parsedSize) || parsedSize <= 0 || parsedSize > MAX_CAPSULE_SIZE) {
+    console.error("[create-checkout] INVALID_SIZE", { billableSizeBytes });
+    return fail2(400, "INVALID_SIZE", origin);
+  }
+  if (typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
+    console.error("[create-checkout] INVALID_CAPSULE_ID", { capsuleId });
+    return fail2(400, "INVALID_CAPSULE_ID", origin);
+  }
+  const price = calculatePrice(parsedSize);
+  const parsedExpected = Number(expectedAmount);
+  const priceCents = Math.round(price * 100);
+  const expectedCents = Math.round(parsedExpected * 100);
+  if (!Number.isFinite(parsedExpected) || Math.abs(expectedCents - priceCents) > 1) {
+    console.error("[create-checkout] PRICE_MISMATCH", {
+      expectedAmount,
+      calculated: price
+    });
+    return fail2(400, "PRICE_MISMATCH", origin);
+  }
+  const { nowUtc: now } = await getTrustedTime2();
+  const businessQuote = {
+    capsuleId,
+    billableSizeBytes: parsedSize,
+    expectedAmount: price,
+    currency: "USD",
+    createdAt: now,
+    expiresAt: now + 30 * 60 * 1e3
+  };
+  const { quote, created } = await createBusinessQuote(
+    bindings,
+    businessQuote
+  );
+  const returnUrl = bindings.PADDLE_ENV === "live" ? `https://aeternacapsule.com/create/hold?capsuleId=${capsuleId}` : `https://aeterna-capsule.pages.dev/create/hold?capsuleId=${capsuleId}`;
+  const blocks = calculateBlocks(parsedSize);
+  const extraBlocks = Math.max(0, blocks - 1);
+  const items = [
+    { price_id: basePriceId, quantity: 1 }
+  ];
+  if (extraBlocks > 0) {
+    items.push({ price_id: extraPriceId, quantity: extraBlocks });
+  }
+  let paddleData;
+  let paddleOk;
+  try {
+    const paddleRes = await fetch(getPaddleApi(bindings), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        items,
+        checkout: {
+          url: { return_url: returnUrl }
+        },
+        custom_data: {
+          capsuleId,
+          billableSizeBytes: parsedSize,
+          expectedAmount: quote.expectedAmount,
+          // canonical quote amount, not client value
+          currency: quote.currency
+          // canonical quote currency — single source of
+          // truth, not a second hardcoded literal
+        }
+      })
+    });
+    paddleOk = paddleRes.ok;
+    const paddleText = await paddleRes.text();
+    try {
+      paddleData = JSON.parse(paddleText);
+    } catch {
+      console.error("[create-checkout] INVALID_PADDLE_JSON", paddleText);
+      if (created) {
+        await deleteBusinessQuote(bindings, capsuleId);
+      }
+      return fail2(502, "INVALID_PADDLE_RESPONSE", origin);
+    }
+  } catch (err) {
+    console.error("[create-checkout] PADDLE_UNREACHABLE", err);
+    if (created) {
+      await deleteBusinessQuote(bindings, capsuleId);
+    }
+    return fail2(502, "PADDLE_UNREACHABLE", origin);
+  }
+  if (!paddleOk) {
+    console.error("[create-checkout] PADDLE_TRANSACTION_FAILED", paddleData);
+    if (created) {
+      await deleteBusinessQuote(bindings, capsuleId);
+    }
+    return fail2(502, "PADDLE_TRANSACTION_FAILED", origin);
+  }
+  const checkoutUrl = paddleData?.data?.checkout?.url;
+  const transactionId = paddleData?.data?.id;
+  if (typeof checkoutUrl !== "string" || !isPaddleCheckoutUrl(checkoutUrl)) {
+    console.error("[create-checkout] CHECKOUT_URL_INVALID", { checkoutUrl });
+    if (created) {
+      await deleteBusinessQuote(bindings, capsuleId);
+    }
+    return fail2(502, "PADDLE_CHECKOUT_URL_MISSING", origin);
+  }
+  if (typeof transactionId !== "string") {
+    console.error("[create-checkout] TRANSACTION_ID_MISSING");
+    if (created) {
+      await deleteBusinessQuote(bindings, capsuleId);
+    }
+    return fail2(502, "PADDLE_TRANSACTION_ID_MISSING", origin);
+  }
+  return new Response(
+    JSON.stringify({ ok: true, checkoutUrl, transactionId }),
+    { status: 200, headers: baseHeaders3(origin) }
+  );
+}, "onRequestPost");
+
+// api/paddle/verify.ts
+function getPaddleApi2(bindings) {
+  return bindings.PADDLE_ENV === "live" ? "https://api.paddle.com" : "https://sandbox-api.paddle.com";
+}
+__name(getPaddleApi2, "getPaddleApi");
+var ALLOWED_ORIGINS4 = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-capsule.pages.dev"
+];
+var TX_ID_REGEX = /^[a-zA-Z0-9_-]{10,200}$/;
+var VERIFIED_TTL_MS = 15 * 60 * 1e3;
+var VERIFIED_TTL_SEC = 15 * 60;
+function isPlainObject3(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject3, "isPlainObject");
+function baseHeaders4(origin) {
+  return {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, no-transform",
+    "CDN-Cache-Control": "no-store",
+    "Surrogate-Control": "no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Timing-Allow-Origin": origin,
+    "X-Content-Type-Options": "nosniff",
+    "X-Aeterna-Payment-Verify-Version": "v1",
+    "Content-Security-Policy": "default-src 'none'"
+  };
+}
+__name(baseHeaders4, "baseHeaders");
+function fail3(origin, code = 400) {
+  return new Response(
+    JSON.stringify({ ok: false }),
+    {
+      status: code,
+      headers: baseHeaders4(origin)
+    }
+  );
+}
+__name(fail3, "fail");
+var onRequestOptions4 = /* @__PURE__ */ __name(async (context) => {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS4.includes(origin)) {
+    console.error("[verify] INVALID_ORIGIN OPTIONS", { origin });
+    return new Response(null, {
+      status: 403,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  return new Response(null, {
+    status: 204,
+    headers: baseHeaders4(origin)
+  });
+}, "onRequestOptions");
+var onRequestPost3 = /* @__PURE__ */ __name(async (context) => {
+  const { request, env } = context;
+  const bindings = env;
+  const origin = request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS4.includes(origin)) {
+    console.error("[verify] INVALID_ORIGIN", { origin });
+    return fail3(origin, 403);
+  }
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    console.error("[verify] INVALID_CONTENT_TYPE", { contentType });
+    return fail3(origin, 415);
+  }
+  const ip = getClientIp(request);
+  if (!rateLimit(ip)) {
+    console.error("[verify] RATE_LIMIT", { ip });
+    return fail3(origin, 429);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    console.error("[verify] INVALID_JSON");
+    return fail3(origin, 400);
+  }
+  if (!isPlainObject3(body)) {
+    console.error("[verify] INVALID_BODY_PROTOTYPE");
+    return fail3(origin, 400);
+  }
+  const { transactionId, capsuleId } = body;
+  if (!transactionId || typeof transactionId !== "string" || !TX_ID_REGEX.test(transactionId) || !capsuleId || typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
+    console.error("[verify] INVALID_IDS", { transactionId, capsuleId });
+    return fail3(origin, 400);
+  }
+  const apiKey = bindings.PADDLE_API_KEY;
+  if (!apiKey) {
+    console.error("[verify] PADDLE_API_KEY missing");
+    return fail3(origin, 500);
+  }
+  if (!bindings.VERIFIED_PAYMENTS) {
+    console.error("[verify] VERIFIED_PAYMENTS binding missing");
+    return fail3(origin, 503);
+  }
+  if (!bindings.BUSINESS_QUOTES) {
+    console.error("[verify] BUSINESS_QUOTES binding missing");
+    return fail3(origin, 503);
+  }
+  const quote = await getBusinessQuote(bindings, capsuleId);
+  if (!quote) {
+    console.error("[verify] BUSINESS_QUOTE_NOT_FOUND");
+    return fail3(origin, 402);
+  }
+  const existing = await bindings.VERIFIED_PAYMENTS.get(transactionId);
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing);
+      if (parsed?.capsuleId !== capsuleId || parsed?.transactionId !== transactionId) {
+        console.error("[verify] TRANSACTION_REUSE_MISMATCH");
+        return fail3(origin, 403);
+      }
+    } catch {
+      return fail3(origin, 500);
+    }
+    return new Response(
+      JSON.stringify({ ok: true }),
+      { status: 200, headers: baseHeaders4(origin) }
+    );
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8e3);
+  let paddleData;
+  let paddleOk;
+  try {
+    const txRes = await fetch(
+      `${getPaddleApi2(bindings)}/transactions/${transactionId}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        signal: controller.signal
+      }
+    );
+    paddleOk = txRes.ok;
+    paddleData = await txRes.json();
+  } catch {
+    console.error("[verify] PADDLE_UNREACHABLE");
+    return fail3(origin, 502);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!paddleOk) {
+    console.error("[verify] PADDLE_TRANSACTION_FETCH_FAILED");
+    return fail3(origin, 402);
+  }
+  const tx = paddleData?.data;
+  if (tx?.status !== "completed")
+    return fail3(origin, 402);
+  if (tx?.custom_data?.capsuleId !== capsuleId) {
+    console.error("[verify] CAPSULE_ID_MISMATCH");
+    return fail3(origin, 403);
+  }
+  const billableSizeBytesRaw = tx?.custom_data?.billableSizeBytes;
+  if (typeof billableSizeBytesRaw !== "number" || !Number.isSafeInteger(billableSizeBytesRaw) || billableSizeBytesRaw <= 0 || billableSizeBytesRaw > MAX_CAPSULE_SIZE) {
+    console.error("[verify] INVALID_BILLABLE_SIZE_BYTES");
+    return fail3(origin, 402);
+  }
+  const billableSizeBytes = billableSizeBytesRaw;
+  const { nowUtc: verifiedAt } = await getTrustedTime();
+  if (!Number.isSafeInteger(verifiedAt))
+    return fail3(origin, 503);
+  if (quote.expiresAt <= verifiedAt) {
+    console.error("[verify] BUSINESS_QUOTE_EXPIRED");
+    return fail3(origin, 402);
+  }
+  const expectedAmountRaw = tx?.custom_data?.expectedAmount;
+  if (typeof expectedAmountRaw !== "number" || !Number.isFinite(expectedAmountRaw) || expectedAmountRaw <= 0) {
+    console.error("[verify] INVALID_AMOUNT_BINDING");
+    return fail3(origin, 402);
+  }
+  const expectedAmount = expectedAmountRaw;
+  const currency = tx?.details?.totals?.currency_code;
+  if (String(currency).toUpperCase() !== quote.currency.toUpperCase()) {
+    console.error("[verify] INVALID_CURRENCY");
+    return fail3(origin, 402);
+  }
+  const expectedPriceCents = Math.round(quote.expectedAmount * 100);
+  const expectedAmtCents = Math.round(expectedAmount * 100);
+  if (Math.abs(expectedAmtCents - expectedPriceCents) > 1) {
+    console.error("[verify] CUSTOM_DATA_AMOUNT_MISMATCH", {
+      expectedAmtCents,
+      expectedPriceCents
+    });
+    return fail3(origin, 402);
+  }
+  const totalRaw = tx?.details?.totals?.total;
+  const totalCents = (() => {
+    if (typeof totalRaw !== "string" && typeof totalRaw !== "number")
+      return NaN;
+    const parsed = parseFloat(String(totalRaw));
+    if (!isFinite(parsed))
+      return NaN;
+    return String(totalRaw).includes(".") ? Math.round(parsed * 100) : Math.round(parsed);
+  })();
+  if (!Number.isFinite(totalCents) || Math.abs(totalCents - expectedPriceCents) > 1) {
+    console.warn("[verify] TOTAL_AMOUNT_MISMATCH", {
+      totalCents,
+      expectedPriceCents
+    });
+    return fail3(origin, 402);
+  }
+  const expiresAt = verifiedAt + VERIFIED_TTL_MS;
+  try {
+    const record = JSON.stringify({
+      transactionId,
+      capsuleId,
+      expectedAmount: quote.expectedAmount,
+      currency: quote.currency,
+      billableSizeBytes,
+      verifiedAt,
+      expiresAt,
+      version: 1,
+      ok: true
+    });
+    const capsuleKey = "capsule:" + capsuleId;
+    await bindings.VERIFIED_PAYMENTS.put(
+      transactionId,
+      record,
+      { expirationTtl: VERIFIED_TTL_SEC }
+    );
+    await bindings.VERIFIED_PAYMENTS.put(
+      capsuleKey,
+      transactionId,
+      { expirationTtl: VERIFIED_TTL_SEC }
+    );
+  } catch {
+    console.error("[verify] KV_WRITE_FAILED");
+    return fail3(origin, 503);
+  }
+  return new Response(
+    JSON.stringify({ ok: true }),
+    {
+      status: 200,
+      headers: baseHeaders4(origin)
+    }
+  );
+}, "onRequestPost");
+
+// api/paddle/webhook.ts
+var VERIFIED_TTL_SEC2 = 15 * 60;
+var CAPSULE_KEY_PREFIX = "capsule:";
+var TX_ID_REGEX2 = /^[a-zA-Z0-9_-]{10,200}$/;
+var HEX_REGEX = /^[0-9a-f]*$/i;
+function isPlainObject4(value) {
+  if (!value || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject4, "isPlainObject");
+function sealed() {
+  return new Response(
+    JSON.stringify({ ok: true }),
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "X-Aeterna-Payment-Webhook-Version": "v1"
+      }
+    }
+  );
+}
+__name(sealed, "sealed");
+function hexToBytes(hex) {
+  if (hex.length % 2 !== 0) return null;
+  if (!HEX_REGEX.test(hex)) return null;
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+__name(hexToBytes, "hexToBytes");
+async function verifySignature(payload, signature, secret) {
+  const parts = signature.split(";");
+  const ts = parts.find((p) => p.startsWith("ts="))?.replace("ts=", "");
+  const sig = parts.find((p) => p.startsWith("v1="))?.replace("v1=", "");
+  if (!ts || !sig) return false;
+  const tolerance = 300;
+  const timestamp = Number(ts);
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) return false;
+  const { nowUtc } = await getTrustedTime();
+  if (!Number.isSafeInteger(nowUtc)) return false;
+  const now = Math.floor(nowUtc / 1e3);
+  if (Math.abs(now - timestamp) > tolerance) return false;
+  if (timestamp > now + tolerance) return false;
+  const signedPayload = `${ts}:${payload}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(signedPayload)
+  );
+  const expected = new Uint8Array(digest);
+  const received = hexToBytes(sig);
+  if (!received) return false;
+  if (expected.length !== received.length) return false;
+  let result = 0;
+  for (let i = 0; i < expected.length; i++) {
+    result |= expected[i] ^ received[i];
+  }
+  return result === 0;
+}
+__name(verifySignature, "verifySignature");
+function parseTotalCents(raw) {
+  if (typeof raw !== "string" && typeof raw !== "number") return NaN;
+  const str = String(raw).trim();
+  if (str.includes(".")) {
+    const parsed2 = parseFloat(str);
+    if (!isFinite(parsed2) || parsed2 < 0) return NaN;
+    return Math.round(parsed2 * 100);
+  }
+  if (!/^\d+$/.test(str)) return NaN;
+  const parsed = parseInt(str, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return NaN;
+  return parsed;
+}
+__name(parseTotalCents, "parseTotalCents");
+var onRequestOptions5 = /* @__PURE__ */ __name(async () => {
+  return new Response(null, { status: 204 });
+}, "onRequestOptions");
+var onRequestPost4 = /* @__PURE__ */ __name(async (context) => {
+  const { request, env } = context;
+  const bindings = env;
+  try {
+    const webhookSecret = bindings.PADDLE_WEBHOOK_SECRET;
+    if (!webhookSecret) return sealed();
+    if (!bindings.VERIFIED_PAYMENTS) return sealed();
+    if (!bindings.BUSINESS_QUOTES) return sealed();
+    const signature = request.headers.get("paddle-signature");
+    if (!signature) return sealed();
+    const rawBody = await request.text();
+    const valid = await verifySignature(rawBody, signature, webhookSecret);
+    if (!valid) return sealed();
+    let event;
+    try {
+      event = JSON.parse(rawBody);
+    } catch {
+      return sealed();
+    }
+    if (!isPlainObject4(event)) return sealed();
+    const e = event;
+    if (e.event_type !== "transaction.completed" || e.data?.status !== "completed") {
+      return sealed();
+    }
+    const transactionId = e.data?.id;
+    if (typeof transactionId !== "string" || !TX_ID_REGEX2.test(transactionId)) {
+      return sealed();
+    }
+    let capsuleId = e.data?.custom_data?.capsuleId ?? e.data?.checkout?.custom_data?.capsuleId;
+    let expectedAmountRaw = e.data?.custom_data?.expectedAmount ?? e.data?.checkout?.custom_data?.expectedAmount;
+    let currencyRaw = e.data?.custom_data?.currency ?? e.data?.checkout?.custom_data?.currency;
+    let billableSizeBytesRaw = e.data?.custom_data?.billableSizeBytes ?? e.data?.checkout?.custom_data?.billableSizeBytes;
+    let totalRaw = e.data?.details?.totals?.total ?? e.data?.totals?.total;
+    if ((!capsuleId || !expectedAmountRaw || !billableSizeBytesRaw) && typeof bindings.PADDLE_API_KEY === "string") {
+      try {
+        const paddleApiBase = bindings.PADDLE_ENV === "live" ? "https://api.paddle.com" : "https://sandbox-api.paddle.com";
+        const txRes = await fetch(
+          `${paddleApiBase}/transactions/${transactionId}`,
+          { headers: { Authorization: `Bearer ${bindings.PADDLE_API_KEY}` } }
+        );
+        if (txRes.ok) {
+          const tx = await txRes.json();
+          capsuleId = tx?.data?.custom_data?.capsuleId;
+          currencyRaw = tx?.data?.custom_data?.currency;
+          totalRaw = tx?.data?.details?.totals?.total;
+          expectedAmountRaw = tx?.data?.custom_data?.expectedAmount;
+          billableSizeBytesRaw = tx?.data?.custom_data?.billableSizeBytes;
+        }
+      } catch {
+        console.warn("[webhook] fallback transaction fetch failed");
+      }
+    }
+    const expectedAmount = Number(expectedAmountRaw);
+    const billableSizeBytes = Number(billableSizeBytesRaw);
+    const totalCents = parseTotalCents(totalRaw);
+    if (typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId) || typeof currencyRaw !== "string" || !Number.isFinite(totalCents)) {
+      return sealed();
+    }
+    const currency = currencyRaw;
+    if (!Number.isSafeInteger(billableSizeBytes) || billableSizeBytes <= 0 || billableSizeBytes > MAX_CAPSULE_SIZE) {
+      return sealed();
+    }
+    if (!Number.isFinite(expectedAmount) || expectedAmount <= 0) {
+      return sealed();
+    }
+    const quote = await getBusinessQuote(bindings, capsuleId);
+    if (!quote) {
+      console.error("[webhook] BUSINESS_QUOTE_NOT_FOUND");
+      return sealed();
+    }
+    const { nowUtc } = await getTrustedTime();
+    if (!Number.isSafeInteger(nowUtc)) return sealed();
+    if (quote.expiresAt <= nowUtc) {
+      console.error("[webhook] BUSINESS_QUOTE_EXPIRED");
+      return sealed();
+    }
+    if (currency.toUpperCase() !== quote.currency.toUpperCase()) {
+      console.error("[webhook] INVALID_CURRENCY", { currency });
+      return sealed();
+    }
+    const expectedPriceCents = Math.round(quote.expectedAmount * 100);
+    const expectedAmtCents = Math.round(expectedAmount * 100);
+    if (Math.abs(expectedAmtCents - expectedPriceCents) > 1) {
+      console.error("[webhook] CUSTOM_DATA_AMOUNT_MISMATCH", {
+        expectedAmtCents,
+        expectedPriceCents
+      });
+      return sealed();
+    }
+    if (Math.abs(totalCents - expectedPriceCents) > 1) {
+      console.error("[webhook] TOTAL_AMOUNT_MISMATCH", { totalCents, expectedPriceCents });
+      return sealed();
+    }
+    const capsuleKey = `${CAPSULE_KEY_PREFIX}${capsuleId}`;
+    const [existingCapsule, existingTx] = await Promise.all([
+      bindings.VERIFIED_PAYMENTS.get(capsuleKey),
+      bindings.VERIFIED_PAYMENTS.get(transactionId)
+    ]);
+    if (existingCapsule || existingTx) return sealed();
+    const expiresAt = nowUtc + VERIFIED_TTL_SEC2 * 1e3;
+    const record = JSON.stringify({
+      transactionId,
+      capsuleId,
+      expectedAmount: quote.expectedAmount,
+      currency,
+      billableSizeBytes,
+      verifiedAt: nowUtc,
+      expiresAt,
+      version: 1,
+      ok: true,
+      method: e.data?.payments?.[0]?.method_details?.type ?? "paddle"
+    });
+    await bindings.VERIFIED_PAYMENTS.put(
+      transactionId,
+      record,
+      { expirationTtl: VERIFIED_TTL_SEC2 }
+    );
+    await bindings.VERIFIED_PAYMENTS.put(
+      capsuleKey,
+      transactionId,
+      { expirationTtl: VERIFIED_TTL_SEC2 }
+    );
+    return sealed();
+  } catch {
+    return sealed();
+  }
+}, "onRequestPost");
+
+// api/web3/create-quote.ts
+var ALLOWED_ORIGINS5 = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-capsule.pages.dev"
+];
+var PAGES_PREVIEW_REGEX2 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+function isAllowedOrigin2(origin) {
+  if (ALLOWED_ORIGINS5.includes(origin))
+    return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX2.test(url.hostname)) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+__name(isAllowedOrigin2, "isAllowedOrigin");
+function isPlainObject5(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject5, "isPlainObject");
+function baseHeaders5(origin) {
+  return {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, no-transform",
+    "CDN-Cache-Control": "no-store",
+    "Surrogate-Control": "no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Timing-Allow-Origin": origin,
+    "X-Content-Type-Options": "nosniff",
+    "X-Aeterna-Payment-Version": "v1",
+    "Content-Security-Policy": "default-src 'none'"
+  };
+}
+__name(baseHeaders5, "baseHeaders");
+function fail4(code, error, origin) {
+  return new Response(
+    JSON.stringify({ ok: false, error }),
+    {
+      status: code,
+      headers: baseHeaders5(origin)
+    }
+  );
+}
+__name(fail4, "fail");
+var onRequestOptions6 = /* @__PURE__ */ __name(async (context) => {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!isAllowedOrigin2(origin)) {
+    console.error("[web3/create-quote] INVALID_ORIGIN (OPTIONS)", { origin });
+    return new Response(null, {
+      status: 403,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  return new Response(null, {
+    status: 204,
+    headers: baseHeaders5(origin)
+  });
+}, "onRequestOptions");
+var onRequestPost5 = /* @__PURE__ */ __name(async (context) => {
+  const { request, env } = context;
+  const bindings = env;
+  const origin = request.headers.get("origin") ?? "";
+  if (!isAllowedOrigin2(origin)) {
+    console.error("[web3/create-quote] INVALID_ORIGIN", { origin });
+    return fail4(403, "INVALID_ORIGIN", origin);
+  }
+  const ip = getClientIp(request);
+  if (!rateLimit(ip)) {
+    console.error("[web3/create-quote] RATE_LIMIT", { ip });
+    return fail4(429, "TOO_MANY_REQUESTS", origin);
+  }
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    console.error("[web3/create-quote] INVALID_CONTENT_TYPE", { contentType });
+    return fail4(415, "UNSUPPORTED_MEDIA_TYPE", origin);
+  }
+  if (!bindings.BUSINESS_QUOTES) {
+    console.error("[web3/create-quote] BUSINESS_QUOTES_MISSING");
+    return fail4(503, "BUSINESS_QUOTES_MISSING", origin);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    console.error("[web3/create-quote] INVALID_JSON");
+    return fail4(400, "INVALID_JSON", origin);
+  }
+  if (!isPlainObject5(body)) {
+    console.error("[web3/create-quote] INVALID_BODY_PROTOTYPE");
+    return fail4(400, "INVALID_BODY", origin);
+  }
+  const { billableSizeBytes, capsuleId, expectedAmount } = body;
+  const parsedSize = Number(billableSizeBytes);
+  if (!Number.isSafeInteger(parsedSize) || parsedSize <= 0 || parsedSize > MAX_CAPSULE_SIZE) {
+    console.error("[web3/create-quote] INVALID_SIZE", { billableSizeBytes });
+    return fail4(400, "INVALID_SIZE", origin);
+  }
+  if (typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
+    console.error("[web3/create-quote] INVALID_CAPSULE_ID", { capsuleId });
+    return fail4(400, "INVALID_CAPSULE_ID", origin);
+  }
+  const price = calculatePrice(parsedSize);
+  const parsedExpected = Number(expectedAmount);
+  const priceCents = Math.round(price * 100);
+  const expectedCents = Math.round(parsedExpected * 100);
+  if (!Number.isFinite(parsedExpected) || Math.abs(expectedCents - priceCents) > 1) {
+    console.error("[web3/create-quote] PRICE_MISMATCH", {
+      expectedAmount,
+      calculated: price
+    });
+    return fail4(400, "PRICE_MISMATCH", origin);
+  }
+  const { nowUtc: now } = await getTrustedTime();
+  const businessQuote = {
+    capsuleId,
+    billableSizeBytes: parsedSize,
+    expectedAmount: price,
+    currency: "USD",
+    createdAt: now,
+    expiresAt: now + 30 * 60 * 1e3
+  };
+  let quote;
+  try {
+    const result = await createBusinessQuote(
+      bindings,
+      businessQuote
+    );
+    quote = result.quote;
+  } catch (err) {
+    console.error("[web3/create-quote] QUOTE_CREATE_FAILED", err);
+    return fail4(500, "QUOTE_CREATE_FAILED", origin);
+  }
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      expectedAmount: quote.expectedAmount,
+      currency: quote.currency,
+      expiresAt: quote.expiresAt
+    }),
+    { status: 200, headers: baseHeaders5(origin) }
+  );
+}, "onRequestPost");
+
+// ../src/config/contracts.ts
+var CONTRACTS = {
+  BASE: {
+    /**
+     * USDC (Base mainnet)
+     * Official Circle deployment
+     */
+    USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    /**
+     * AETERNA Protocol Treasury Safe
+     * Receives capsule payments
+     */
+    TREASURY: "0x97E52713e38320477494aB4283c11f5cD2a49e7B"
+  }
+};
+
+// api/web3/verify.ts
+var BASE_CHAIN_ID = "0x2105";
+var USDC_CONTRACT = CONTRACTS.BASE.USDC.toLowerCase();
+var RECIPIENT = CONTRACTS.BASE.TREASURY.toLowerCase();
+var TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+var USDC_DECIMALS = 6;
+var AMOUNT_TOLERANCE = 1n;
+var VERIFIED_TTL_MS2 = 15 * 60 * 1e3;
+var VERIFIED_TTL_SEC3 = 15 * 60;
+var MIN_CONFIRMATIONS = 2n;
+var HEX_BLOCK_REGEX = /^0x[0-9a-f]+$/i;
+var CAPSULE_PAYMENT_KEY_PREFIX = "capsule:";
+var ALLOWED_ORIGINS6 = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-capsule.pages.dev"
+];
+function usdToUsdcUnits(amountUSD) {
+  const cents = amountUSD.toFixed(2);
+  const [whole, frac = "00"] = cents.split(".");
+  const padded = frac.padEnd(USDC_DECIMALS, "0");
+  return BigInt(whole + padded);
+}
+__name(usdToUsdcUnits, "usdToUsdcUnits");
+function isPlainObject6(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject6, "isPlainObject");
+function baseHeaders6(origin) {
+  return {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'",
+    "Timing-Allow-Origin": origin,
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  };
+}
+__name(baseHeaders6, "baseHeaders");
+function fail5(code = 400, msg, origin) {
+  return new Response(
+    JSON.stringify({ ok: false, error: msg ?? "error" }),
+    { status: code, headers: baseHeaders6(origin ?? "") }
+  );
+}
+__name(fail5, "fail");
+var RpcTimeoutError = class extends Error {
+  static {
+    __name(this, "RpcTimeoutError");
+  }
+  constructor() {
+    super("RPC_TIMEOUT");
+    this.name = "RpcTimeoutError";
+  }
+};
+async function rpcCall(rpcUrl, method, params) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1e4);
+  try {
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: controller.signal
+    });
+    if (!res.ok)
+      throw new Error(`RPC HTTP error ${res.status}`);
+    const json = await res.json();
+    if (json.error)
+      throw new Error(json.error.message);
+    return json.result;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new RpcTimeoutError();
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+__name(rpcCall, "rpcCall");
+function findTransferLog(receipt, expectedUsdcUnits) {
+  if (!receipt.logs?.length)
+    return { found: false, reason: "No logs in receipt" };
+  for (const log of receipt.logs) {
+    if (log.address?.toLowerCase() !== USDC_CONTRACT)
+      continue;
+    if (log.topics?.[0] !== TRANSFER_TOPIC)
+      continue;
+    const toTopic = log.topics?.[2]?.toLowerCase() ?? "";
+    if (!toTopic.endsWith(RECIPIENT.slice(2)))
+      continue;
+    const dataHex = log.data;
+    if (!dataHex)
+      return { found: false, reason: "Empty data" };
+    let transferred;
+    try {
+      transferred = BigInt(dataHex);
+    } catch {
+      return { found: false, reason: "Parse failed" };
+    }
+    if (transferred < expectedUsdcUnits - AMOUNT_TOLERANCE)
+      return { found: false, reason: "Amount too low" };
+    return { found: true };
+  }
+  return { found: false, reason: "Transfer not found" };
+}
+__name(findTransferLog, "findTransferLog");
+var onRequestOptions7 = /* @__PURE__ */ __name(async (context) => {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS6.includes(origin)) {
+    console.error("[web3/verify] INVALID_ORIGIN OPTIONS", { origin });
+    return new Response(null, {
+      status: 403,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  return new Response(null, { status: 204, headers: baseHeaders6(origin) });
+}, "onRequestOptions");
+var onRequestPost6 = /* @__PURE__ */ __name(async (context) => {
+  const { request, env } = context;
+  const bindings = env;
+  const origin = request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS6.includes(origin)) {
+    console.error("[web3/verify] INVALID_ORIGIN", { origin });
+    return fail5(403, "INVALID_ORIGIN", origin);
+  }
+  if (!request.headers.get("content-type")?.includes("application/json"))
+    return fail5(415, void 0, origin);
+  const ip = getClientIp(request);
+  if (!rateLimit(ip))
+    return fail5(429, void 0, origin);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return fail5(400, void 0, origin);
+  }
+  if (!isPlainObject6(body)) {
+    return fail5(400, "Invalid body", origin);
+  }
+  const { txHash, capsuleId, billableSizeBytes } = body;
+  if (typeof txHash !== "string" || !TX_HASH_REGEX.test(txHash))
+    return fail5(400, "Invalid txHash", origin);
+  if (typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId))
+    return fail5(400, "Invalid capsuleId", origin);
+  if (typeof billableSizeBytes !== "number" || !Number.isSafeInteger(billableSizeBytes) || billableSizeBytes <= 0 || billableSizeBytes > MAX_CAPSULE_SIZE)
+    return fail5(400, "Invalid billableSizeBytes", origin);
+  const rpc = bindings.ALCHEMY_BASE_URL;
+  if (!rpc)
+    return fail5(503, "RPC not configured", origin);
+  if (!bindings.VERIFIED_PAYMENTS)
+    return fail5(503, "KV missing", origin);
+  if (!bindings.BUSINESS_QUOTES)
+    return fail5(503, "BUSINESS_QUOTES_MISSING", origin);
+  try {
+    const quote = await getBusinessQuote(
+      bindings,
+      capsuleId
+    );
+    if (!quote)
+      return fail5(402, "BUSINESS_QUOTE_NOT_FOUND", origin);
+    const chainId = await rpcCall(rpc, "eth_chainId", []);
+    if (chainId !== BASE_CHAIN_ID)
+      return fail5(503, "Wrong network", origin);
+    const existingByTx = await bindings.VERIFIED_PAYMENTS.get(txHash);
+    if (existingByTx) {
+      try {
+        const parsed = JSON.parse(existingByTx);
+        if (parsed?.capsuleId === capsuleId && parsed?.ok === true) {
+          return new Response(
+            JSON.stringify({ ok: true }),
+            { status: 200, headers: baseHeaders6(origin) }
+          );
+        }
+      } catch {
+      }
+      return fail5(409, "TX_ALREADY_USED", origin);
+    }
+    const capsuleKey = CAPSULE_PAYMENT_KEY_PREFIX + capsuleId;
+    const existingByCapsule = await bindings.VERIFIED_PAYMENTS.get(capsuleKey);
+    if (existingByCapsule) {
+      return fail5(409, "CAPSULE_ALREADY_PAID", origin);
+    }
+    const receipt = await rpcCall(
+      rpc,
+      "eth_getTransactionReceipt",
+      [txHash]
+    );
+    if (!receipt)
+      return fail5(202, "Pending", origin);
+    if (receipt.status !== "0x1")
+      return fail5(402, "Reverted", origin);
+    if (typeof receipt.blockNumber !== "string" || !HEX_BLOCK_REGEX.test(receipt.blockNumber)) {
+      return fail5(503, "INVALID_BLOCK_NUMBER", origin);
+    }
+    const latestBlock = await rpcCall(rpc, "eth_blockNumber", []);
+    if (typeof latestBlock !== "string" || !HEX_BLOCK_REGEX.test(latestBlock)) {
+      return fail5(503, "INVALID_CHAIN_HEAD", origin);
+    }
+    if (BigInt(latestBlock) - BigInt(receipt.blockNumber) < MIN_CONFIRMATIONS) {
+      return fail5(202, "Pending", origin);
+    }
+    const { nowUtc } = await getTrustedTime();
+    if (!Number.isSafeInteger(nowUtc))
+      return fail5(503, "TIME_UNAVAILABLE", origin);
+    if (quote.expiresAt <= nowUtc)
+      return fail5(402, "BUSINESS_QUOTE_EXPIRED", origin);
+    const expected = usdToUsdcUnits(
+      quote.expectedAmount
+    );
+    const { found } = findTransferLog(receipt, expected);
+    if (!found)
+      return fail5(402, "Transfer missing", origin);
+    const record = JSON.stringify({
+      capsuleId,
+      transactionId: txHash,
+      ok: true,
+      method: "web3",
+      expectedAmount: quote.expectedAmount,
+      currency: quote.currency,
+      expiresAt: nowUtc + VERIFIED_TTL_MS2,
+      billableSizeBytes
+    });
+    await bindings.VERIFIED_PAYMENTS.put(
+      txHash,
+      record,
+      { expirationTtl: VERIFIED_TTL_SEC3 }
+    );
+    await bindings.VERIFIED_PAYMENTS.put(
+      capsuleKey,
+      txHash,
+      { expirationTtl: VERIFIED_TTL_SEC3 }
+    );
+    return new Response(
+      JSON.stringify({ ok: true }),
+      { status: 200, headers: baseHeaders6(origin) }
+    );
+  } catch (err) {
+    if (err instanceof RpcTimeoutError) {
+      return fail5(504, "RPC_TIMEOUT", origin);
+    }
+    return fail5(503, "INTERNAL_ERROR", origin);
+  }
+}, "onRequestPost");
+
+// api/capsule/[capsuleId].ts
+function isPlainObject7(value) {
+  if (!value || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject7, "isPlainObject");
+var MIN_TIME4 = 15778368e5;
+var MAX_TIME4 = 41024448e5;
+var MIN_ENCRYPTED_SIZE = 1;
+var HEARTBEAT_INTERVAL_MIN2 = 864e5;
+var HEARTBEAT_INTERVAL_MAX2 = 31536e8;
+var ALLOWED_MANIFEST_FIELDS2 = Object.freeze(/* @__PURE__ */ new Set([
+  "version",
+  "capsuleId",
+  "saltBase",
+  "vaultTxId",
+  "openAt",
+  "sealedAt",
+  "encryptedSizeBytes",
+  "ext",
+  "description",
+  "heartbeatEnabled",
+  "heartbeatInterval"
+]));
+var ALLOWED_EXT_FIELDS2 = Object.freeze(/* @__PURE__ */ new Set([
+  "vaultSha256"
+]));
+var ALLOWED_ORIGINS7 = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-capsule.pages.dev"
+];
+function baseHeaders7(origin, cache = false) {
+  const allowed = origin && ALLOWED_ORIGINS7.includes(origin) ? origin : void 0;
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Cache-Control": cache ? "public, max-age=31536000, immutable" : "no-store"
+  };
+  if (allowed) {
+    headers["Access-Control-Allow-Origin"] = allowed;
+    headers["Timing-Allow-Origin"] = allowed;
+  }
+  return headers;
+}
+__name(baseHeaders7, "baseHeaders");
+function fail6(status = 400, message = "error", origin) {
+  return new Response(
+    JSON.stringify({
+      ok: false,
+      error: message
+    }),
+    {
+      status,
+      headers: baseHeaders7(origin)
+    }
+  );
+}
+__name(fail6, "fail");
+var onRequestOptions8 = /* @__PURE__ */ __name(async (context) => {
+  const origin = context.request.headers.get("origin") ?? "";
+  return new Response(
+    null,
+    {
+      status: 204,
+      headers: baseHeaders7(origin)
+    }
+  );
+}, "onRequestOptions");
+var onRequestGet2 = /* @__PURE__ */ __name(async (context) => {
+  const { request, env, params } = context;
+  const { nowUtc } = await getTrustedTime();
+  const origin = request.headers.get("origin") ?? "";
+  const capsuleId = params?.capsuleId;
+  if (!capsuleId || typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
+    return fail6(
+      400,
+      "INVALID_CAPSULE_ID",
+      origin
+    );
+  }
+  if (!env?.CAPSULE_MANIFESTS) {
+    return fail6(
+      503,
+      "STORAGE_UNAVAILABLE",
+      origin
+    );
+  }
+  let raw = null;
+  try {
+    raw = await env.CAPSULE_MANIFESTS.get(
+      capsuleId
+    );
+  } catch {
+    return fail6(
+      503,
+      "STORAGE_ERROR",
+      origin
+    );
+  }
+  if (!raw) {
+    return fail6(
+      404,
+      "CAPSULE_NOT_FOUND",
+      origin
+    );
+  }
+  if (raw.length > 2e4) {
+    return fail6(
+      500,
+      "MANIFEST_TOO_LARGE",
+      origin
+    );
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(raw);
+  } catch {
+    return fail6(
+      500,
+      "MANIFEST_CORRUPT",
+      origin
+    );
+  }
+  if (!isPlainObject7(manifest)) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID",
+      origin
+    );
+  }
+  const m = manifest;
+  for (const k of Object.keys(m)) {
+    if (!ALLOWED_MANIFEST_FIELDS2.has(k)) {
+      return fail6(500, "MANIFEST_INVALID", origin);
+    }
+  }
+  if (m.version !== 1) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID_VERSION",
+      origin
+    );
+  }
+  if (typeof m.capsuleId !== "string" || !CAPSULE_ID_REGEX.test(m.capsuleId) || m.capsuleId !== capsuleId) {
+    return fail6(
+      500,
+      "MANIFEST_ID_MISMATCH",
+      origin
+    );
+  }
+  if (typeof m.saltBase !== "string" || !SALT_BASE_REGEX.test(m.saltBase)) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID_SALT",
+      origin
+    );
+  }
+  if (typeof m.vaultTxId !== "string" || !STORAGE_POINTER_REGEX.test(m.vaultTxId)) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID_VAULT_TXID",
+      origin
+    );
+  }
+  if (typeof m.openAt !== "number" || !Number.isSafeInteger(m.openAt) || m.openAt < MIN_TIME4 || m.openAt > MAX_TIME4) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID_OPEN_AT",
+      origin
+    );
+  }
+  if (typeof m.sealedAt !== "number" || !Number.isSafeInteger(m.sealedAt) || m.sealedAt < MIN_TIME4 || m.sealedAt > MAX_TIME4) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID_SEALED_AT",
+      origin
+    );
+  }
+  if (m.openAt <= m.sealedAt) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID",
+      origin
+    );
+  }
+  if (m.sealedAt > nowUtc) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID",
+      origin
+    );
+  }
+  if (typeof m.encryptedSizeBytes !== "number" || !Number.isSafeInteger(m.encryptedSizeBytes) || m.encryptedSizeBytes < MIN_ENCRYPTED_SIZE || m.encryptedSizeBytes > MAX_ENCRYPTED_VAULT_SIZE) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID_ENCRYPTED_SIZE",
+      origin
+    );
+  }
+  if (m.description !== void 0 && (typeof m.description !== "string" || m.description.length > 500)) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID",
+      origin
+    );
+  }
+  if (m.heartbeatEnabled !== void 0 && typeof m.heartbeatEnabled !== "boolean") {
+    return fail6(
+      500,
+      "MANIFEST_INVALID",
+      origin
+    );
+  }
+  if (m.heartbeatEnabled === true) {
+    if (typeof m.heartbeatInterval !== "number" || !Number.isSafeInteger(m.heartbeatInterval) || m.heartbeatInterval < HEARTBEAT_INTERVAL_MIN2 || m.heartbeatInterval > HEARTBEAT_INTERVAL_MAX2) {
+      return fail6(
+        500,
+        "MANIFEST_INVALID",
+        origin
+      );
+    }
+  } else {
+    if (m.heartbeatInterval !== void 0) {
+      return fail6(
+        500,
+        "MANIFEST_INVALID",
+        origin
+      );
+    }
+  }
+  if (!isPlainObject7(m.ext)) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID_EXT",
+      origin
+    );
+  }
+  const ext = m.ext;
+  for (const k of Object.keys(ext)) {
+    if (!ALLOWED_EXT_FIELDS2.has(k)) {
+      return fail6(
+        500,
+        "MANIFEST_INVALID_EXT",
+        origin
+      );
+    }
+  }
+  if (typeof ext.vaultSha256 !== "string" || !SHA256_REGEX.test(ext.vaultSha256)) {
+    return fail6(
+      500,
+      "MANIFEST_INVALID_VAULT_SHA256",
+      origin
+    );
+  }
+  const normalized = {
+    version: m.version,
+    capsuleId: m.capsuleId,
+    saltBase: m.saltBase,
+    vaultTxId: m.vaultTxId,
+    openAt: m.openAt,
+    sealedAt: m.sealedAt,
+    encryptedSizeBytes: m.encryptedSizeBytes,
+    ext: {
+      vaultSha256: ext.vaultSha256
+    }
+  };
+  if (m.description !== void 0) {
+    normalized.description = m.description;
+  }
+  if (m.heartbeatEnabled !== void 0) {
+    normalized.heartbeatEnabled = m.heartbeatEnabled;
+  }
+  if (m.heartbeatInterval !== void 0) {
+    normalized.heartbeatInterval = m.heartbeatInterval;
+  }
+  return new Response(
+    JSON.stringify(normalized),
+    {
+      status: 200,
+      headers: {
+        ...baseHeaders7(origin, true),
+        "X-Aeterna-Manifest-Version": "1",
+        "X-Aeterna-Manifest-Immutable": "true"
+      }
+    }
+  );
+}, "onRequestGet");
+
+// ../src/shared/heartbeat/resolveEffectiveOpenAt.ts
+var HEARTBEAT_GRACE_MS = 0;
+function resolveEffectiveOpenAt({
+  manifestOpenAt,
+  lastConfirmedAt,
+  heartbeatInterval = 0
+}) {
+  if (!Number.isFinite(manifestOpenAt) || !Number.isInteger(manifestOpenAt)) {
+    throw new Error(
+      "[AETERNA] Invalid manifest.openAt"
+    );
+  }
+  if (!Number.isFinite(heartbeatInterval) || !Number.isInteger(heartbeatInterval) || heartbeatInterval < 0) {
+    throw new Error(
+      "[AETERNA] Invalid heartbeat timing"
+    );
+  }
+  const safeLastConfirmedAt = Number.isInteger(lastConfirmedAt) ? lastConfirmedAt : void 0;
+  if (safeLastConfirmedAt === void 0) {
+    return manifestOpenAt;
+  }
+  const rollingBoundary = safeLastConfirmedAt + heartbeatInterval + HEARTBEAT_GRACE_MS;
+  if (!Number.isFinite(
+    rollingBoundary
+  )) {
+    throw new Error(
+      "[AETERNA] Invalid heartbeat timing"
+    );
+  }
+  return Math.max(
+    manifestOpenAt,
+    rollingBoundary
+  );
+}
+__name(resolveEffectiveOpenAt, "resolveEffectiveOpenAt");
+
+// api/heartbeat.ts
+function isPlainObject8(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject8, "isPlainObject");
+async function getTrustedNow(request) {
+  const origin = new URL(request.url).origin;
+  const res = await fetch(`${origin}/api/time`, { cache: "no-store" });
+  if (!res.ok)
+    throw new Error("TIME_UNAVAILABLE");
+  const data = await res.json();
+  if (!data || typeof data !== "object" || typeof data.nowUtc !== "number")
+    throw new Error("TIME_INVALID");
+  const nowUtc = data.nowUtc;
+  if (!Number.isFinite(nowUtc) || !Number.isSafeInteger(nowUtc) || nowUtc <= 0)
+    throw new Error("TIME_INVALID");
+  return nowUtc;
+}
+__name(getTrustedNow, "getTrustedNow");
+async function onRequestPost7(context) {
+  const ctx = context;
+  const { request, env } = ctx;
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(
+      "Invalid JSON",
+      { status: 400 }
+    );
+  }
+  if (!isPlainObject8(body)) {
+    return new Response(
+      "Invalid body",
+      { status: 400 }
+    );
+  }
+  const rawBody = body;
+  const capsuleId = rawBody.capsuleId;
+  if (!capsuleId || typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
+    return new Response(
+      "capsuleId required",
+      { status: 400 }
+    );
+  }
+  const creatorAuthorityFragment = rawBody.creatorAuthorityFragment;
+  if (!creatorAuthorityFragment || typeof creatorAuthorityFragment !== "string" || !SHA256_REGEX.test(creatorAuthorityFragment)) {
+    return new Response(
+      JSON.stringify({ ok: false, code: "FRAGMENT_REQUIRED" }),
+      {
+        status: 403,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const authorityTokens = env?.AUTHORITY_TOKENS;
+  if (!authorityTokens || typeof authorityTokens.get !== "function") {
+    return new Response(
+      JSON.stringify({ ok: false, code: "SERVICE_UNAVAILABLE" }),
+      {
+        status: 503,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const storedRaw = await authorityTokens.get(capsuleId);
+  if (!storedRaw) {
+    return new Response(
+      JSON.stringify({ ok: false, code: "INVALID_FRAGMENT" }),
+      {
+        status: 403,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  let tokenRecord;
+  if (SHA256_REGEX.test(storedRaw)) {
+    tokenRecord = {
+      fragment: storedRaw
+    };
+  } else {
+    try {
+      const parsed = JSON.parse(storedRaw);
+      if (!isPlainObject8(parsed) || typeof parsed.fragment !== "string" || !SHA256_REGEX.test(parsed.fragment)) {
+        return new Response(
+          JSON.stringify({ ok: false, code: "INVALID_FRAGMENT" }),
+          {
+            status: 403,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+      tokenRecord = {
+        fragment: parsed.fragment
+      };
+    } catch {
+      return new Response(
+        JSON.stringify({ ok: false, code: "INVALID_FRAGMENT" }),
+        {
+          status: 403,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    }
+  }
+  if (tokenRecord.fragment !== creatorAuthorityFragment) {
+    return new Response(
+      JSON.stringify({ ok: false, code: "INVALID_FRAGMENT" }),
+      {
+        status: 403,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  let nowUtc;
+  try {
+    nowUtc = await getTrustedNow(request);
+  } catch {
+    return new Response(
+      JSON.stringify({ ok: false, code: "TIME_UNAVAILABLE" }),
+      {
+        status: 503,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const capsuleManifests = env?.CAPSULE_MANIFESTS;
+  if (!capsuleManifests || typeof capsuleManifests.get !== "function") {
+    return new Response(
+      JSON.stringify({ ok: false, code: "SERVICE_UNAVAILABLE" }),
+      {
+        status: 503,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const manifestRaw = await capsuleManifests.get(capsuleId);
+  if (!manifestRaw) {
+    return new Response(
+      "manifest not found",
+      { status: 404 }
+    );
+  }
+  let manifestParsed;
+  try {
+    manifestParsed = JSON.parse(manifestRaw);
+  } catch {
+    return new Response(
+      JSON.stringify({ ok: false, code: "INVALID_MANIFEST" }),
+      {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  if (!manifestParsed || typeof manifestParsed !== "object") {
+    return new Response(
+      JSON.stringify({ ok: false, code: "INVALID_MANIFEST" }),
+      {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const manifest = manifestParsed;
+  if (manifest.version !== 1 || typeof manifest.openAt !== "number" || !Number.isFinite(manifest.openAt) || !Number.isSafeInteger(manifest.openAt) || manifest.openAt <= 0 || manifest.heartbeatEnabled != null && typeof manifest.heartbeatEnabled !== "boolean" || manifest.heartbeatInterval != null && (typeof manifest.heartbeatInterval !== "number" || !Number.isFinite(manifest.heartbeatInterval) || !Number.isSafeInteger(manifest.heartbeatInterval))) {
+    return new Response(
+      JSON.stringify({ ok: false, code: "INVALID_MANIFEST" }),
+      {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const heartbeatConfirmations = env?.HEARTBEAT_CONFIRMATIONS;
+  if (!heartbeatConfirmations || typeof heartbeatConfirmations.get !== "function" || typeof heartbeatConfirmations.put !== "function") {
+    return new Response(
+      JSON.stringify({ ok: false, code: "SERVICE_UNAVAILABLE" }),
+      {
+        status: 503,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const confirmedKV = heartbeatConfirmations;
+  const existingRaw = await confirmedKV.get(capsuleId);
+  let lastConfirmedAt = null;
+  if (existingRaw) {
+    try {
+      const parsed = JSON.parse(existingRaw);
+      if (parsed && typeof parsed === "object" && typeof parsed.lastConfirmedAt === "number") {
+        lastConfirmedAt = parsed.lastConfirmedAt;
+      }
+    } catch {
+    }
+  }
+  if (lastConfirmedAt !== null && nowUtc <= lastConfirmedAt) {
+    return new Response(
+      JSON.stringify({ ok: false, code: "STALE_CONFIRMATION" }),
+      {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const effectiveOpenAt = resolveEffectiveOpenAt({
+    manifestOpenAt: manifest.openAt,
+    heartbeatInterval: manifest.heartbeatEnabled === true && typeof manifest.heartbeatInterval === "number" ? manifest.heartbeatInterval : 0,
+    lastConfirmedAt: lastConfirmedAt ?? void 0
+  });
+  if (nowUtc >= effectiveOpenAt) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        code: "CONFIRMATION_WINDOW_EXPIRED"
+      }),
+      {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const record = {
+    capsuleId,
+    lastConfirmedAt: nowUtc,
+    updatedAt: nowUtc,
+    version: 1
+  };
+  await confirmedKV.put(
+    capsuleId,
+    JSON.stringify(record)
+  );
+  return new Response(
+    JSON.stringify({ ok: true }),
+    {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }
+  );
+}
+__name(onRequestPost7, "onRequestPost");
+async function onRequestGet3(context) {
+  const ctx = context;
+  const { request, env } = ctx;
+  const url = new URL(request.url);
+  const capsuleId = url.searchParams.get("capsuleId");
+  if (!capsuleId || !CAPSULE_ID_REGEX.test(capsuleId)) {
+    return new Response(
+      "capsuleId required",
+      { status: 400 }
+    );
+  }
+  const heartbeatConfirmations = env?.HEARTBEAT_CONFIRMATIONS;
+  if (!heartbeatConfirmations || typeof heartbeatConfirmations.get !== "function") {
+    return new Response(
+      JSON.stringify({ ok: false, code: "SERVICE_UNAVAILABLE" }),
+      {
+        status: 503,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const stored = await heartbeatConfirmations.get(capsuleId);
+  if (!stored) {
+    return new Response(
+      JSON.stringify({ lastConfirmedAt: null }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  let parsedStored;
+  try {
+    parsedStored = JSON.parse(stored);
+  } catch {
+    return new Response(
+      JSON.stringify({ ok: false, code: "INVALID_RECORD" }),
+      {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  if (!parsedStored || typeof parsedStored !== "object") {
+    return new Response(
+      JSON.stringify({ ok: false, code: "INVALID_RECORD" }),
+      {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  const record = parsedStored;
+  const lastConfirmedAt = record.lastConfirmedAt;
+  if (typeof lastConfirmedAt !== "number" || !Number.isFinite(lastConfirmedAt) || !Number.isSafeInteger(lastConfirmedAt) || lastConfirmedAt <= 0) {
+    return new Response(
+      JSON.stringify({ ok: false, code: "INVALID_RECORD" }),
+      {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  }
+  return new Response(
+    JSON.stringify({ lastConfirmedAt }),
+    {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }
+  );
+}
+__name(onRequestGet3, "onRequestGet");
+
+// api/upload-token.ts
+var ALLOWED_ORIGINS8 = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-capsule.pages.dev"
+];
+var TRANSACTION_ID_REGEX = /^[A-Za-z0-9_\-]{10,200}$/;
+var ALLOWED_BODY_FIELDS = ["capsuleId", "transactionId"];
+var MIN_TIME5 = 15778368e5;
+var MAX_TIME5 = 41024448e5;
+var TOKEN_TTL_MS = 5 * 60 * 1e3;
+var TOKEN_TTL_SEC = TOKEN_TTL_MS / 1e3;
+var EXECUTOR_ADDRESS = "0x2b29E0cc18c93EA9BE583427E3AaC8ca01be47AF";
+var EXECUTOR_MIN_BALANCE_WEI = BigInt("1500000000000000");
+var RPC_URLS = [
+  "https://base-rpc.publicnode.com",
+  "https://1rpc.io/base",
+  "https://mainnet.base.org",
+  "https://base.llamarpc.com"
+];
+var RPC_TIMEOUT_MS = 5e3;
+var EXECUTOR_BALANCE_CACHE_KEY = "executor-balance-cache";
+var EXECUTOR_BALANCE_CACHE_MAX_AGE_MS = 15 * 60 * 1e3;
+function toBase64Url(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+__name(toBase64Url, "toBase64Url");
+function generateToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return toBase64Url(bytes);
+}
+__name(generateToken, "generateToken");
+async function getExecutorBalance() {
+  let lastError;
+  for (const rpcUrl of RPC_URLS) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      RPC_TIMEOUT_MS
+    );
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_getBalance",
+          params: [EXECUTOR_ADDRESS, "latest"],
+          id: 1
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error("RPC_HTTP_ERROR");
+      const data = await res.json();
+      if (!data || typeof data.result !== "string")
+        throw new Error("RPC_INVALID_RESPONSE");
+      return BigInt(data.result);
+    } catch (err) {
+      console.error(
+        "RPC_FAILED",
+        rpcUrl,
+        String(err)
+      );
+      clearTimeout(timeoutId);
+      lastError = err;
+      continue;
+    }
+  }
+  console.error(
+    "RPC_ALL_FAILED",
+    String(lastError)
+  );
+  throw lastError ?? new Error("RPC_ALL_FAILED");
+}
+__name(getExecutorBalance, "getExecutorBalance");
+function baseHeaders8(origin) {
+  return {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, no-transform",
+    "CDN-Cache-Control": "no-store",
+    "Surrogate-Control": "no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Timing-Allow-Origin": origin,
+    "X-Content-Type-Options": "nosniff",
+    "X-Aeterna-Upload-Token-Version": "v1",
+    "X-Aeterna-Upload-Token-TTL": String(TOKEN_TTL_SEC),
+    "X-Aeterna-Upload-Authority": "primary"
+  };
+}
+__name(baseHeaders8, "baseHeaders");
+function fail7(origin, status = 400) {
+  return new Response(
+    JSON.stringify({ ok: false }),
+    { status, headers: baseHeaders8(origin) }
+  );
+}
+__name(fail7, "fail");
+var onRequestOptions9 = /* @__PURE__ */ __name(async (context) => {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS8.includes(origin)) {
+    return new Response(null, { status: 403 });
+  }
+  return new Response(null, { status: 204, headers: baseHeaders8(origin) });
+}, "onRequestOptions");
+var onRequestPost8 = /* @__PURE__ */ __name(async (context) => {
+  const { request, env } = context;
+  const origin = request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS8.includes(origin)) {
+    return new Response(JSON.stringify({ ok: false }), { status: 403 });
+  }
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return fail7(origin, 415);
+  }
+  const ip = getClientIp(request);
+  if (!rateLimit(ip)) {
+    return fail7(origin, 429);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return fail7(origin, 400);
+  }
+  if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
+    return fail7(origin, 400);
+  }
+  if (!Object.keys(body).every((k) => ALLOWED_BODY_FIELDS.includes(k))) {
+    return fail7(origin, 400);
+  }
+  const { capsuleId, transactionId } = body;
+  if (!capsuleId || typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
+    return fail7(origin, 400);
+  }
+  if (!transactionId || typeof transactionId !== "string" || !TRANSACTION_ID_REGEX.test(transactionId)) {
+    return fail7(origin, 400);
+  }
+  if (!env?.UPLOAD_TOKENS || !env?.VERIFIED_PAYMENTS) {
+    console.error(
+      "[AETERNA][upload-token] Missing KV bindings",
+      {
+        hasUploadTokens: !!env?.UPLOAD_TOKENS,
+        hasVerifiedPayments: !!env?.VERIFIED_PAYMENTS
+      }
+    );
+    return fail7(origin, 503);
+  }
+  let verifiedEntry = null;
+  try {
+    const raw = await env.VERIFIED_PAYMENTS.get(transactionId);
+    if (raw) {
+      verifiedEntry = JSON.parse(raw);
+    }
+  } catch {
+    return fail7(origin, 503);
+  }
+  const { nowUtc: now } = await getTrustedTime();
+  if (!Number.isSafeInteger(now) || now < MIN_TIME5 || now > MAX_TIME5) {
+    return fail7(origin, 500);
+  }
+  if (!verifiedEntry || typeof verifiedEntry !== "object" || Object.getPrototypeOf(verifiedEntry) !== Object.prototype || verifiedEntry.ok !== true || verifiedEntry.capsuleId !== capsuleId || verifiedEntry.transactionId !== transactionId || !Number.isSafeInteger(verifiedEntry.expiresAt) || verifiedEntry.expiresAt <= now) {
+    return fail7(origin, 403);
+  }
+  let executorBalance;
+  try {
+    executorBalance = await getExecutorBalance();
+    await env.UPLOAD_TOKENS.put(
+      EXECUTOR_BALANCE_CACHE_KEY,
+      JSON.stringify({
+        balance: executorBalance.toString(),
+        checkedAt: now
+      }),
+      {
+        expirationTtl: 24 * 60 * 60
+      }
+    );
+  } catch (error) {
+    console.error(
+      "EXECUTOR_BALANCE_RPC_FAILED_USING_CACHE",
+      String(error)
+    );
+    const cachedRaw = await env.UPLOAD_TOKENS.get(
+      EXECUTOR_BALANCE_CACHE_KEY
+    );
+    if (!cachedRaw) {
+      return fail7(origin, 503);
+    }
+    let cached;
+    try {
+      cached = JSON.parse(cachedRaw);
+    } catch {
+      return fail7(origin, 503);
+    }
+    if (typeof cached.balance !== "string" || !Number.isSafeInteger(cached.checkedAt)) {
+      return fail7(origin, 503);
+    }
+    const age = now - cached.checkedAt;
+    if (age < 0 || age > EXECUTOR_BALANCE_CACHE_MAX_AGE_MS) {
+      return fail7(origin, 503);
+    }
+    try {
+      executorBalance = BigInt(cached.balance);
+    } catch {
+      return fail7(origin, 503);
+    }
+    console.warn(
+      "EXECUTOR_BALANCE_CACHE_USED",
+      {
+        ageMs: age,
+        balance: cached.balance
+      }
+    );
+  }
+  if (executorBalance < EXECUTOR_MIN_BALANCE_WEI) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "EXECUTOR_TEMPORARILY_UNAVAILABLE" }),
+      { status: 503, headers: baseHeaders8(origin) }
+    );
+  }
+  let uploadToken = null;
+  for (let i = 0; i < 3; i++) {
+    const candidate = generateToken();
+    const exists = await env.UPLOAD_TOKENS.get(candidate);
+    if (!exists) {
+      uploadToken = candidate;
+      break;
+    }
+  }
+  if (!uploadToken) {
+    return fail7(origin, 500);
+  }
+  const expiresAt = now + TOKEN_TTL_MS;
+  try {
+    await env.UPLOAD_TOKENS.put(
+      uploadToken,
+      JSON.stringify({
+        capsuleId,
+        transactionId,
+        issuedAt: now,
+        expiresAt,
+        tokenVersion: 1,
+        permissions: {
+          uploadChunks: true,
+          uploadVault: true
+        }
+      }),
+      { expirationTtl: TOKEN_TTL_SEC }
+    );
+  } catch {
+    return fail7(origin, 503);
+  }
+  return new Response(
+    JSON.stringify({ ok: true, uploadToken }),
+    { status: 200, headers: baseHeaders8(origin) }
+  );
+}, "onRequestPost");
+
+// capsule/[capsuleId].ts
+function isPlainObject9(value) {
+  if (!value || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+__name(isPlainObject9, "isPlainObject");
+var SITE_URL = "https://aeternacapsule.com";
+var SITE_NAME = "AETERNA Capsule";
+var OG_IMAGE = `${SITE_URL}/og/og-cover.png`;
+var CRAWLER_UA_PATTERNS = [
+  "facebookexternalhit",
+  "twitterbot",
+  "whatsapp",
+  "telegrambot",
+  "linkedinbot",
+  "slackbot",
+  "discordbot",
+  "googlebot",
+  "bingbot",
+  "applebot",
+  "iframely",
+  "embedly"
+];
+function isCrawler(userAgent) {
+  const ua = userAgent.toLowerCase();
+  return CRAWLER_UA_PATTERNS.some((p) => ua.includes(p));
+}
+__name(isCrawler, "isCrawler");
+function escapeHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
+}
+__name(escapeHtml, "escapeHtml");
+function formatUTCDate(ts) {
+  return new Date(ts).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "2-digit",
+    timeZone: "UTC"
+  });
+}
+__name(formatUTCDate, "formatUTCDate");
+function buildOgHtml(params) {
+  const { title, description, openAt, url, updatedTimeSec } = params;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8" />
+<title>${escapeHtml(title)}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#0d0f14" />
+
+<meta name="description" content="${escapeHtml(description)}" />
+<meta name="robots" content="noindex, nofollow" />
+
+<link rel="canonical" href="${escapeHtml(url)}" />
+
+<meta property="og:type" content="article" />
+<meta property="og:locale" content="en_US" />
+<meta property="og:site_name" content="${escapeHtml(SITE_NAME)}" />
+<meta property="og:url" content="${escapeHtml(url)}" />
+<meta property="og:title" content="${escapeHtml(title)}" />
+<meta property="og:description" content="${escapeHtml(description)}" />
+<meta property="og:image" content="${escapeHtml(OG_IMAGE)}" />
+<meta property="og:image:secure_url" content="${escapeHtml(OG_IMAGE)}" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="AETERNA Capsule preview" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="${escapeHtml(title)}" />
+<meta name="twitter:description" content="${escapeHtml(description)}" />
+<meta name="twitter:image" content="${escapeHtml(OG_IMAGE)}" />
+<meta name="twitter:image:alt" content="AETERNA Capsule preview" />
+
+<meta property="og:updated_time" content="${updatedTimeSec}" />
+<meta http-equiv="content-language" content="en" />
+
+</head>
+
+<body>
+
+<p>Opens on: ${escapeHtml(openAt)}</p>
+<p><a href="${escapeHtml(url)}">Open capsule</a></p>
+
+</body>
+</html>`;
+}
+__name(buildOgHtml, "buildOgHtml");
+var onRequestGet4 = /* @__PURE__ */ __name(async (context) => {
+  const { request, env, params } = context;
+  const bindings = env;
+  const userAgent = request.headers.get("user-agent") ?? "";
+  if (!isCrawler(userAgent)) {
+    return context.next();
+  }
+  const ip = getClientIp(request);
+  if (!rateLimit(ip)) {
+    return new Response("Too Many Requests", {
+      status: 429
+    });
+  }
+  const capsuleId = params?.capsuleId;
+  if (!capsuleId || typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
+    return new Response("Not Found", {
+      status: 404
+    });
+  }
+  if (!bindings?.CAPSULE_MANIFESTS) {
+    console.error(
+      "[og] CAPSULE_MANIFESTS binding unavailable"
+    );
+    return new Response("Service Unavailable", {
+      status: 503
+    });
+  }
+  let raw = null;
+  try {
+    raw = await bindings.CAPSULE_MANIFESTS.get(capsuleId);
+  } catch {
+    return new Response("Service Unavailable", {
+      status: 503
+    });
+  }
+  if (!raw) {
+    return new Response("Not Found", {
+      status: 404
+    });
+  }
+  let manifest;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isPlainObject9(parsed)) {
+      throw new Error();
+    }
+    manifest = parsed;
+  } catch {
+    return new Response("Not Found", {
+      status: 404
+    });
+  }
+  if (manifest.version !== 1 || manifest.capsuleId !== capsuleId || typeof manifest.openAt !== "number" || !Number.isSafeInteger(manifest.openAt)) {
+    return new Response("Not Found", {
+      status: 404
+    });
+  }
+  const openAtFormatted = formatUTCDate(
+    manifest.openAt
+  );
+  const rawDescription = typeof manifest.description === "string" ? manifest.description.slice(0, 140) : null;
+  const title = rawDescription ? `"${rawDescription}" \u2014 AETERNA Capsule` : "AETERNA Time Capsule";
+  const description = `Sealed and time-locked. Opens on ${openAtFormatted} (UTC). Created with AETERNA \u2014 zero-knowledge digital time capsule protocol.`;
+  const canonicalUrl = `${SITE_URL}/capsule/${capsuleId}`;
+  const { nowUtc } = await getTrustedTime();
+  const html = buildOgHtml({
+    title,
+    description,
+    openAt: openAtFormatted,
+    url: canonicalUrl,
+    updatedTimeSec: Math.floor(nowUtc / 1e3)
+  });
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "public, max-age=300, stale-while-revalidate=600",
+      "X-Content-Type-Options": "nosniff",
+      "X-Robots-Tag": "noindex, nofollow",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy": "default-src 'none'; img-src https:; style-src 'unsafe-inline';"
+    }
+  });
+}, "onRequestGet");
+
+// ../.wrangler/tmp/pages-ySOj3s/functionsRoutes-0.362314895192938.mjs
+var routes = [
+  {
+    routePath: "/api/capsule/seal",
+    mountPath: "/api/capsule",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions2]
+  },
+  {
+    routePath: "/api/capsule/seal",
+    mountPath: "/api/capsule",
+    method: "POST",
+    middlewares: [],
+    modules: [onRequestPost]
+  },
+  {
+    routePath: "/api/paddle/create-checkout",
+    mountPath: "/api/paddle",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions3]
+  },
+  {
+    routePath: "/api/paddle/create-checkout",
+    mountPath: "/api/paddle",
+    method: "POST",
+    middlewares: [],
+    modules: [onRequestPost2]
+  },
+  {
+    routePath: "/api/paddle/verify",
+    mountPath: "/api/paddle",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions4]
+  },
+  {
+    routePath: "/api/paddle/verify",
+    mountPath: "/api/paddle",
+    method: "POST",
+    middlewares: [],
+    modules: [onRequestPost3]
+  },
+  {
+    routePath: "/api/paddle/webhook",
+    mountPath: "/api/paddle",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions5]
+  },
+  {
+    routePath: "/api/paddle/webhook",
+    mountPath: "/api/paddle",
+    method: "POST",
+    middlewares: [],
+    modules: [onRequestPost4]
+  },
+  {
+    routePath: "/api/web3/create-quote",
+    mountPath: "/api/web3",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions6]
+  },
+  {
+    routePath: "/api/web3/create-quote",
+    mountPath: "/api/web3",
+    method: "POST",
+    middlewares: [],
+    modules: [onRequestPost5]
+  },
+  {
+    routePath: "/api/web3/verify",
+    mountPath: "/api/web3",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions7]
+  },
+  {
+    routePath: "/api/web3/verify",
+    mountPath: "/api/web3",
+    method: "POST",
+    middlewares: [],
+    modules: [onRequestPost6]
+  },
+  {
+    routePath: "/api/capsule/:capsuleId",
+    mountPath: "/api/capsule",
+    method: "GET",
+    middlewares: [],
+    modules: [onRequestGet2]
+  },
+  {
+    routePath: "/api/capsule/:capsuleId",
+    mountPath: "/api/capsule",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions8]
+  },
+  {
+    routePath: "/api/heartbeat",
+    mountPath: "/api",
+    method: "GET",
+    middlewares: [],
+    modules: [onRequestGet3]
+  },
+  {
+    routePath: "/api/heartbeat",
+    mountPath: "/api",
+    method: "POST",
+    middlewares: [],
+    modules: [onRequestPost7]
+  },
+  {
+    routePath: "/api/time",
+    mountPath: "/api",
+    method: "GET",
+    middlewares: [],
+    modules: [onRequestGet]
+  },
+  {
+    routePath: "/api/time",
+    mountPath: "/api",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions]
+  },
+  {
+    routePath: "/api/upload-token",
+    mountPath: "/api",
+    method: "OPTIONS",
+    middlewares: [],
+    modules: [onRequestOptions9]
+  },
+  {
+    routePath: "/api/upload-token",
+    mountPath: "/api",
+    method: "POST",
+    middlewares: [],
+    modules: [onRequestPost8]
+  },
+  {
+    routePath: "/capsule/:capsuleId",
+    mountPath: "/capsule",
+    method: "GET",
+    middlewares: [],
+    modules: [onRequestGet4]
+  }
+];
+
+// ../../AppData/Local/nvm/v20.20.0/node_modules/wrangler/node_modules/path-to-regexp/dist.es2015/index.js
+function lexer(str) {
+  var tokens = [];
+  var i = 0;
+  while (i < str.length) {
+    var char = str[i];
+    if (char === "*" || char === "+" || char === "?") {
+      tokens.push({ type: "MODIFIER", index: i, value: str[i++] });
+      continue;
+    }
+    if (char === "\\") {
+      tokens.push({ type: "ESCAPED_CHAR", index: i++, value: str[i++] });
+      continue;
+    }
+    if (char === "{") {
+      tokens.push({ type: "OPEN", index: i, value: str[i++] });
+      continue;
+    }
+    if (char === "}") {
+      tokens.push({ type: "CLOSE", index: i, value: str[i++] });
+      continue;
+    }
+    if (char === ":") {
+      var name = "";
+      var j = i + 1;
+      while (j < str.length) {
+        var code = str.charCodeAt(j);
+        if (
+          // `0-9`
+          code >= 48 && code <= 57 || // `A-Z`
+          code >= 65 && code <= 90 || // `a-z`
+          code >= 97 && code <= 122 || // `_`
+          code === 95
+        ) {
+          name += str[j++];
+          continue;
+        }
+        break;
+      }
+      if (!name)
+        throw new TypeError("Missing parameter name at ".concat(i));
+      tokens.push({ type: "NAME", index: i, value: name });
+      i = j;
+      continue;
+    }
+    if (char === "(") {
+      var count = 1;
+      var pattern = "";
+      var j = i + 1;
+      if (str[j] === "?") {
+        throw new TypeError('Pattern cannot start with "?" at '.concat(j));
+      }
+      while (j < str.length) {
+        if (str[j] === "\\") {
+          pattern += str[j++] + str[j++];
+          continue;
+        }
+        if (str[j] === ")") {
+          count--;
+          if (count === 0) {
+            j++;
+            break;
+          }
+        } else if (str[j] === "(") {
+          count++;
+          if (str[j + 1] !== "?") {
+            throw new TypeError("Capturing groups are not allowed at ".concat(j));
+          }
+        }
+        pattern += str[j++];
+      }
+      if (count)
+        throw new TypeError("Unbalanced pattern at ".concat(i));
+      if (!pattern)
+        throw new TypeError("Missing pattern at ".concat(i));
+      tokens.push({ type: "PATTERN", index: i, value: pattern });
+      i = j;
+      continue;
+    }
+    tokens.push({ type: "CHAR", index: i, value: str[i++] });
+  }
+  tokens.push({ type: "END", index: i, value: "" });
+  return tokens;
+}
+__name(lexer, "lexer");
+function parse(str, options) {
+  if (options === void 0) {
+    options = {};
+  }
+  var tokens = lexer(str);
+  var _a = options.prefixes, prefixes = _a === void 0 ? "./" : _a, _b = options.delimiter, delimiter = _b === void 0 ? "/#?" : _b;
+  var result = [];
+  var key = 0;
+  var i = 0;
+  var path = "";
+  var tryConsume = /* @__PURE__ */ __name(function(type) {
+    if (i < tokens.length && tokens[i].type === type)
+      return tokens[i++].value;
+  }, "tryConsume");
+  var mustConsume = /* @__PURE__ */ __name(function(type) {
+    var value2 = tryConsume(type);
+    if (value2 !== void 0)
+      return value2;
+    var _a2 = tokens[i], nextType = _a2.type, index = _a2.index;
+    throw new TypeError("Unexpected ".concat(nextType, " at ").concat(index, ", expected ").concat(type));
+  }, "mustConsume");
+  var consumeText = /* @__PURE__ */ __name(function() {
+    var result2 = "";
+    var value2;
+    while (value2 = tryConsume("CHAR") || tryConsume("ESCAPED_CHAR")) {
+      result2 += value2;
+    }
+    return result2;
+  }, "consumeText");
+  var isSafe = /* @__PURE__ */ __name(function(value2) {
+    for (var _i = 0, delimiter_1 = delimiter; _i < delimiter_1.length; _i++) {
+      var char2 = delimiter_1[_i];
+      if (value2.indexOf(char2) > -1)
+        return true;
+    }
+    return false;
+  }, "isSafe");
+  var safePattern = /* @__PURE__ */ __name(function(prefix2) {
+    var prev = result[result.length - 1];
+    var prevText = prefix2 || (prev && typeof prev === "string" ? prev : "");
+    if (prev && !prevText) {
+      throw new TypeError('Must have text between two parameters, missing text after "'.concat(prev.name, '"'));
+    }
+    if (!prevText || isSafe(prevText))
+      return "[^".concat(escapeString(delimiter), "]+?");
+    return "(?:(?!".concat(escapeString(prevText), ")[^").concat(escapeString(delimiter), "])+?");
+  }, "safePattern");
+  while (i < tokens.length) {
+    var char = tryConsume("CHAR");
+    var name = tryConsume("NAME");
+    var pattern = tryConsume("PATTERN");
+    if (name || pattern) {
+      var prefix = char || "";
+      if (prefixes.indexOf(prefix) === -1) {
+        path += prefix;
+        prefix = "";
+      }
+      if (path) {
+        result.push(path);
+        path = "";
+      }
+      result.push({
+        name: name || key++,
+        prefix,
+        suffix: "",
+        pattern: pattern || safePattern(prefix),
+        modifier: tryConsume("MODIFIER") || ""
+      });
+      continue;
+    }
+    var value = char || tryConsume("ESCAPED_CHAR");
+    if (value) {
+      path += value;
+      continue;
+    }
+    if (path) {
+      result.push(path);
+      path = "";
+    }
+    var open = tryConsume("OPEN");
+    if (open) {
+      var prefix = consumeText();
+      var name_1 = tryConsume("NAME") || "";
+      var pattern_1 = tryConsume("PATTERN") || "";
+      var suffix = consumeText();
+      mustConsume("CLOSE");
+      result.push({
+        name: name_1 || (pattern_1 ? key++ : ""),
+        pattern: name_1 && !pattern_1 ? safePattern(prefix) : pattern_1,
+        prefix,
+        suffix,
+        modifier: tryConsume("MODIFIER") || ""
+      });
+      continue;
+    }
+    mustConsume("END");
+  }
+  return result;
+}
+__name(parse, "parse");
+function match(str, options) {
+  var keys = [];
+  var re = pathToRegexp(str, keys, options);
+  return regexpToFunction(re, keys, options);
+}
+__name(match, "match");
+function regexpToFunction(re, keys, options) {
+  if (options === void 0) {
+    options = {};
+  }
+  var _a = options.decode, decode = _a === void 0 ? function(x) {
+    return x;
+  } : _a;
+  return function(pathname) {
+    var m = re.exec(pathname);
+    if (!m)
+      return false;
+    var path = m[0], index = m.index;
+    var params = /* @__PURE__ */ Object.create(null);
+    var _loop_1 = /* @__PURE__ */ __name(function(i2) {
+      if (m[i2] === void 0)
+        return "continue";
+      var key = keys[i2 - 1];
+      if (key.modifier === "*" || key.modifier === "+") {
+        params[key.name] = m[i2].split(key.prefix + key.suffix).map(function(value) {
+          return decode(value, key);
+        });
+      } else {
+        params[key.name] = decode(m[i2], key);
+      }
+    }, "_loop_1");
+    for (var i = 1; i < m.length; i++) {
+      _loop_1(i);
+    }
+    return { path, index, params };
+  };
+}
+__name(regexpToFunction, "regexpToFunction");
+function escapeString(str) {
+  return str.replace(/([.+*?=^!:${}()[\]|/\\])/g, "\\$1");
+}
+__name(escapeString, "escapeString");
+function flags(options) {
+  return options && options.sensitive ? "" : "i";
+}
+__name(flags, "flags");
+function regexpToRegexp(path, keys) {
+  if (!keys)
+    return path;
+  var groupsRegex = /\((?:\?<(.*?)>)?(?!\?)/g;
+  var index = 0;
+  var execResult = groupsRegex.exec(path.source);
+  while (execResult) {
+    keys.push({
+      // Use parenthesized substring match if available, index otherwise
+      name: execResult[1] || index++,
+      prefix: "",
+      suffix: "",
+      modifier: "",
+      pattern: ""
+    });
+    execResult = groupsRegex.exec(path.source);
+  }
+  return path;
+}
+__name(regexpToRegexp, "regexpToRegexp");
+function arrayToRegexp(paths, keys, options) {
+  var parts = paths.map(function(path) {
+    return pathToRegexp(path, keys, options).source;
+  });
+  return new RegExp("(?:".concat(parts.join("|"), ")"), flags(options));
+}
+__name(arrayToRegexp, "arrayToRegexp");
+function stringToRegexp(path, keys, options) {
+  return tokensToRegexp(parse(path, options), keys, options);
+}
+__name(stringToRegexp, "stringToRegexp");
+function tokensToRegexp(tokens, keys, options) {
+  if (options === void 0) {
+    options = {};
+  }
+  var _a = options.strict, strict = _a === void 0 ? false : _a, _b = options.start, start = _b === void 0 ? true : _b, _c = options.end, end = _c === void 0 ? true : _c, _d = options.encode, encode = _d === void 0 ? function(x) {
+    return x;
+  } : _d, _e = options.delimiter, delimiter = _e === void 0 ? "/#?" : _e, _f = options.endsWith, endsWith = _f === void 0 ? "" : _f;
+  var endsWithRe = "[".concat(escapeString(endsWith), "]|$");
+  var delimiterRe = "[".concat(escapeString(delimiter), "]");
+  var route = start ? "^" : "";
+  for (var _i = 0, tokens_1 = tokens; _i < tokens_1.length; _i++) {
+    var token = tokens_1[_i];
+    if (typeof token === "string") {
+      route += escapeString(encode(token));
+    } else {
+      var prefix = escapeString(encode(token.prefix));
+      var suffix = escapeString(encode(token.suffix));
+      if (token.pattern) {
+        if (keys)
+          keys.push(token);
+        if (prefix || suffix) {
+          if (token.modifier === "+" || token.modifier === "*") {
+            var mod = token.modifier === "*" ? "?" : "";
+            route += "(?:".concat(prefix, "((?:").concat(token.pattern, ")(?:").concat(suffix).concat(prefix, "(?:").concat(token.pattern, "))*)").concat(suffix, ")").concat(mod);
+          } else {
+            route += "(?:".concat(prefix, "(").concat(token.pattern, ")").concat(suffix, ")").concat(token.modifier);
+          }
+        } else {
+          if (token.modifier === "+" || token.modifier === "*") {
+            throw new TypeError('Can not repeat "'.concat(token.name, '" without a prefix and suffix'));
+          }
+          route += "(".concat(token.pattern, ")").concat(token.modifier);
+        }
+      } else {
+        route += "(?:".concat(prefix).concat(suffix, ")").concat(token.modifier);
+      }
+    }
+  }
+  if (end) {
+    if (!strict)
+      route += "".concat(delimiterRe, "?");
+    route += !options.endsWith ? "$" : "(?=".concat(endsWithRe, ")");
+  } else {
+    var endToken = tokens[tokens.length - 1];
+    var isEndDelimited = typeof endToken === "string" ? delimiterRe.indexOf(endToken[endToken.length - 1]) > -1 : endToken === void 0;
+    if (!strict) {
+      route += "(?:".concat(delimiterRe, "(?=").concat(endsWithRe, "))?");
+    }
+    if (!isEndDelimited) {
+      route += "(?=".concat(delimiterRe, "|").concat(endsWithRe, ")");
+    }
+  }
+  return new RegExp(route, flags(options));
+}
+__name(tokensToRegexp, "tokensToRegexp");
+function pathToRegexp(path, keys, options) {
+  if (path instanceof RegExp)
+    return regexpToRegexp(path, keys);
+  if (Array.isArray(path))
+    return arrayToRegexp(path, keys, options);
+  return stringToRegexp(path, keys, options);
+}
+__name(pathToRegexp, "pathToRegexp");
+
+// ../../AppData/Local/nvm/v20.20.0/node_modules/wrangler/templates/pages-template-worker.ts
+var escapeRegex = /[.+?^${}()|[\]\\]/g;
+function* executeRequest(request) {
+  const requestPath = new URL(request.url).pathname;
+  for (const route of [...routes].reverse()) {
+    if (route.method && route.method !== request.method) {
+      continue;
+    }
+    const routeMatcher = match(route.routePath.replace(escapeRegex, "\\$&"), {
+      end: false
+    });
+    const mountMatcher = match(route.mountPath.replace(escapeRegex, "\\$&"), {
+      end: false
+    });
+    const matchResult = routeMatcher(requestPath);
+    const mountMatchResult = mountMatcher(requestPath);
+    if (matchResult && mountMatchResult) {
+      for (const handler of route.middlewares.flat()) {
+        yield {
+          handler,
+          params: matchResult.params,
+          path: mountMatchResult.path
+        };
+      }
+    }
+  }
+  for (const route of routes) {
+    if (route.method && route.method !== request.method) {
+      continue;
+    }
+    const routeMatcher = match(route.routePath.replace(escapeRegex, "\\$&"), {
+      end: true
+    });
+    const mountMatcher = match(route.mountPath.replace(escapeRegex, "\\$&"), {
+      end: false
+    });
+    const matchResult = routeMatcher(requestPath);
+    const mountMatchResult = mountMatcher(requestPath);
+    if (matchResult && mountMatchResult && route.modules.length) {
+      for (const handler of route.modules.flat()) {
+        yield {
+          handler,
+          params: matchResult.params,
+          path: matchResult.path
+        };
+      }
+      break;
+    }
+  }
+}
+__name(executeRequest, "executeRequest");
+var pages_template_worker_default = {
+  async fetch(originalRequest, env, workerContext) {
+    let request = originalRequest;
+    const handlerIterator = executeRequest(request);
+    let data = {};
+    let isFailOpen = false;
+    const next = /* @__PURE__ */ __name(async (input, init) => {
+      if (input !== void 0) {
+        let url = input;
+        if (typeof input === "string") {
+          url = new URL(input, request.url).toString();
+        }
+        request = new Request(url, init);
+      }
+      const result = handlerIterator.next();
+      if (result.done === false) {
+        const { handler, params, path } = result.value;
+        const context = {
+          request: new Request(request.clone()),
+          functionPath: path,
+          next,
+          params,
+          get data() {
+            return data;
+          },
+          set data(value) {
+            if (typeof value !== "object" || value === null) {
+              throw new Error("context.data must be an object");
+            }
+            data = value;
+          },
+          env,
+          waitUntil: workerContext.waitUntil.bind(workerContext),
+          passThroughOnException: /* @__PURE__ */ __name(() => {
+            isFailOpen = true;
+          }, "passThroughOnException")
+        };
+        const response = await handler(context);
+        if (!(response instanceof Response)) {
+          throw new Error("Your Pages function should return a Response");
+        }
+        return cloneResponse(response);
+      } else if ("ASSETS") {
+        const response = await env["ASSETS"].fetch(request);
+        return cloneResponse(response);
+      } else {
+        const response = await fetch(request);
+        return cloneResponse(response);
+      }
+    }, "next");
+    try {
+      return await next();
+    } catch (error) {
+      if (isFailOpen) {
+        const response = await env["ASSETS"].fetch(request);
+        return cloneResponse(response);
+      }
+      throw error;
+    }
+  }
+};
+var cloneResponse = /* @__PURE__ */ __name((response) => (
+  // https://fetch.spec.whatwg.org/#null-body-status
+  new Response(
+    [101, 204, 205, 304].includes(response.status) ? null : response.body,
+    response
+  )
+), "cloneResponse");
+export {
+  pages_template_worker_default as default
+};
+
+------formdata-undici-049117883967--

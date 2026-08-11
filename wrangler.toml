@@ -1,0 +1,184 @@
+name = "aeterna-capsule"
+
+compatibility_date = "2026-03-13"
+
+compatibility_flags = ["nodejs_compat"]
+
+pages_build_output_dir = "dist"
+
+[[kv_namespaces]]
+binding = "CAPSULE_MANIFESTS"
+id = "1603d7be3d224d35b04c73656e01bc66"
+preview_id = "f331c07b1aa345d78e71b82f26dc9b95"
+
+[[kv_namespaces]]
+binding = "VERIFIED_PAYMENTS"
+id = "21ea91626d6b4884ad8d59e9d5a935e7"
+preview_id = "d762bfed6f10460aa23e9c700d47aa22"
+
+[[kv_namespaces]]
+binding = "UPLOAD_TOKENS"
+id = "86798e1c12364e97a1c8ea01bc53a501"
+preview_id = "a6c85d62ac0b4de398deee743a470e43"
+
+[[kv_namespaces]]
+binding = "AUTHORITY_TOKENS"
+id = "09e18e45e6744b99aaacae6070550402"
+
+[[kv_namespaces]]
+binding = "HEARTBEAT_CONFIRMATIONS"
+id = "8782cb242ed54581a5417895109ebb42"
+
+[[kv_namespaces]]
+binding = "BUSINESS_QUOTES"
+id = "6fd58c3c3f2246c0829d769b53988c52"
+preview_id = "78d666bb284648d991712c20a11f6ba2"
+
+[[kv_namespaces]]
+binding = "CHUNK_POINTER_REGISTRY"
+id = "29a72382d6274a30abba7a2a28f3f34d"
+
+# ─────────────────────────────────────────────
+# Trusted Time Authority
+#
+# Endpoint: /api/time
+#
+# Used by:
+#  - sealCapsuleCore.ts
+#  - openCapsule.ts
+#  - CapsuleController.tsx
+#  - CapsuleHold.tsx
+#  - emergency.html
+#  - /api/capsule/seal
+#
+# Provides canonical monotonic timestamp source
+# ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# Production environment configuration
+# ─────────────────────────────────────────────
+
+[env.production.vars]
+
+VITE_WALLETCONNECT_PROJECT_ID = "02faf7986096e65a6e68c57898e961f5"
+PADDLE_ENV = "sandbox"
+DEBUG = "true"
+
+# ─────────────────────────────────────────────
+# Manifest Storage Contract
+# ─────────────────────────────────────────────
+
+[[env.production.kv_namespaces]]
+binding = "CAPSULE_MANIFESTS"
+id = "1603d7be3d224d35b04c73656e01bc66"
+preview_id = "f331c07b1aa345d78e71b82f26dc9b95"
+
+# ─────────────────────────────────────────────
+# Payment Verification Cache
+# ─────────────────────────────────────────────
+
+[[env.production.kv_namespaces]]
+binding = "VERIFIED_PAYMENTS"
+id = "21ea91626d6b4884ad8d59e9d5a935e7"
+preview_id = "d762bfed6f10460aa23e9c700d47aa22"
+
+# ─────────────────────────────────────────────
+# Upload Token Gating Layer
+# ─────────────────────────────────────────────
+
+[[env.production.kv_namespaces]]
+binding = "UPLOAD_TOKENS"
+id = "86798e1c12364e97a1c8ea01bc53a501"
+preview_id = "a6c85d62ac0b4de398deee743a470e43"
+
+# ─────────────────────────────────────────────
+# Creator Authority Capability Storage
+# ─────────────────────────────────────────────
+
+[[env.production.kv_namespaces]]
+binding = "AUTHORITY_TOKENS"
+id = "09e18e45e6744b99aaacae6070550402"
+
+# ─────────────────────────────────────────────
+# Heartbeat Rolling Release Model (v1.3)
+# ─────────────────────────────────────────────
+
+[[env.production.kv_namespaces]]
+binding = "HEARTBEAT_CONFIRMATIONS"
+id = "8782cb242ed54581a5417895109ebb42"
+
+# ─────────────────────────────────────────────
+# Canonical Business Authority
+# ─────────────────────────────────────────────
+
+[[env.production.kv_namespaces]]
+binding = "BUSINESS_QUOTES"
+id = "6fd58c3c3f2246c0829d769b53988c52"
+preview_id = "78d666bb284648d991712c20a11f6ba2"
+
+[[env.production.kv_namespaces]]
+binding = "CHUNK_POINTER_REGISTRY"
+id = "29a72382d6274a30abba7a2a28f3f34d"
+
+# ─────────────────────────────────────────────
+# Executor Hot (Publication Authority)
+#
+# Endpoint: /api/upload
+# Module:   functions/lib/executorHot.ts
+#
+# Executor Hot performs publication to Irys on behalf
+# of the protocol. The client never receives or supplies
+# any publication credentials.
+#
+# All sensitive values MUST be configured using
+# Wrangler Secrets and MUST NEVER be committed
+# to Git or placed inside wrangler.toml.
+#
+# Required production secrets:
+#
+# EXECUTOR_PRIVATE_KEY
+#   EVM private key of AETERNA_EXECUTOR_HOT.
+#   Signs and submits publication transactions.
+#
+# ALCHEMY_BASE_URL
+#   Base Mainnet RPC endpoint used by the project.
+#   Available for Executor infrastructure and
+#   payment verification.
+#
+# PADDLE_API_KEY
+#   Paddle API authentication key.
+#
+# PADDLE_WEBHOOK_SECRET
+#   Paddle webhook signing secret.
+#
+# PAYMENT_RECEIVER_ADDRESS
+#   Treasury Safe address receiving Web3 payments.
+#
+# Current implementation notes:
+#
+# Executor Hot currently uses the canonical
+# Irys Mainnet endpoint compiled into
+# executorHot.ts:
+#
+#   https://node1.irys.xyz
+#
+# Publication currently uses:
+#
+#   token = "base-eth"
+#
+# These values are implementation constants,
+# not deployment secrets.
+#
+# NEVER place secret values in this file.
+#
+# Configure every secret with:
+#
+#   wrangler secret put <SECRET_NAME>
+#
+# Example:
+#
+#   wrangler secret put EXECUTOR_PRIVATE_KEY
+#
+# Secrets are stored securely by Cloudflare and
+# are never committed to the repository.
+# ─────────────────────────────────────────────

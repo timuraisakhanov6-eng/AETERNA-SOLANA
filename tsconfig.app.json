@@ -1,0 +1,54 @@
+{
+  "extends": "./tsconfig.json",
+
+  "compilerOptions": {
+
+    "target": "ES2021",
+
+    "useDefineForClassFields": true,
+
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+
+    "module": "ESNext",
+
+    "moduleResolution": "bundler",
+
+    "allowImportingTsExtensions": true,
+
+    "isolatedModules": true,
+
+    "moduleDetection": "force",
+
+    "noEmit": true,
+
+    "jsx": "react-jsx",
+
+    "strict": true,
+
+    "noImplicitAny": true,
+
+    "strictNullChecks": true,
+
+    "exactOptionalPropertyTypes": true,
+
+    "noUncheckedIndexedAccess": true,
+
+    "noUnusedLocals": true,
+
+    "noUnusedParameters": true,
+
+    "noFallthroughCasesInSwitch": true,
+
+    "baseUrl": ".",
+
+    "types": ["vite/client", "node"],
+
+    "paths": {
+      "@/*": ["src/*"]
+    }
+
+  },
+
+  "include": ["src"]
+
+}

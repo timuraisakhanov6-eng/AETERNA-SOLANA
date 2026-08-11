@@ -1,0 +1,53 @@
+/* ===== AETERNA ROOT RESET (REQUIRED) ===== */
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+
+/*
+Mobile viewport-safe baseline
+
+100dvh fixes:
+- iOS Safari collapsing toolbar
+- Android dynamic viewport
+- PWA fullscreen mode
+*/
+
+body {
+  min-height: 100dvh;
+  background: hsl(var(--background));
+
+  /*
+  Prevent horizontal scroll drift
+  across capsule runtime surfaces
+  */
+
+  overflow-x: hidden;
+
+  /*
+  Improve font rendering consistency
+  across browsers
+  */
+
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+
+/*
+Ensure React root behaves
+as full-height flex surface
+for capsule runtime layouts
+*/
+
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}

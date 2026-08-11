@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8" />
+
+<!-- FAVICON -->
+<link rel="icon" type="image/png" href="/favicon.png" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+<!-- ===== BASIC META ===== -->
+
+<title>AETERNA — Digital Time Capsule</title>
+
+<meta
+name="description"
+content="A non-custodial digital time capsule. Seal a moment. Open it in the future."
+/>
+
+<meta name="author" content="AETERNA" />
+
+<link rel="canonical" href="https://aeternacapsule.com" />
+
+<meta name="theme-color" content="#0e0f12" />
+
+<link rel="preconnect" href="https://cdn.paddle.com" crossorigin />
+
+<!-- ===== OPEN GRAPH ===== -->
+
+<meta property="og:site_name" content="AETERNA" />
+
+<meta property="og:title" content="AETERNA Capsule" />
+
+<meta
+property="og:description"
+content="A non-custodial digital time capsule. Time decides. Not people."
+/>
+
+<meta property="og:type" content="website" />
+
+<meta
+property="og:image"
+content="https://aeternacapsule.com/og/og-cover.png"
+/>
+
+<meta property="og:image:width" content="1200" />
+
+<meta property="og:image:height" content="630" />
+
+<!-- ===== TWITTER / X ===== -->
+
+<meta name="twitter:card" content="summary_large_image" />
+
+<meta name="twitter:title" content="AETERNA Capsule" />
+
+<meta
+name="twitter:description"
+content="A non-custodial digital time capsule."
+/>
+
+<meta
+name="twitter:image"
+content="https://aeternacapsule.com/og/og-cover.png"
+/>
+
+<!-- ===== EMERGENCY WATCHDOG (Spec §25) ===== -->
+
+<script>
+(function () {
+
+  if (!window.location.pathname.startsWith("/capsule/"))
+    return;
+
+  var TIMEOUT_MS = 8000;
+
+  var timer = setTimeout(function () {
+
+    var hash =
+      window.location.hash;
+
+    /**
+     * Fragment presence guard.
+     *
+     * Watchdog transports capability fragments
+     * transparently but MUST NOT redirect
+     * empty or missing fragments.
+     */
+
+    if (
+      typeof hash !== "string" ||
+      hash.length < 2
+    ) {
+      return;
+    }
+
+    var capsuleId =
+      window.location.pathname
+        .split("/capsule/")[1] || "";
+
+    /* strict capsuleId validation */
+
+    if (!/^[a-f0-9]{64}$/.test(capsuleId))
+      return;
+
+    window.location.replace(
+      "/emergency.html?capsuleId=" +
+      encodeURIComponent(capsuleId) +
+      hash
+    );
+
+  }, TIMEOUT_MS);
+
+  window.addEventListener(
+    "aeterna:ready",
+    function () {
+      clearTimeout(timer);
+    }
+  );
+
+})();
+</script>
+
+</head>
+
+<body>
+
+<div id="root"></div>
+
+<!-- ===== PADDLE SDK ===== -->
+
+<script
+src="https://cdn.paddle.com/paddle/v2/paddle.js"
+defer
+></script>
+
+<script>
+
+if (window.Paddle) {
+
+  window.Paddle.Initialize({
+
+    token:
+      window.__PADDLE_TOKEN__ ?? ""
+
+  });
+
+}
+
+</script>
+
+<!-- React entry -->
+
+<script
+type="module"
+src="/src/main.tsx"
+></script>
+
+</body>
+</html>

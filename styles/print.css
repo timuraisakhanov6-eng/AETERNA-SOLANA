@@ -1,0 +1,78 @@
+/* =========================
+   BASE CONTRACT
+========================= */
+
+.screen-only {
+  display: block;
+}
+
+.print-only {
+  display: none;
+}
+
+
+/* =========================
+   PRINT MODE
+========================= */
+
+@media print {
+
+  /**
+   * Prevent printer edge clipping
+   * Ensures QR + capsule link remain readable
+   * across A4 / Letter printers
+   */
+
+  @page {
+    margin: 20mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    height: auto !important;
+  }
+
+  /**
+   * Prevent page fragmentation of critical elements
+   * Improves long-term archive reliability
+   */
+
+  * {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .screen-only {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+    padding: 40px;
+    font-family: serif;
+    color: #000;
+    background: #fff;
+  }
+
+  /**
+   * QR must never split across pages
+   */
+
+  .print-qr {
+    margin: 24px 0;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /**
+   * Capsule access link archival safety
+   */
+
+  .print-link {
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    margin-top: 16px;
+  }
+
+}

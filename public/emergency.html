@@ -1,0 +1,1418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AETERNA</title>
+<style>
+
+/* ── RESET ── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* ── TOKENS ── */
+:root{
+  --bg:       #0d0f14;
+  --surface:  #12141a;
+  --border:   rgba(255,200,140,0.10);
+  --fg:       #e8e4dc;
+  --muted:    rgba(232,228,220,0.45);
+  --faint:    rgba(232,228,220,0.25);
+  --amber:    #f59e0b;
+  --amber-dim:rgba(251,191,36,0.18);
+  --emerald:  #059669;
+  --cyan:     #0891b2;
+  --red-dim:  rgba(248,113,113,0.15);
+  --red:      #f87171;
+  --item-bg:  #0d0f14;
+}
+
+/* ── BASE ── */
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  background:var(--bg);
+  color:var(--fg);
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:space-between;
+  padding:64px 24px;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ── LAYOUT WRAPPER ── */
+#app{
+  width:100%;
+  max-width:420px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:28px;
+  flex:1;
+  justify-content:center;
+}
+
+/* ── STATES ── */
+.state{ display:none; width:100%; }
+.state.active{ display:flex; flex-direction:column; align-items:center; }
+
+/* ═══════════════════════════════════════
+   STATE 1 — SEALED
+═══════════════════════════════════════ */
+
+/* Capsule card */
+#state-sealed .capsule-card{
+  width:100%;
+  border-radius:72px;
+  border:1px solid rgba(255,200,140,0.15);
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(255,200,140,0.05),
+      transparent 60%,
+      rgba(255,200,140,0.03)
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 0 0 1px rgba(255,200,140,0.08),
+    0 0 60px rgba(255,200,140,0.18),
+    0 0 40px -15px rgba(255,200,140,0.15);
+  padding:48px 32px 56px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  text-align:center;
+  animation:card-enter 1.6s cubic-bezier(0.16,1,0.3,1) both;
+}
+@media(min-width:480px){
+  #state-sealed .capsule-card{
+    border-radius:80px;
+    padding:56px 40px 64px;
+  }
+}
+@media(min-width:768px){
+  #state-sealed .capsule-card{
+    border-radius:100px;
+    padding:64px 48px 80px;
+  }
+}
+
+/* Pill glyph */
+.pill-wrap{
+  position:relative;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  margin-bottom:22px;
+}
+.pill-glow{
+  position:absolute;
+  width:34px; height:52px;
+  border-radius:999px;
+  background:rgba(251,191,36,0.5);
+  filter:blur(10px);
+  animation:glow-pulse 1.4s ease-out infinite;
+}
+.pill-shape{
+  position:relative;
+  z-index:1;
+  width:30px; height:52px;
+  border-radius:999px;
+  border:1px solid rgba(251,191,36,0.3);
+  background:linear-gradient(to bottom,rgba(251,191,36,0.05),transparent);
+  overflow:hidden;
+  animation:pill-pulse 1.4s ease-out infinite;
+}
+.pill-shape::before{
+  content:'';
+  position:absolute;
+  left:6px; right:6px; top:10px;
+  height:1px;
+  background:rgba(251,191,36,0.2);
+}
+.pill-shape::after{
+  content:'';
+  position:absolute;
+  left:0; right:0; top:50%;
+  height:1px;
+  background:rgba(251,191,36,0.12);
+}
+
+@keyframes glow-pulse{
+  0%  { opacity:0; transform:scale(0.8); }
+  8%  { opacity:0.85; transform:scale(1.1); }
+  20% { opacity:0.12; transform:scale(1.3); }
+  28% { opacity:0.5; transform:scale(1.1); }
+  40% { opacity:0; transform:scale(1.6); }
+  100%{ opacity:0; transform:scale(0.8); }
+}
+@keyframes pill-pulse{
+  0%  { transform:scale(1); border-color:rgba(251,191,36,0.3); }
+  8%  { transform:scale(1.18); border-color:rgba(251,191,36,0.75); }
+  16% { transform:scale(0.97); border-color:rgba(251,191,36,0.4); }
+  26% { transform:scale(1.09); border-color:rgba(251,191,36,0.6); }
+  38% { transform:scale(1); border-color:rgba(251,191,36,0.3); }
+  100%{ transform:scale(1); border-color:rgba(251,191,36,0.3); }
+}
+
+/* Sealed badge */
+.sealed-badge{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  color:#34d399;
+  margin-bottom:22px;
+  animation:badge-breathe 4s ease-in-out infinite;
+}
+.sealed-badge svg{ flex-shrink:0; }
+.sealed-badge span{
+  font-size:11px;
+  font-weight:500;
+  letter-spacing:0.2em;
+  text-transform:uppercase;
+}
+@keyframes badge-breathe{
+  0%,100%{ opacity:0.6; }
+  50%    { opacity:0.9; }
+}
+
+/* Headings */
+.capsule-title{
+  font-size:22px;
+  font-weight:500;
+  letter-spacing:0.18em;
+  text-transform:uppercase;
+  color:var(--fg);
+  margin-bottom:10px;
+  line-height:1.2;
+}
+@media(min-width:480px){ .capsule-title{ font-size:24px; } }
+@media(min-width:640px){ .capsule-title{ font-size:27px; } }
+@media(min-width:1024px){ .capsule-title{ font-size:30px; } }
+.capsule-subtitle{
+  font-size:13px;
+  font-style:italic;
+  color:var(--muted);
+  margin-bottom:22px;
+  line-height:1.6;
+}
+
+/* Date block */
+.date-block{ margin-bottom:28px; }
+.date-main{
+  font-size:13px;
+  color:rgba(232,228,220,0.8);
+  letter-spacing:0.06em;
+  margin-bottom:4px;
+}
+.date-days{
+  font-size:11px;
+  color:var(--faint);
+  letter-spacing:0.06em;
+  margin-bottom:8px;
+}
+.date-hint{
+  font-size:10px;
+  font-family:monospace;
+  color:rgba(232,228,220,0.25);
+  letter-spacing:0.06em;
+}
+
+/* Confirm Presence button */
+.confirm-btn{
+  width:100%;
+  height:46px;
+  border-radius:999px;
+  border:1px solid rgba(6,182,212,0.65);
+  background:rgba(6,182,212,0.15);
+  color:#0891b2;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:0.15em;
+  text-transform:uppercase;
+  cursor:pointer;
+  box-shadow:0 0 18px rgba(6,182,212,0.22);
+  transition:filter 0.18s, transform 0.12s;
+  margin-bottom:6px;
+  will-change:transform;
+}
+.confirm-btn:hover:not(:disabled){
+  filter:brightness(1.12);
+  transform:scale(1.04);
+}
+.confirm-btn:active:not(:disabled){ transform:scale(0.97); }
+.confirm-btn.success{
+  background:rgba(5,150,105,0.15);
+  border-color:rgba(5,150,105,0.55);
+  color:#059669;
+  box-shadow:0 0 16px rgba(5,150,105,0.25);
+}
+.confirm-btn.cooldown{
+  background:rgba(148,163,184,0.10);
+  border-color:rgba(148,163,184,0.30);
+  color:rgba(148,163,184,0.65);
+  box-shadow:none;
+  cursor:not-allowed;
+}
+
+/* Status line */
+#statusLine{
+  font-size:12px;
+  color:var(--muted);
+  text-align:center;
+  min-height:18px;
+  margin-bottom:2px;
+  transition:color 0.2s;
+}
+#statusLine.error{ color:var(--red); }
+#statusLine.success{ color:#34d399; }
+
+/* Security notice */
+.security-note{
+  font-size:11px;
+  color:var(--faint);
+  line-height:1.6;
+  letter-spacing:0.04em;
+  text-align:center;
+  margin-top:18px;
+  padding:0 8px;
+}
+.security-note strong{ color:rgba(232,228,220,0.55); font-weight:500; }
+
+
+
+/* ═══════════════════════════════════════
+   STATE 2 — OPENING
+═══════════════════════════════════════ */
+
+#state-opening{
+  justify-content:center;
+  min-height:60vh;
+  gap:18px;
+}
+.opening-icon{
+  color:var(--amber);
+  animation:lock-pulse 1.6s ease-in-out infinite;
+}
+@keyframes lock-pulse{
+  0%,100%{ opacity:0.6; transform:scale(0.96); }
+  50%    { opacity:1;   transform:scale(1.04); }
+}
+.opening-label{
+  font-size:11px;
+  letter-spacing:0.2em;
+  text-transform:uppercase;
+  color:var(--muted);
+  font-weight:500;
+}
+
+/* ═══════════════════════════════════════
+   STATE 3 — OPENED
+═══════════════════════════════════════ */
+
+#state-opened{ gap:20px; }
+
+.opened-header{
+  width:100%;
+  text-align:center;
+  padding-bottom:20px;
+  border-bottom:1px solid rgba(255,200,140,0.08);
+}
+.opened-eyebrow{
+  font-size:10px;
+  letter-spacing:0.2em;
+  text-transform:uppercase;
+  color:#34d399;
+  margin-bottom:8px;
+}
+.opened-title{
+  font-size:20px;
+  font-weight:500;
+  letter-spacing:0.14em;
+  text-transform:uppercase;
+  color:var(--fg);
+}
+
+/* Items */
+.item{
+  width:100%;
+  background:rgba(255,255,255,0.02);
+  border:1px solid rgba(255,200,140,0.10);
+  border-radius:20px;
+  padding:24px 24px 22px;
+  animation:fade-up 0.5s cubic-bezier(0.16,1,0.3,1) both;
+}
+.item-eyebrow{
+  font-size:10px;
+  letter-spacing:0.18em;
+  text-transform:uppercase;
+  color:rgba(232,228,220,0.28);
+  margin-bottom:14px;
+}
+.item-text{
+  font-size:15px;
+  line-height:1.7;
+  white-space:pre-wrap;
+  word-break:break-word;
+  color:var(--fg);
+}
+/* Media card */
+.media-card{
+  display:flex;
+  align-items:center;
+  gap:16px;
+}
+.media-icon{
+  flex-shrink:0;
+  width:44px; height:44px;
+  border-radius:12px;
+  background:rgba(251,191,36,0.08);
+  border:1px solid rgba(251,191,36,0.15);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--amber);
+}
+.media-info{ flex:1; min-width:0; }
+.media-filename{
+  font-size:13px;
+  font-weight:500;
+  color:var(--fg);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  margin-bottom:4px;
+}
+.media-meta{
+  font-size:11px;
+  color:rgba(232,228,220,0.35);
+  letter-spacing:0.04em;
+}
+.media-unavail{
+  margin-top:16px;
+  font-size:11px;
+  color:rgba(232,228,220,0.2);
+  font-style:italic;
+  text-align:center;
+  border-top:1px solid rgba(255,200,140,0.06);
+  padding-top:14px;
+}
+/* legacy meta (fallback) */
+.item-meta{ display:flex; flex-direction:column; gap:8px; }
+.meta-row{ display:flex; align-items:baseline; gap:8px; font-size:13px; }
+.meta-key{
+  font-size:10px;
+  letter-spacing:0.12em;
+  text-transform:uppercase;
+  color:rgba(232,228,220,0.3);
+  flex-shrink:0;
+  min-width:62px;
+}
+
+/* ── FOOTER ── */
+footer{
+  width:100%;
+  max-width:420px;
+  text-align:center;
+  padding-top:24px;
+  font-size:11px;
+  color:rgba(232,228,220,0.25);
+  letter-spacing:0.06em;
+  line-height:1.6;
+}
+
+/* ── ENTER ANIMATIONS ── */
+@keyframes card-enter{
+  from{ opacity:0; transform:scale(0.88); filter:blur(18px); }
+  to  { opacity:1; transform:scale(1);    filter:blur(0px);  }
+}
+@keyframes fade-up{
+  from{ opacity:0; transform:translateY(8px); }
+  to  { opacity:1; transform:translateY(0);   }
+}
+
+/* Staggered children of the card */
+#state-sealed .capsule-card > *{
+  animation:fade-up 0.8s cubic-bezier(0.16,1,0.3,1) both;
+}
+#state-sealed .capsule-card > :nth-child(1){ animation-delay:0.15s; }
+#state-sealed .capsule-card > :nth-child(2){ animation-delay:0.20s; }
+#state-sealed .capsule-card > :nth-child(3){ animation-delay:0.30s; }
+#state-sealed .capsule-card > :nth-child(4){ animation-delay:0.40s; }
+#state-sealed .capsule-card > :nth-child(5){ animation-delay:0.50s; }
+#state-sealed .capsule-card > :nth-child(6){ animation-delay:0.55s; }
+#state-sealed .capsule-card > :nth-child(7){ animation-delay:0.60s; }
+#state-sealed .capsule-card > :nth-child(8){ animation-delay:0.80s; }
+
+/* ── REDUCED MOTION ── */
+@media(prefers-reduced-motion:reduce){
+  .pill-glow,.pill-shape,.sealed-badge,.opening-icon{ animation:none; }
+  @keyframes card-enter{ from{ opacity:0; } to{ opacity:1; } }
+  @keyframes fade-up   { from{ opacity:0; } to{ opacity:1; } }
+}
+/* ── X (Twitter) link ── */
+.x-link{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:36px; height:36px;
+  border-radius:50%;
+  border:1px solid rgba(255,200,140,0.12);
+  color:rgba(232,228,220,0.35);
+  text-decoration:none;
+  transition:color 0.18s, border-color 0.18s, transform 0.15s;
+  margin-top:20px;
+}
+.x-link:hover{
+  color:rgba(232,228,220,0.8);
+  border-color:rgba(255,200,140,0.3);
+  transform:scale(1.1);
+}
+
+</style>
+</head>
+
+<body>
+
+<div id="app">
+
+  <!-- ── STATE 1: PREVIEW ── -->
+  <div id="state-sealed" class="state active">
+
+    <div class="capsule-card">
+
+      <!-- Pill glyph -->
+      <div class="pill-wrap">
+        <div class="pill-glow"></div>
+        <div class="pill-shape"></div>
+      </div>
+
+      <!-- SEALED badge -->
+      <div class="sealed-badge" role="status" aria-label="Capsule sealed">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <span>Sealed</span>
+      </div>
+
+      <!-- Title -->
+      <h1 class="capsule-title">AETERNA CAPSULE</h1>
+      <p class="capsule-subtitle" id="capsuleSubtitle">A sealed moment in time</p>
+
+      <!-- Date -->
+      <div class="date-block">
+        <p class="date-main" id="dateMain">—</p>
+        <p class="date-days" id="dateDays"></p>
+        <p class="date-hint">Link contains capsule access fragment</p>
+      </div>
+
+      <!-- CONFIRM PRESENCE — authority mode only, injected by JS -->
+      <div id="confirmWrap" style="display:none;width:100%;max-width:240px;">
+        <button id="confirmBtn" class="confirm-btn">Confirm Presence</button>
+      </div>
+
+      <div id="statusLine" role="status" aria-live="polite"></div>
+
+      <!-- Security notice — swapped by JS for authority mode -->
+      <p class="security-note" id="securityNote">
+        This link contains the secret fragment.
+        Without it the capsule is mathematically unrecoverable.
+        <strong>Store securely. Do not share.</strong>
+      </p>
+
+    </div>
+
+    <!-- X link -->
+    <a href="https://x.com/aeternacapsule" target="_blank" rel="noopener noreferrer"
+       class="x-link" aria-label="AETERNA on X">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.259 5.632L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77z"/>
+      </svg>
+    </a>
+
+  </div><!-- /state-sealed -->
+
+
+  <!-- ── STATE 2: OPENING ── -->
+  <div id="state-opening" class="state">
+    <div class="opening-icon" aria-hidden="true">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+    </div>
+    <p class="opening-label" role="status" aria-live="polite" id="openingLabel">
+      Cryptographic opening in progress…
+    </p>
+  </div><!-- /state-opening -->
+
+
+  <!-- ── STATE 3: OPENED ── -->
+  <div id="state-opened" class="state">
+
+    <div class="opened-header">
+      <p class="opened-eyebrow">Capsule opened</p>
+      <h1 class="opened-title">AETERNA CAPSULE</h1>
+    </div>
+
+    <div id="itemsContainer"></div>
+
+  </div><!-- /state-opened -->
+
+</div><!-- /app -->
+
+<footer>
+  <p>A non-custodial digital time capsule</p>
+</footer>
+
+<script>
+
+/* ================= CONSTANTS ================= */
+
+const PBKDF2_ITERATIONS=600000
+
+// Set to true locally to enable diagnostic output.
+// Must be false in production — no console output in the wild.
+const DEBUG=false
+
+function debugLog(...args){
+  if(DEBUG)console.warn("[AETERNA]",...args)
+}
+
+const MIN_TIME=1577836800000
+const MAX_TIME=4102444800000
+
+const MAX_MANIFEST_SIZE=20000
+// Mirrors canonical MAX_ENCRYPTED_VAULT_SIZE in src/lib/crypto/constants.ts.
+// Previously 20 GB — corrected to 10 MB for Runtime Parity.
+const MAX_DOWNLOAD_SIZE=10*1024*1024
+
+const CAPSULE_ID_REGEX=/^[a-f0-9]{64}$/
+const SHA256_REGEX=/^[0-9a-f]{64}$/
+const HEX32_REGEX=/^[0-9a-f]{32}$/
+const TXID_REGEX=/^[a-zA-Z0-9_-]{43}$/
+
+const ALLOWED_HOSTNAMES=[
+  "aeternacapsule.com",
+  "www.aeternacapsule.com",
+  "aeterna.xyz",
+  "www.aeterna.xyz"
+]
+
+const GATEWAYS=[
+  "https://gateway.irys.xyz/",
+  "https://arweave.net/",
+  "https://permaweb.eu/",
+  "https://arweave.live/"
+]
+
+const encoder=new TextEncoder()
+const decoder=new TextDecoder("utf-8",{fatal:true})
+
+/* ================= FROZEN WHITELISTS (module scope) ================= */
+
+// Mirrors canonical openCapsule.ts — frozen at module scope,
+// allocated once, never recreated per-call.
+const ALLOWED_ENVELOPE_KEYS = Object.freeze(["v","iv","d"])
+const ALLOWED_VAULT_KEYS    = Object.freeze(["version","createdAt","capsule"])
+const ALLOWED_CAPSULE_KEYS  = Object.freeze(["capsuleId","items"])
+const ALLOWED_TEXT_KEYS     = Object.freeze(["type","text","createdAt"])
+const ALLOWED_MEDIA_KEYS    = Object.freeze(["type","mediaType","filename","mimeType","size","chunks","createdAt"])
+const ALLOWED_MEDIA_TYPES   = Object.freeze(["image","video","audio","file"])
+const ALLOWED_MANIFEST_EXT_KEYS = Object.freeze(["vaultSha256","chunkPointers"])
+const ALLOWED_MANIFEST_KEYS = Object.freeze([
+  "version",
+  "capsuleId",
+  "sealedAt",
+  "openAt",
+  "saltBase",
+  "vaultTxId",
+  "encryptedSizeBytes",
+  "description",
+  "heartbeatInterval",
+  "ext"
+])
+
+/* ================= STATE MACHINE ================= */
+
+const stateSealed  = document.getElementById("state-sealed")
+const stateOpening = document.getElementById("state-opening")
+const stateOpened  = document.getElementById("state-opened")
+
+function showState(which){
+  stateSealed.classList.remove("active")
+  stateOpening.classList.remove("active")
+  stateOpened.classList.remove("active")
+  which.classList.add("active")
+}
+
+/* ================= UI REFS ================= */
+
+const statusEl      = document.getElementById("statusLine")
+const openingLabel  = document.getElementById("openingLabel")
+const dateMainEl    = document.getElementById("dateMain")
+const dateDaysEl    = document.getElementById("dateDays")
+const subtitleEl    = document.getElementById("capsuleSubtitle")
+const securityNoteEl= document.getElementById("securityNote")
+const itemsEl       = document.getElementById("itemsContainer")
+const confirmWrapEl = document.getElementById("confirmWrap")
+const confirmBtnEl  = document.getElementById("confirmBtn")
+
+let inProgress=false
+
+function setStatus(text,type){
+  statusEl.textContent=text
+  statusEl.className=type||""
+}
+
+function setOpeningStep(text){
+  openingLabel.textContent=text
+}
+
+/* ================= FORMATTERS ================= */
+
+function formatUTCDate(ts){
+  if(!Number.isFinite(ts))return "—"
+  return new Date(ts).toLocaleDateString("en-US",{
+    year:"numeric",month:"short",day:"2-digit",timeZone:"UTC"
+  })
+}
+
+function daysUntil(ts,now){
+  if(!Number.isFinite(ts)||!Number.isFinite(now))return 0
+  return Math.max(0,Math.ceil((ts-now)/(1000*60*60*24)))
+}
+
+function formatBytes(n){
+  if(n<1024)        return `${n} B`
+  if(n<1024*1024)   return `${(n/1024).toFixed(1)} KB`
+  if(n<1024**3)     return `${(n/1024**2).toFixed(1)} MB`
+  return                   `${(n/1024**3).toFixed(2)} GB`
+}
+
+/* ================= VALIDATORS ================= */
+
+function isValidCapsuleId(id){ return CAPSULE_ID_REGEX.test(id) }
+function isValidSecret(s)    { return /^[0-9a-f]{64}$/.test(s)  }
+function isValidSaltBase(s)  { return HEX32_REGEX.test(s)        }
+function isValidTxId(id)     { return TXID_REGEX.test(id)        }
+
+function validateChunkPointers(value){
+
+    if(
+        typeof value !== "object" ||
+        value === null ||
+        Array.isArray(value) ||
+        Object.getPrototypeOf(value)!==Object.prototype
+    ) throw 0;
+
+    for(const pointer of Object.values(value)){
+        if(!isValidTxId(pointer))
+            throw 0;
+    }
+
+}
+
+/* ================= LINK PARSER ================= */
+
+function parseCapsuleLink(link){
+  try{
+    const url=new URL(link)
+    const isSameOrigin=url.hostname===location.hostname
+    const isAllowed=ALLOWED_HOSTNAMES.includes(url.hostname)
+    if(!isSameOrigin&&!isAllowed)return null
+    if(!url.pathname.startsWith("/capsule/"))return null
+    const match=url.pathname.match(/\/capsule\/([^/]+)/)
+    if(!match)return null
+    const capsuleId=match[1]
+    if(!isValidCapsuleId(capsuleId))return null
+    const fragment=url.hash.startsWith("#")?url.hash.slice(1):url.hash
+    if(!fragment)return null
+    const parts=fragment.split("&")
+    if(parts.length===0||parts.length>2)return null
+    let recipientSecret=null
+    let creatorCapability=null
+    for(const part of parts){
+      if(!part)return null
+      if(isValidSecret(part)){
+        if(recipientSecret)return null
+        recipientSecret=part
+        continue
+      }
+      if(part.startsWith("c=")){
+        const value=part.slice(2)
+        if(!/^[0-9a-f]{64}$/.test(value))return null
+        if(creatorCapability)return null  // duplicate
+        creatorCapability=value
+        continue
+      }
+      return null
+    }
+    // Allow recipient-only, creator-only, or both.
+    // Authority gate is enforced in the execution layer, not here.
+    return{capsuleId,secret:recipientSecret,creatorCapability}
+  }catch{return null}
+}
+
+/* ================= FETCH MANIFEST ================= */
+
+async function fetchManifest(capsuleId){
+  const ac=new AbortController()
+  const t=setTimeout(()=>ac.abort(),8000)
+  let res
+  try{
+    res=await fetch(`/api/capsule/${capsuleId}`,{cache:"no-store",signal:ac.signal})
+  }finally{
+    clearTimeout(t)
+  }
+  if(!res.ok)throw new Error()
+  const text=await res.text()
+  if(
+    text.length>MAX_MANIFEST_SIZE||
+    text.includes("__proto__")||
+    text.includes("constructor")||
+    text.includes("prototype")
+  )throw new Error()
+  let parsed
+  try{ parsed=JSON.parse(text) }catch{ throw new Error() }
+  return parsed
+}
+
+/* ================= MANIFEST VALIDATION ================= */
+
+function validateManifest(m,capsuleId){
+  if(!m)throw 0
+  if(Array.isArray(m))throw 0
+  if(Object.getPrototypeOf(m)!==Object.prototype)throw 0
+  // Top-level key whitelist — mirrors canonical seal.ts / loadManifest.ts.
+  // Rejects any manifest containing unknown keys, even if values are valid.
+  for(const k of Object.keys(m)){
+    if(!ALLOWED_MANIFEST_KEYS.includes(k))throw 0
+  }
+  if(m.version!==1)throw 0
+  if(m.capsuleId!==capsuleId)throw 0
+  if(!isValidSaltBase(m.saltBase))throw 0
+  if(!isValidTxId(m.vaultTxId))throw 0
+  if(!Number.isInteger(m.openAt))throw 0
+  if(!Number.isInteger(m.sealedAt))throw 0
+  if(m.openAt<MIN_TIME||m.openAt>MAX_TIME)throw 0
+  if(m.sealedAt<MIN_TIME||m.sealedAt>MAX_TIME)throw 0
+  if(m.openAt<=m.sealedAt)throw 0
+  if(!Number.isInteger(m.encryptedSizeBytes)||m.encryptedSizeBytes<=0||m.encryptedSizeBytes>MAX_DOWNLOAD_SIZE)throw 0
+  // Heartbeat (v4.3): canonical, always-active — heartbeatInterval
+  // is required on every manifest, not gated by an enable flag.
+  if(!Number.isInteger(m.heartbeatInterval))throw 0
+  if(m.heartbeatInterval<0)throw 0
+  if(!m.ext||typeof m.ext!=="object")throw 0
+  if(Object.getPrototypeOf(m.ext)!==Object.prototype)throw 0
+  for(const k of Object.keys(m.ext)){
+    if(!ALLOWED_MANIFEST_EXT_KEYS.includes(k))throw 0
+  }
+  validateChunkPointers(m.ext.chunkPointers)
+}
+
+/* ================= TRUSTED TIME ================= */
+
+async function getTrustedNow(){
+  const ac=new AbortController()
+  const t=setTimeout(()=>ac.abort(),8000)
+  let res
+  try{
+    res=await fetch("/api/time",{cache:"no-store",signal:ac.signal})
+  }finally{
+    clearTimeout(t)
+  }
+  if(!res.ok)throw new Error()
+  const data=await res.json()
+  if(typeof data.nowUtc!=="number")throw new Error()
+  if(data.nowUtc<MIN_TIME||data.nowUtc>MAX_TIME)throw new Error()
+  return data.nowUtc
+}
+
+/* ================= HEARTBEAT RECORD ================= */
+
+async function fetchHeartbeatRecord(capsuleId){
+  try{
+    const ac=new AbortController()
+    const t=setTimeout(()=>ac.abort(),8000)
+    let res
+    try{
+      res=await fetch(
+        `/api/heartbeat?capsuleId=${encodeURIComponent(capsuleId)}`,
+        {cache:"no-store",signal:ac.signal}
+      )
+    }finally{
+      clearTimeout(t)
+    }
+    if(!res.ok)return null
+    const data=await res.json()
+    if(!data||typeof data!=="object")return null
+    if(Object.getPrototypeOf(data)!==Object.prototype)return null
+    const ts=data.lastConfirmedAt
+    if(typeof ts!=="number"||!Number.isSafeInteger(ts))return null
+    if(ts<MIN_TIME||ts>MAX_TIME)return null
+    return{lastConfirmedAt:ts}
+  }catch{ return null }
+}
+
+/* ================= KEY DERIVATION ================= */
+
+async function deriveKey(secret,saltBase,openAt,capsuleId){
+  const enc=new TextEncoder()
+  function hexToBytes(hex){
+    if(hex.length%2!==0)throw new Error()
+    const b=new Uint8Array(hex.length/2)
+    for(let i=0;i<hex.length;i+=2){
+      const v=parseInt(hex.slice(i,i+2),16)
+      if(Number.isNaN(v))throw new Error()
+      b[i/2]=v
+    }
+    return b
+  }
+  function encodeUint64BE(value){
+    const buf=new ArrayBuffer(8)
+    new DataView(buf).setBigUint64(0,BigInt(value),false)
+    return new Uint8Array(buf)
+  }
+  const DOMAIN_VAULT_SALT="AETERNA_VAULT_SALT_V1"
+  const DOMAIN_VAULT_KEY ="AETERNA_VAULT_KEY_V1"
+  const domain       =enc.encode(DOMAIN_VAULT_SALT)
+  const saltBaseBytes=hexToBytes(saltBase)
+  const openAtBytes  =encodeUint64BE(openAt)
+  const capsuleIdBytes=hexToBytes(capsuleId)
+  const saltMaterial=new Uint8Array(
+    domain.length+1+saltBaseBytes.length+1+openAtBytes.length+1+capsuleIdBytes.length
+  )
+  let offset=0
+  saltMaterial.set(domain,offset);       offset+=domain.length
+  saltMaterial[offset++]=0
+  saltMaterial.set(saltBaseBytes,offset);offset+=saltBaseBytes.length
+  saltMaterial[offset++]=0
+  saltMaterial.set(openAtBytes,offset);  offset+=openAtBytes.length
+  saltMaterial[offset++]=0
+  saltMaterial.set(capsuleIdBytes,offset)
+  try{
+    let salt=null
+    let pbkdfSaltBytes=null
+    try{
+      salt=new Uint8Array(await crypto.subtle.digest("SHA-256",saltMaterial))
+      const keyDomain=enc.encode(DOMAIN_VAULT_KEY)
+      const combined=new Uint8Array(keyDomain.length+salt.byteLength)
+      combined.set(keyDomain,0)
+      combined.set(salt,keyDomain.length)
+      try{
+        pbkdfSaltBytes=new Uint8Array(await crypto.subtle.digest("SHA-256",combined))
+        const secretBytes=hexToBytes(secret)
+        try{
+          const baseKey=await crypto.subtle.importKey(
+            "raw",secretBytes,{name:"PBKDF2"},false,["deriveKey"]
+          )
+          return await crypto.subtle.deriveKey(
+            {name:"PBKDF2",salt:pbkdfSaltBytes,iterations:PBKDF2_ITERATIONS,hash:"SHA-256"},
+            baseKey,
+            {name:"AES-GCM",length:256},
+            false,
+            ["decrypt"]
+          )
+        }finally{
+          try{ secretBytes.fill(0) }catch{}
+        }
+      }finally{
+        try{ combined.fill(0) }catch{}
+      }
+    }finally{
+      try{ salt?.fill(0) }catch{}
+      try{ pbkdfSaltBytes?.fill(0) }catch{}
+    }
+  }finally{
+    try{ saltMaterial.fill(0) }catch{}
+    try{ saltBaseBytes.fill(0) }catch{}
+    try{ capsuleIdBytes.fill(0) }catch{}
+  }
+}
+
+/* ================= DOWNLOAD VAULT ================= */
+
+async function downloadVault(txId){
+  for(const gw of GATEWAYS){
+    try{
+      const ac=new AbortController()
+      const t=setTimeout(()=>ac.abort(),15000)
+      let res
+      try{
+        res=await fetch(`${gw}${txId}`,{signal:ac.signal})
+      }finally{
+        clearTimeout(t)
+      }
+      if(!res.ok)continue
+      const buf=await res.arrayBuffer()
+      if(!buf||buf.byteLength===0||buf.byteLength<32||buf.byteLength>MAX_DOWNLOAD_SIZE)continue
+      return new Uint8Array(buf)
+    }catch(e){
+      debugLog("Gateway failed:",gw,e?.message||e)
+    }
+  }
+  throw new Error()
+}
+
+/* ================= VERIFY VAULT SIZE ================= */
+
+// Mirrors canonical verifyVaultSize() in the main runtime.
+// Two invariants must hold simultaneously:
+//   (a) byteLength matches the manifest's declared encryptedSizeBytes exactly
+//   (b) byteLength does not exceed MAX_DOWNLOAD_SIZE
+// Separating the check into its own function keeps parity with the canonical
+// call-site structure and makes the dual-invariant intent explicit.
+function verifyVaultSize(encrypted,manifest){
+  if(encrypted.byteLength!==manifest.encryptedSizeBytes)
+    throw new Error()
+  if(encrypted.byteLength>MAX_DOWNLOAD_SIZE)
+    throw new Error()
+}
+
+/* ================= CONSTANT-TIME HEX COMPARE ================= */
+
+// Mirrors canonical constantTimeHexEqual() in the main runtime.
+// Prevents timing side-channels when comparing vault SHA-256 hashes.
+function constantTimeHexEqual(a,b){
+  if(a.length!==b.length)return false
+  let diff=0
+  for(let i=0;i<a.length;i++){
+    diff|=a.charCodeAt(i)^b.charCodeAt(i)
+  }
+  return diff===0
+}
+
+/* ================= DECRYPT VAULT ================= */
+
+async function decryptVault(encrypted,key,manifest){
+  const hashBuf=await crypto.subtle.digest("SHA-256",encrypted)
+  const actual=Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,"0")).join("")
+  // пункт 3: validate computed hash before comparing
+  if(!SHA256_REGEX.test(actual))throw new Error()
+  // пункт 1: constant-time comparison — no early exit on mismatch
+  if(!constantTimeHexEqual(actual,manifest.ext.vaultSha256))throw new Error()
+  const envelopeRaw=decoder.decode(encrypted)
+  if(envelopeRaw.includes("__proto__")||envelopeRaw.includes("constructor")||envelopeRaw.includes("prototype"))
+    throw new Error()
+  const envelope=JSON.parse(envelopeRaw)
+  if(!envelope||envelope.v!==2)throw new Error()
+  if(Object.getPrototypeOf(envelope)!==Object.prototype)throw new Error()
+  const envelopeAllowed=ALLOWED_ENVELOPE_KEYS
+  for(const k of Object.keys(envelope)){
+    if(!envelopeAllowed.includes(k))throw new Error()
+  }
+  if(typeof envelope.iv!=="string")throw new Error()
+  if(typeof envelope.d!=="string")throw new Error()
+  let ivRaw,dataRaw
+  try{ ivRaw=atob(envelope.iv); dataRaw=atob(envelope.d) }catch{ throw new Error() }
+  const iv=Uint8Array.from(ivRaw,c=>c.charCodeAt(0))
+  if(iv.byteLength!==12)throw new Error()
+  const ciphertext=Uint8Array.from(dataRaw,c=>c.charCodeAt(0))
+  if(ciphertext.byteLength<16)throw new Error()
+  const plainBuf=await crypto.subtle.decrypt(
+    {name:"AES-GCM",iv,additionalData:new Uint8Array([1]),tagLength:128},
+    key,
+    ciphertext
+  )
+  let plainBytes
+  try{
+    plainBytes=new Uint8Array(plainBuf)
+    const vault=JSON.parse(decoder.decode(plainBytes))
+    if(Object.getPrototypeOf(vault)!==Object.prototype)throw new Error()
+    const allowedVaultKeys=ALLOWED_VAULT_KEYS
+    for(const k of Object.keys(vault)){
+      if(!allowedVaultKeys.includes(k))throw new Error()
+    }
+    if(vault.version!==2)throw new Error()
+    if(!vault.capsule||typeof vault.capsule!=="object"||Array.isArray(vault.capsule))throw new Error()
+    if(Object.getPrototypeOf(vault.capsule)!==Object.prototype)throw new Error()
+    const allowedCapsuleKeys=ALLOWED_CAPSULE_KEYS
+    for(const k of Object.keys(vault.capsule)){
+      if(!allowedCapsuleKeys.includes(k))throw new Error()
+    }
+    if(!Array.isArray(vault.capsule.items))throw new Error()
+    if(typeof vault.capsule.capsuleId!=="string"||!isValidCapsuleId(vault.capsule.capsuleId))throw new Error()
+    if(vault.capsule.items.length>100)throw new Error()
+    for(const item of vault.capsule.items){
+      if(!item||Object.getPrototypeOf(item)!==Object.prototype)throw new Error()
+      if(typeof item.type!=="string")throw new Error()
+      if(item.type==="text"){
+        if(typeof item.text!=="string"||item.text.length>1_000_000)throw new Error()
+        if(typeof item.createdAt!=="string")throw new Error()
+        const ms=Date.parse(item.createdAt)
+        if(!Number.isFinite(ms)||ms<MIN_TIME||ms>MAX_TIME)throw new Error()
+        for(const k of Object.keys(item)){
+          if(!ALLOWED_TEXT_KEYS.includes(k))throw new Error()
+        }
+      }else if(item.type==="media"){
+        if(typeof item.filename!=="string"||item.filename.length===0||item.filename.length>1024)throw new Error()
+        if(!ALLOWED_MEDIA_TYPES.includes(item.mediaType))throw new Error()
+        if(typeof item.mimeType!=="string"||item.mimeType.length===0)throw new Error()
+        if(!Number.isInteger(item.size)||item.size<0)throw new Error()
+        if(typeof item.createdAt!=="string")throw new Error()
+        const ms=Date.parse(item.createdAt)
+        if(!Number.isFinite(ms)||ms<MIN_TIME||ms>MAX_TIME)throw new Error()
+        if(!Array.isArray(item.chunks))throw new Error()
+        for(const k of Object.keys(item)){
+          if(!ALLOWED_MEDIA_KEYS.includes(k))throw new Error()
+        }
+      }else{
+        throw new Error()
+      }
+    }
+    return vault
+  }finally{
+    try{ if(plainBytes)plainBytes.fill(0) }catch{}
+    try{ iv.fill(0) }catch{}
+    try{ ciphertext.fill(0) }catch{}
+    try{ encrypted.fill(0) }catch{}
+  }
+}
+
+/* ================= HEARTBEAT / EFFECTIVE OPEN TIME ================= */
+// Canonical Heartbeat Renewal Rule (Complete System Logic, v4.3):
+// Heartbeat is always active — no heartbeatEnabled gate.
+// heartbeatInterval is the originally selected opening interval,
+// fixed at sealing. Renewal amount is NOT the raw interval:
+//  - <= 30 days -> extend by the original interval itself
+//  -  > 30 days -> extend by exactly 30 days
+// This MUST stay identical to src/shared/heartbeat/resolveEffectiveOpenAt.ts
+// — Emergency Runtime uses the same canonical logic, never a parallel
+// or simplified implementation.
+const THIRTY_DAYS_MS=30*24*60*60*1000
+
+function resolveHeartbeatRenewalMs(heartbeatInterval){
+  return heartbeatInterval<=THIRTY_DAYS_MS?heartbeatInterval:THIRTY_DAYS_MS
+}
+
+function resolveEffectiveOpenAt({manifestOpenAt,heartbeatInterval,lastConfirmedAt}){
+  if(!heartbeatInterval||heartbeatInterval<=0||
+     lastConfirmedAt===null||lastConfirmedAt===undefined){
+    return manifestOpenAt
+  }
+  const renewalMs=resolveHeartbeatRenewalMs(heartbeatInterval)
+  const heartbeatDeadline=lastConfirmedAt+renewalMs
+  return Math.max(manifestOpenAt,heartbeatDeadline)
+}
+
+/* ================= ESCAPE ================= */
+
+function escapeHtml(str){
+  return String(str)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+}
+
+/* ================= MEDIA ICON SVGs ================= */
+
+function mediaIconSvg(mediaType){
+  const common='width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
+  if(mediaType==="image")
+    return `<svg ${common}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`
+  if(mediaType==="video")
+    return `<svg ${common}><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>`
+  if(mediaType==="audio")
+    return `<svg ${common}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`
+  // file fallback
+  return `<svg ${common}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`
+}
+
+/* ================= RENDER HELPERS ================= */
+
+function renderTextItem(item,index){
+  const div=document.createElement("div")
+  div.className="item"
+  div.style.animationDelay=`${index*0.07}s`
+  div.innerHTML=
+    `<p class="item-eyebrow">Message</p>
+     <div class="item-text">${escapeHtml(item.text||"")}</div>`
+  return div
+}
+
+function renderMediaItem(item,index){
+  const div=document.createElement("div")
+  div.className="item"
+  div.style.animationDelay=`${index*0.07}s`
+  const filename =escapeHtml(item.filename ||"file")
+  const mediaType=item.mediaType||"file"
+  const mimeType =escapeHtml(item.mimeType ||"")
+  const size=typeof item.size==="number"?formatBytes(item.size):""
+  const meta=[mimeType,size].filter(Boolean).join(" · ")
+  div.innerHTML=
+    `<p class="item-eyebrow">${escapeHtml(mediaType.charAt(0).toUpperCase()+mediaType.slice(1))}</p>
+     <div class="media-card">
+       <div class="media-icon">${mediaIconSvg(mediaType)}</div>
+       <div class="media-info">
+         <div class="media-filename">${filename}</div>
+         <div class="media-meta">${escapeHtml(meta)}</div>
+       </div>
+     </div>
+     <div class="media-unavail">Preview unavailable — media recovery coming in next layer</div>`
+  return div
+}
+
+/* ================= RENDER VAULT ================= */
+
+function renderVault(vault){
+  itemsEl.innerHTML=""
+  const items=vault?.capsule?.items??[]
+  items.forEach((item,i)=>{
+    let el
+    if(item.type==="text")        el=renderTextItem(item,i)
+    else if(item.type==="media")  el=renderMediaItem(item,i)
+    else return
+    itemsEl.appendChild(el)
+  })
+}
+
+/* ================= DATE DISPLAY (manifest preview) ================= */
+
+function updateDateDisplay(openAt,nowUtc){
+  dateMainEl.textContent="Opens on "+formatUTCDate(openAt)+" (UTC)"
+  const d=daysUntil(openAt,nowUtc)
+  dateDaysEl.textContent=`~${d} day${d===1?"":"s"} remaining`
+}
+
+/* ================= HEARTBEAT CONFIRM ================= */
+
+const HEARTBEAT_COOLDOWN_MS = 15 * 60 * 1000
+
+let confirmTimerRef  = null
+let cooldownTimerRef = null
+let confirmCooldownKey = ""
+
+// Pункт 5: cleanup on unload
+window.addEventListener("beforeunload",()=>{
+  if(confirmTimerRef) clearTimeout(confirmTimerRef)
+  if(cooldownTimerRef)clearTimeout(cooldownTimerRef)
+})
+
+// Activates the cooldown state AFTER the success flash has been shown.
+// Called with a delay so user sees CONFIRMED ✓ first (пункт 4).
+function activateCooldown(){
+  if(cooldownTimerRef)clearTimeout(cooldownTimerRef)
+  confirmBtnEl.disabled=true
+  confirmBtnEl.textContent="WAIT 15 MIN"
+  confirmBtnEl.classList.add("cooldown")
+  confirmBtnEl.classList.remove("success")
+  cooldownTimerRef=setTimeout(()=>{
+    confirmBtnEl.disabled=false
+    confirmBtnEl.textContent="CONFIRM PRESENCE"
+    confirmBtnEl.classList.remove("cooldown")
+  },HEARTBEAT_COOLDOWN_MS)
+}
+
+async function sendHeartbeatEmergency(capsuleId,creatorCapability){
+  const ac=new AbortController()
+  const t=setTimeout(()=>ac.abort(),8000)
+  let res
+  try{
+    res=await fetch("/api/heartbeat",{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({capsuleId,creatorAuthorityFragment:creatorCapability}),
+      signal:ac.signal
+    })
+  }finally{
+    clearTimeout(t)
+  }
+  if(!res.ok){
+    const data=await res.json().catch(()=>({}))
+    throw new Error(data.code||"HEARTBEAT_FAILED")
+  }
+}
+
+function initConfirmButton(capsuleId,creatorCapability){
+  confirmBtnEl.onclick=async()=>{
+    if(confirmBtnEl.disabled)return
+
+    // Client-side cooldown guard
+    if(confirmCooldownKey){
+      let last=null
+      try{ last=localStorage.getItem(confirmCooldownKey) }catch{}
+      if(last){
+        const elapsed=Date.now()-Number(last)
+        if(Number.isFinite(elapsed)&&elapsed<HEARTBEAT_COOLDOWN_MS)return
+      }
+    }
+
+    confirmBtnEl.disabled=true
+    confirmBtnEl.textContent="CONFIRMING..."
+
+    try{
+      await sendHeartbeatEmergency(capsuleId,creatorCapability)
+
+      // пункт 4: show CONFIRMED ✓ first, then WAIT 15 MIN after 3s
+      confirmBtnEl.textContent="CONFIRMED ✓"
+      confirmBtnEl.classList.add("success")
+      confirmBtnEl.classList.remove("cooldown")
+      confirmBtnEl.disabled=false
+
+      if(confirmCooldownKey)
+        try{ localStorage.setItem(confirmCooldownKey,String(Date.now())) }catch{}
+
+      if(confirmTimerRef)clearTimeout(confirmTimerRef)
+      confirmTimerRef=setTimeout(()=>activateCooldown(),3000)
+
+    }catch{
+      confirmBtnEl.disabled=false
+      confirmBtnEl.textContent="CONFIRM PRESENCE"
+      setStatus("Heartbeat failed. Try again.","error")
+    }
+  }
+}
+
+/* ================= OPEN CAPSULE (decrypt flow) ================= */
+
+async function openCapsule(parsed,manifest){
+  showState(stateOpening)
+  setOpeningStep("Downloading vault…")
+  const encrypted=await downloadVault(manifest.vaultTxId)
+  verifyVaultSize(encrypted,manifest)
+  setOpeningStep("Deriving key…")
+  const key=await deriveKey(parsed.secret,manifest.saltBase,manifest.openAt,parsed.capsuleId)
+  setOpeningStep("Decrypting…")
+  const vault=await decryptVault(encrypted,key,manifest)
+  if(!vault||vault.capsule.capsuleId!==parsed.capsuleId)throw new Error()
+  renderVault(vault)
+  showState(stateOpened)
+}
+
+/* ================= INIT — split into focused phases ================= */
+
+function loadPreview(manifest,effectiveOpenAt,nowUtc){
+  // пункт 2: show effectiveOpenAt, not manifest.openAt
+  updateDateDisplay(effectiveOpenAt,nowUtc)
+  showState(stateSealed)
+}
+
+function configureAuthorityMode(parsed,capsuleId){
+  if(!parsed.creatorCapability)return
+
+  // пункт 6: authority security notice
+  securityNoteEl.innerHTML=
+    `This link contains a capability fragment.
+     <strong>Capability fragments control access to the capsule lifecycle.</strong>`
+
+  confirmCooldownKey=`aeterna-heartbeat-${capsuleId}`
+  confirmWrapEl.style.display=""
+  initConfirmButton(capsuleId,parsed.creatorCapability)
+}
+
+function restoreHeartbeatCooldown(){
+  if(!confirmCooldownKey)return
+  let last=null
+  try{ last=localStorage.getItem(confirmCooldownKey) }catch{}
+  if(!last)return
+  const elapsed=Date.now()-Number(last)
+  if(!Number.isFinite(elapsed)||elapsed>=HEARTBEAT_COOLDOWN_MS)return
+
+  // Still within cooldown window — restore immediately
+  confirmBtnEl.disabled=true
+  confirmBtnEl.textContent="WAIT 15 MIN"
+  confirmBtnEl.classList.add("cooldown")
+  if(cooldownTimerRef)clearTimeout(cooldownTimerRef)
+  cooldownTimerRef=setTimeout(()=>{
+    confirmBtnEl.disabled=false
+    confirmBtnEl.textContent="CONFIRM PRESENCE"
+    confirmBtnEl.classList.remove("cooldown")
+  },HEARTBEAT_COOLDOWN_MS-elapsed)
+}
+
+async function maybeAutoOpen(parsed,manifest,effectiveOpenAt,nowUtc){
+  // пункт 7: creator ALWAYS stays on preview (for Confirm Presence).
+  // Auto-open only when recipient secret exists AND time has passed.
+  if(!parsed.secret)return
+  if(nowUtc<effectiveOpenAt||manifest.sealedAt>nowUtc)return
+  await openCapsule(parsed,manifest)
+}
+
+;(async function init(){
+  try{
+
+    // ── 1. Parse current URL ──
+    const parsed=parseCapsuleLink(location.href)
+
+    // пункт 1: creator-only links (#c=...) are now valid — parser returns them
+    if(!parsed){
+      setStatus("Invalid capsule link.","error")
+      return
+    }
+
+    // Must have at least one capability to be meaningful
+    if(!parsed.secret&&!parsed.creatorCapability){
+      setStatus("Invalid capsule link.","error")
+      return
+    }
+
+    // ── 2. Load manifest ──
+    let manifest
+    try{
+      manifest=await fetchManifest(parsed.capsuleId)
+      validateManifest(manifest,parsed.capsuleId)
+    }catch{
+      setStatus("Capsule unavailable.","error")
+      return
+    }
+
+    // ── 3. Trusted time ──
+
+    let nowUtc
+
+    try{
+
+      nowUtc =
+        await getTrustedNow()
+
+    }catch{
+
+      setStatus(
+        "Trusted time unavailable.",
+        "error"
+      )
+
+      return
+
+    }
+
+    // ── 4. Heartbeat / effective open time ──
+    // Heartbeat (v4.3): always active — no heartbeatEnabled gate.
+    const heartbeatInterval=manifest.heartbeatInterval??0
+    const heartbeatRecord  =await fetchHeartbeatRecord(parsed.capsuleId)
+    const lastConfirmedAt  =heartbeatRecord?.lastConfirmedAt
+
+    const effectiveOpenAt=resolveEffectiveOpenAt({
+      manifestOpenAt:manifest.openAt,
+      heartbeatInterval,
+      lastConfirmedAt
+    })
+
+    // ── 5. Render preview (always shown first) ──
+    loadPreview(manifest,effectiveOpenAt,nowUtc)
+
+    // ── 6. Configure authority mode (Confirm Presence button) ──
+    configureAuthorityMode(parsed,parsed.capsuleId)
+
+    // ── 7. Restore heartbeat cooldown from localStorage ──
+    restoreHeartbeatCooldown()
+
+    // ── 8. Auto-open if time has passed and recipient secret present ──
+    await maybeAutoOpen(parsed,manifest,effectiveOpenAt,nowUtc)
+
+  }catch{
+    showState(stateSealed)
+    setStatus("Capsule unavailable.","error")
+  }
+})()
+
+
+
+</script>
+
+</body>
+</html>

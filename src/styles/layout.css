@@ -1,0 +1,158 @@
+/* AETERNA CAPSULE - Responsive Layout System */
+/* Pure CSS for layout and responsiveness */
+
+:root {
+  --container-max-width-mobile: 420px;
+  --container-max-width-desktop: 500px;
+  --padding-mobile: 16px;
+  --padding-desktop: 24px;
+  --section-gap: 32px;
+}
+
+
+/* Page wrapper - full viewport height with flex column */
+
+.aeterna-page {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* Centered container with max-width constraints */
+
+.aeterna-container {
+
+  width: 100%;
+  max-width: var(--container-max-width-mobile);
+
+  margin-left: auto;
+  margin-right: auto;
+
+  padding-left: max(
+    var(--padding-mobile),
+    env(safe-area-inset-left)
+  );
+
+  padding-right: max(
+    var(--padding-mobile),
+    env(safe-area-inset-right)
+  );
+
+  box-sizing: border-box;
+
+}
+
+
+/* Main content area - flexible growth */
+
+.aeterna-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* Header styles */
+
+.aeterna-header {
+  padding-top: 24px;
+  padding-bottom: 24px;
+}
+
+
+/* Footer styles */
+
+.aeterna-footer {
+  padding-top: 24px;
+  padding-bottom: 24px;
+  text-align: center;
+}
+
+
+/* Form grid - responsive two-column layout */
+
+.aeterna-form-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.aeterna-form-grid > * {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+
+/* Meta info row - wrap on small screens */
+
+.aeterna-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px 24px;
+}
+
+
+/* Responsive typography (fluid scaling) */
+
+.aeterna-heading-hero {
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1.2;
+}
+
+.aeterna-heading-page {
+  font-size: clamp(1.75rem, 3vw, 2.25rem);
+  line-height: 1.25;
+}
+
+
+/* Dialog/modal safety */
+
+.aeterna-dialog {
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 64px);
+  overflow-y: auto;
+}
+
+
+/* Tablet and up (768px+) */
+
+@media (min-width: 768px) {
+
+  .aeterna-container {
+
+    max-width: var(--container-max-width-desktop);
+
+    padding-left: max(
+      var(--padding-desktop),
+      env(safe-area-inset-left)
+    );
+
+    padding-right: max(
+      var(--padding-desktop),
+      env(safe-area-inset-right)
+    );
+
+  }
+
+  .aeterna-form-grid > * {
+    flex: 1 1 calc(50% - 8px);
+  }
+
+}
+
+
+/* Desktop (1024px+) */
+
+@media (min-width: 1024px) {
+
+  .aeterna-heading-hero {
+    font-size: clamp(2.5rem, 3vw, 3rem);
+  }
+
+  .aeterna-heading-page {
+    font-size: clamp(2rem, 2.5vw, 2.25rem);
+  }
+
+}

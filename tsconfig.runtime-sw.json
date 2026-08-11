@@ -1,0 +1,29 @@
+{
+  "extends": "./tsconfig.json",
+
+  "compilerOptions": {
+    "target": "ES2021",
+
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    "lib": [
+      "ES2021",
+      "WebWorker"
+    ],
+
+    "types": [],
+
+    "strict": true,
+
+    "noEmit": true,
+
+    "isolatedModules": true,
+
+    "moduleDetection": "force"
+  },
+
+  "include": [
+    "src/runtime-sw.ts"
+  ]
+}

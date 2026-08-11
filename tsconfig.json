@@ -1,0 +1,46 @@
+{
+  "files": [],
+
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ],
+
+  "compilerOptions": {
+
+    "composite": true,
+
+    "baseUrl": ".",
+
+    "paths": {
+      "@/*": ["src/*"]
+    },
+
+    /* ================= SECURITY CORE ================= */
+
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "alwaysStrict": true,
+
+    /* ================= RUNTIME SAFETY ================= */
+
+    "allowJs": false,
+    "skipLibCheck": false,
+    "forceConsistentCasingInFileNames": true,
+
+    /* ================= CLEANLINESS ================= */
+
+    "noUnusedParameters": false,
+    "noUnusedLocals": false
+  },
+
+  "exclude": [
+    "node_modules"
+  ]
+}

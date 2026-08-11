@@ -1,0 +1,270 @@
+/* AETERNA CAPSULE — Theme System */
+/* Pure CSS theming with data-theme attribute */
+
+
+/* ===== BASE TOKEN MAPPING ===== */
+
+:root {
+
+  --theme-bg: hsl(var(--background));
+  --theme-text: hsl(var(--foreground));
+  --theme-card: hsl(var(--card));
+  --theme-border: hsl(var(--border));
+  --theme-accent: hsl(var(--accent));
+  --theme-muted: hsl(var(--muted));
+  --theme-muted-text: hsl(var(--muted-foreground));
+
+}
+
+
+/* ===== DEFAULT FALLBACK THEME (SSR SAFE) ===== */
+
+:root:not([data-theme]) {
+
+  --background: 220 35% 8%;
+  --foreground: 45 20% 92%;
+  --card: 220 30% 12%;
+  --border: 220 20% 20%;
+  --accent: 35 70% 50%;
+  --muted: 220 20% 20%;
+  --muted-foreground: 220 15% 60%;
+
+}
+
+
+/* ===== DARK THEME ===== */
+
+[data-theme="dark"] {
+
+  --background: 220 35% 8%;
+  --foreground: 45 20% 92%;
+
+  --card: 220 30% 12%;
+  --card-foreground: 45 20% 92%;
+
+  --popover: 220 30% 12%;
+  --popover-foreground: 45 20% 92%;
+
+  --primary: 45 20% 92%;
+  --primary-foreground: 220 35% 8%;
+
+  --secondary: 35 60% 52%;
+  --secondary-foreground: 220 35% 8%;
+
+  --muted: 220 20% 20%;
+  --muted-foreground: 220 15% 60%;
+
+  --accent: 35 70% 50%;
+  --accent-foreground: 220 35% 8%;
+
+  --destructive: 0 62% 45%;
+  --destructive-foreground: 45 20% 92%;
+
+  --border: 220 20% 20%;
+  --input: 220 20% 18%;
+  --ring: 35 60% 52%;
+
+  --capsule-gold: 35 70% 55%;
+  --capsule-midnight: 220 35% 8%;
+  --capsule-cream: 45 20% 92%;
+
+  --capsule-sealed: 220 25% 35%;
+  --capsule-unlocked: 145 55% 50%;
+
+}
+
+
+/* ===== LIGHT THEME ===== */
+
+[data-theme="light"] {
+
+  --background: 45 30% 96%;
+  --foreground: 220 30% 12%;
+
+  --card: 45 25% 98%;
+  --card-foreground: 220 30% 12%;
+
+  --popover: 45 25% 98%;
+  --popover-foreground: 220 30% 12%;
+
+  --primary: 220 45% 15%;
+  --primary-foreground: 45 30% 96%;
+
+  --secondary: 35 60% 52%;
+  --secondary-foreground: 220 30% 12%;
+
+  --muted: 220 15% 85%;
+  --muted-foreground: 220 15% 45%;
+
+  --accent: 35 70% 50%;
+  --accent-foreground: 220 30% 12%;
+
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 45 30% 96%;
+
+  --border: 220 15% 85%;
+  --input: 220 15% 90%;
+  --ring: 35 60% 52%;
+
+  --capsule-gold: 35 70% 50%;
+  --capsule-midnight: 220 45% 15%;
+  --capsule-cream: 45 30% 96%;
+
+  --capsule-sealed: 220 30% 25%;
+  --capsule-unlocked: 145 60% 40%;
+
+}
+
+
+/* ===== SYSTEM DARK MODE FALLBACK ===== */
+
+@media (prefers-color-scheme: dark) {
+
+  :root:not([data-theme]) {
+
+    --background: 220 35% 8%;
+    --foreground: 45 20% 92%;
+
+  }
+
+}
+
+
+/* ===== THEME TOGGLE BUTTON ===== */
+
+.theme-toggle {
+
+  position: fixed;
+
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+
+  z-index: 1000;
+
+  width: 22px;
+  height: 22px;
+
+  border-radius: 50%;
+
+  border: 1px solid hsl(var(--border) / 0.2);
+  background: hsl(var(--card) / 0.2);
+
+  color: hsl(var(--muted-foreground) / 0.7);
+
+  cursor: pointer;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  transition:
+    background-color 0.2s,
+    border-color 0.2s,
+    color 0.2s,
+    opacity 0.2s;
+
+  opacity: 0.55;
+
+}
+
+
+.theme-toggle:hover {
+
+  border-color: hsl(var(--border) / 0.7);
+  background: hsl(var(--muted) / 0.6);
+
+  color: hsl(var(--muted-foreground));
+  opacity: 1;
+
+}
+
+
+.theme-toggle:focus-visible {
+
+  outline: 2px solid hsl(var(--ring) / 0.5);
+  outline-offset: 2px;
+
+}
+
+
+.theme-toggle svg {
+
+  width: 10px;
+  height: 10px;
+
+}
+
+
+/* ===== BACK BUTTON ===== */
+
+.back-button {
+
+  position: fixed;
+
+  top: max(12px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
+
+  z-index: 1000;
+
+  display: inline-flex;
+  align-items: center;
+
+  gap: 6px;
+
+  padding: 4px 10px 4px 6px;
+
+  border-radius: 9999px;
+
+  border: 1px solid hsl(var(--border) / 0.2);
+  background: hsl(var(--card) / 0.2);
+
+  color: hsl(var(--muted-foreground) / 0.7);
+
+  font-size: 13px;
+  text-decoration: none;
+
+  cursor: pointer;
+
+  transition:
+    background-color 0.2s,
+    border-color 0.2s,
+    color 0.2s,
+    opacity 0.2s;
+
+  opacity: 0.55;
+
+}
+
+
+.back-button:hover {
+
+  border-color: hsl(var(--border) / 0.7);
+  background: hsl(var(--muted) / 0.6);
+
+  color: hsl(var(--muted-foreground));
+  opacity: 1;
+
+}
+
+
+.back-button:focus-visible {
+
+  outline: 2px solid hsl(var(--ring) / 0.5);
+  outline-offset: 2px;
+
+}
+
+
+.back-button svg {
+
+  width: 14px;
+  height: 14px;
+
+}
+
+
+.back-button span {
+
+  font-weight: 500;
+
+}
