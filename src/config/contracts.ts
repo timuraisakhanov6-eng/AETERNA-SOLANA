@@ -16,15 +16,6 @@ export const CONTRACTS = {
       "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
 
     /**
-     * AETERNA Executor Hot
-     * Publication Authority / Irys funding.
-     *
-     * NOT the service payment recipient.
-     */
-    EXECUTOR_HOT:
-      "0xb0d9E5d93c1fecFA78479F23d283eaa652EE3755",
-
-    /**
      * AETERNA MVP Settlement Wallet
      * Current temporary hardware-backed EOA for Base Mainnet native USDC
      * service payments. Future target: Safe 2-of-3 multisig.

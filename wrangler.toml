@@ -85,11 +85,6 @@ script_name = "aeterna-credit-coordinator"
 # Production environment configuration
 # ─────────────────────────────────────────────
 
-[env.production.vars]
-
-VITE_WALLETCONNECT_PROJECT_ID = "02faf7986096e65a6e68c57898e961f5"
-DEBUG = "true"
-
 # ─────────────────────────────────────────────
 # Manifest Storage Contract
 # ─────────────────────────────────────────────

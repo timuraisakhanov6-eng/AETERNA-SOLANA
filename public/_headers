@@ -6,7 +6,7 @@
   Permissions-Policy: camera=(self), microphone=(self), geolocation=()
   Cross-Origin-Resource-Policy: same-origin
   Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.paddle.com https://sandbox-cdn.paddle.com https://sandbox-checkout-service.paddle.com; frame-src https://buy.paddle.com https://sandbox-buy.paddle.com https://checkout.paddle.com https://sandbox-checkout.paddle.com https://sandbox-checkout-service.paddle.com; connect-src 'self' https://api.paddle.com https://sandbox-api.paddle.com https://sandbox-checkout-service.paddle.com https://sandbox-checkout.paddle.com https://node1.irys.xyz https://node2.irys.xyz https://gateway.irys.xyz https://arweave.net https://permaweb.eu https://arweave.live; img-src 'self' data: blob: https://cdn.paddle.com https://api.qrserver.com; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.paddle.com; font-src 'self' https://fonts.gstatic.com; frame-ancestors 'none';
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; frame-src 'self'; connect-src 'self' https://node1.irys.xyz https://node2.irys.xyz https://gateway.irys.xyz https://arweave.net https://permaweb.eu https://arweave.live; img-src 'self' data: blob: https://api.qrserver.com; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-ancestors 'none';
 
 
 /index.html
