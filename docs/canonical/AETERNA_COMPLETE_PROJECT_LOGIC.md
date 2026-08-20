@@ -94,39 +94,35 @@ reorder elements.
 
 While the capsule is still in this editable, pre-PREPARED phase, there are no restrictions on content changes at all. Once preparation completes and the capsule reaches PREPARED, its cryptographic part becomes immutable — independent of and prior to payment (see the PREPARED state below).
 
-Cost is calculated instantly
+Cost is shown as a fixed service fee.
 
-While the user edits the content, the cost is automatically recalculated according to the current Business Layer model.
-
-Cost is calculated only from the size of the user's data. Internally, this size is fixed as billableSizeBytes and no longer changes after the capsule is prepared.
+AETERNA uses a Creator Credit model:
+- one fixed USD 1.00 service fee;
+- one Creator Credit gives the creator the right to attempt to create one successful capsule;
+- capsule size does not change the AETERNA service fee;
+- storage volume does not change the AETERNA service fee;
+- the exact payment asset is determined by the supported AETERNA service-payment flow.
+- the exact Irys publication asset is determined by the supported Irys publication flow.
 
 The user always sees the cost of their capsule in advance and never encounters an unexpected sum at the end of the process.
 
-This exact amount will be used to form the Business Quote after successful preparation.
-
-After clicking Continue, the displayed size is fixed as billableSizeBytes. This is the value that becomes part of the Business Quote and no longer changes, regardless of the size of the encrypted data.
+After clicking Continue, the displayed fee is fixed as the creator service fee. This value becomes part of the Creator Service Quote and no longer changes.
 
 The user never sees the project's internal economics. All costs for storage, infrastructure, network fees, and AETERNA's internal economics are completely hidden from the user.
 
 Pricing logic
 
-Cost depends only on the size of the user's data.
-Storage blocks are used.
-First block: 20 MB = $4
-Each subsequent block: 20 MB = +$3
-For example:
+Cost is shown as a fixed service fee.
 
-1 MB → $4
-15 MB → $4
-20 MB → $4
-21 MB → $7
-40 MB → $7
-41 MB → $10
-60 MB → $10
-80 MB → $13
-100 MB → $16
-200 MB → $31
-300 MB → $46
+AETERNA uses a Creator Credit model:
+- one fixed USD 1.00 service fee;
+- one Creator Credit gives the creator the right to attempt to create one successful capsule;
+- capsule size does not change the AETERNA service fee;
+- storage volume does not change the AETERNA service fee;
+- the exact payment asset is determined by the supported AETERNA service-payment flow.
+- the exact Irys publication asset is determined by the supported Irys publication flow.
+
+Internal operational calculations may exist for capacity planning or storage scheduling, but they MUST NOT determine, modify, or influence the AETERNA service fee, Creator Credit amount, payment entitlement, or eligibility. Capsule size and storage blocks are not AETERNA service pricing inputs.
 
 What's included in the price
 
@@ -224,21 +220,28 @@ The person pays nothing.
 
 Payment
 
-Once preparation completes successfully, the Business Authority (Backend Business Layer) creates a Business Quote based on the previously fixed billableSizeBytes, verifies the amount is correct, and stores the Business Quote as the sole commercial source of truth. This cost becomes the official commercial agreement between the creator and AETERNA (the Business Quote) and is used at every subsequent payment stage.
+Once preparation completes successfully, the backend creates a Creator Service Quote.
+This quote records the fixed USD 1.00 service fee, the selected payment asset, the exact crypto amount, the recipient, and wallet binding metadata.
+It does not record capsule size or storage-block pricing.
+This becomes the commercial entitlement for this capsule attempt and is used at every subsequent payment stage.
 
-The Business Quote is the sole commercial source of truth within Business Authority. Once created, the amount is never recalculated.
+The Creator Service Quote is the sole commercial source of truth within Business Authority. Once created, the service entitlement amount is fixed.
 
 The payment window then opens.
 
-The creator sees the same amount they saw while creating the capsule.
+The creator sees the fixed USD 1.00 service fee. This amount no longer changes during payment.
 
-This amount no longer changes until payment is complete.
+There are no hidden service fees or sudden price increases.
+Payment is performed through the approved AETERNA service-payment flow and grants one Creator Credit.
+Irys publication payment is a separate flow, and its supported assets/networks may differ from the AETERNA service-payment flow.
 
-There are no hidden fees or sudden price increases.
-Payment can be made by:
+After successful payment verification, one AVAILABLE Creator Credit is created.
+The creator does not need to pay the AETERNA service fee again while that credit is AVAILABLE.
 
-credit card;
-Web3.
+Irys publication and storage are separate from the AETERNA service fee.
+Irys determines the actual cost of storing and publishing the encrypted capsule data based on the published content.
+That cost is paid by the creator through the Irys publication/storage flow supported by the current production integration.
+AETERNA does not bundle Irys cost into its fixed service fee.
 
 Sealing
 

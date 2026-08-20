@@ -79,60 +79,79 @@ Does not
 - does not hold funds;
 - is not an Executor.
 
-## 4. AETERNA_EXECUTOR_HOT
+## 4. AETERNA_SETTLEMENT_WALLET
 
-Type: hot working wallet + current Web3 payment receiver + Publication Authority
-
-Public address
-0xb0d9E5d93c1fecFA78479F23d283eaa652EE3755
+Type: AETERNA-owned service-payment recipient
 
 Purpose
 
-Current-stage Web3 payment receiver and publication executor.
-
-```
-Client
-  ↓
-Executor Hot public address
-  ↓
-payment verification
-  ↓
-Upload Authority / publication pipeline
-  ↓
-Executor Hot pays Irys publication cost
-  ↓
-Irys
-  ↓
-Arweave immutable storage
-```
+Receives the AETERNA service payment from creators.
 
 Performs
-- receives current Web3 payments;
-- controls its own Base ETH balance;
-- pays gas for on-chain operations;
-- funds Irys balance when required;
-- pays actual Irys publication cost;
-- executes publication authority.
+- receives AETERNA service payments in approved payment assets on approved networks;
+- validates that payments are associated with an immutable Creator Service Quote and a verified Creator Identity.
 
 Does not
-- is not Payment Verification Authority;
-- is not Business Quote Authority;
-- is not Manifest Authority;
-- is not Trusted Time Authority;
+- is not the Irys payment receiver;
+- is not a storage provider;
+- does not determine publication cost;
+- does not fund Irys publication;
 - does not receive user secrets;
 - does not receive encryption keys;
 - does not receive plaintext data.
 
-## 🌍 External Services
+## 5. CREATOR_IDENTITY
 
-### 5. Alchemy
+Type: server-verifiable creator principal
 
 Purpose
 
-RPC provider for the Base network.
+Maps one authenticated creator to one or more verified wallet/account controls across networks.
+
+Performs
+- issues challenge/nonce for wallet proof;
+- verifies EIP-191 personal_sign or equivalent proof;
+- creates or retrieves a server-issued Creator Identity record;
+- binds verified network accounts to that Creator Identity.
+
+Does not
+- is not a raw blockchain address;
+- is not frontend wallet display;
+- is not provider session state;
+- does not perform payment verification;
+- does not grant decryption capability.
+
+## 6. CREATOR_CREDIT
+
+Type: server-authoritative service entitlement
+
+Purpose
+
+Represents one verified AETERNA service payment as a reusable entitlement to attempt one successful capsule lifecycle.
+
+Performs
+- grants exactly one AVAILABLE Creator Credit after independent payment verification;
+- binds Credit to an immutable Creator Identity;
+- transitions Credit through AVAILABLE -> CONSUMING -> CONSUMED;
+- restores Credit to AVAILABLE on failure before authoritative publication + Seal.
+
+Does not
+- is not storage pricing;
+- is not Irys payment;
+- is not gas;
+- is not capsule-size pricing;
+- does not expire.
+
+## 🌍 External Services
+
+### 7. Alchemy
+
+Purpose
+
+RPC provider for supported networks used in payment verification.
 
 Used for:
-- verifying USDC transactions;
+- verifying on-chain transactions;
 - retrieving blockchain data;
 - checking confirmations;
 - retrieving block information.
@@ -142,7 +161,7 @@ Does not:
 - does not accept payments;
 - does not sign transactions.
 
-### 6. Reown (WalletConnect)
+### 8. Reown (WalletConnect)
 
 Purpose
 
@@ -155,14 +174,6 @@ Supports:
 - Rainbow
 - Trust Wallet
 
-```
-Wallet
-    ↓
-Reown
-    ↓
-AETERNA
-```
-
 Used for:
 - Connect Wallet;
 - retrieving the user's address;
@@ -173,7 +184,7 @@ Does not:
 - does not verify payment;
 - does not know the Capsule price.
 
-### 7. MetaMask
+### 9. MetaMask
 
 Purpose
 
@@ -182,14 +193,14 @@ The user's wallet, and wallets used by administrators.
 Performs:
 - storing private keys;
 - signing transactions;
-- sending USDC;
-- holding ETH for gas payment.
+- sending approved service-payment assets;
+- holding gas for on-chain operations.
 
-### 8. ChainList
+### 10. ChainList
 
 Purpose
 
-Adding the Base network for the user.
+Adding supported networks for the user.
 
 Used only once.
 
@@ -199,35 +210,35 @@ Does not:
 
 ## 💳 Payment Infrastructure
 
-### 9. Paddle
+### 11. AETERNA Service Payment
 
 Purpose
 
-Accepting bank cards.
+The $1 USD-equivalent AETERNA service payment that grants one Creator Credit.
 
-```
-Bank card
-        ↓
-     Paddle
-        ↓
-   AETERNA company
-```
+Performs:
+- creates immutable Creator Service Quote;
+- verifies payment independently of client claims;
+- grants Creator Credit to verified Creator Identity.
 
-After successful verification, the Business Layer validates payment against the existing Business Quote. Business Quote remains the sole canonical commercial authority object; verification does not create a separate Payment Authority object — it confirms that the Business Quote's payment condition has been satisfied.
+Does not:
+- is not Irys publication payment;
+- does not determine Irys cost;
+- does not bundle storage pricing.
 
 ## 🗄 Storage
 
-### 10. Irys
+### 12. Irys
 
 Purpose
 
 Immutable storage backend for published encrypted Vault data.
 
-Publication is funded and executed by Executor Hot.
+Irys publication is a separate payment layer from the AETERNA service payment. The creator pays Irys through the supported Irys publication flow. Irys determines the actual publication/storage cost. AETERNA service payment does not automatically fund Irys publication.
 
-Irys is not a payment receiver for client payments.
+Irys is not a payment receiver for AETERNA service payments.
 
-### 11. Arweave
+### 13. Arweave
 
 Purpose
 
@@ -280,14 +291,14 @@ The server boundary hosts only Business Layer and Storage Layer. It never hosts 
 ### Business Layer
 
 Creates:
-- Business Quote.
+- Creator Service Quote.
 
 Issues (operational, non-authoritative):
 - Upload Token.
 
 Performs:
-- creating the Business Quote;
-- verifying payment (validated against the Business Quote — does not create a separate authority object);
+- creating the Creator Service Quote;
+- verifying payment independently against the immutable quote;
 - issuing Upload Token;
 - controlling the publication lifecycle.
 
@@ -295,8 +306,7 @@ Does not know:
 - how encryption works;
 - how the Vault is published;
 - how Arweave works;
-- how Web3 payments are received;
-- how Irys is funded.
+- how Irys publication is funded.
 
 ## Storage Layer
 
@@ -304,7 +314,7 @@ Receives:
 - Upload Token.
 
 Performs:
-- publishing the Vault via Executor Hot;
+- publishing the Vault via Storage Authority;
 - receiving vaultTxId;
 - publishing chunks and recording their locations in the Chunk Pointer Registry (the sole canonical chunk-to-storage-pointer mapping surface; see AI/07_PROJECT_GLOSSARY.md and AETERNA_COMPLETE_SYSTEM_LOGIC.md);
 - creating Storage Authority;
@@ -312,9 +322,9 @@ Performs:
 
 Does not know:
 - how the user paid;
-- how much the publication cost;
-- who owns the card or wallet;
-- how Executor Hot funds Irys.
+- how much the AETERNA service fee was;
+- who owns the wallet or account;
+- how Irys publication is funded.
 
 ## 🔐 Full Architecture
 
@@ -323,41 +333,26 @@ Does not know:
                             │
             ┌───────────────┴───────────────┐
             │                               │
-       Bank card                       MetaMask
+       Wallet/account                Wallet/account
             │                               │
             ▼                               ▼
-         Paddle                     Reown Connect
+   Creator Identity proof          Irys publication flow
             │                               │
-            │                       Signing the TX
+            ▼                               ▼
+   AETERNA Service Payment         Irys publication payment
+   (Settlement Wallet)             (separate layer)
             │                               │
-            └───────────────┬───────────────┘
-                            │
-                            ▼
-                    Business Quote
-                            │
-                            ▼
-              Payment Verified (Business Quote)
-                            │
-                            ▼
-                  Upload Token
-                            │
-                            ▼
-                     Storage Layer
-                            │
-                            ▼
-                   Executor Hot Wallet
-                            │
-                            ▼
-                          Irys
-                            │
-                            ▼
-                  Storage Authority
-                            │
-                            ▼
-                           Seal
-                            │
-                            ▼
-                  Manifest Authority
+            ▼                               ▼
+   Creator Service Quote           Irys determines cost
+            │                               │
+            ▼                               ▼
+   Payment Verified                Publication executed
+            │                               │
+            ▼                               ▼
+   Creator Credit AVAILABLE        Storage Authority
+            │                               │
+            ▼                               ▼
+   Capsule Lifecycle               Manifest Authority
 ```
 
 ## 🏦 Final Role Map
@@ -367,25 +362,29 @@ Does not know:
 | AETERNA_PROTOCOL_TREASURY_SAFE | Deferred/future governance treasury layer; not current Web3 payment receiver |
 | AETERNA_SIGNER_PRIMARY | Primary controller of the Treasury Safe |
 | AETERNA_SIGNER_RECOVERY | Backup controller of the Treasury Safe |
-| AETERNA_EXECUTOR_HOT | Current Web3 payment receiver + Publication Authority; receives client payments, controls operational ETH/gas, pays Irys |
-| Alchemy | Access to the Base blockchain and USDC transaction verification |
+| AETERNA_SETTLEMENT_WALLET | AETERNA-owned recipient for $1 service payments; grants Creator Credit via verified quote |
+| CREATOR_IDENTITY | Server-verifiable creator principal; not raw address or provider session |
+| CREATOR_CREDIT | Server-authoritative entitlement for one capsule lifecycle; bound to Creator Identity |
+| AETERNA_EXECUTOR_HOT | PENDING selection; publication execution component; not canonical AETERNA service-payment receiver or Irys funder |
+| Alchemy | Access to supported blockchains and transaction verification |
 | Reown (WalletConnect) | Connecting user wallets |
 | MetaMask | Storing keys and signing transactions |
-| ChainList | Adding the Base network for the user |
-| Paddle | Accepting bank card payments |
-| Irys | Publishing the encrypted Vault |
+| ChainList | Adding supported networks for the user |
+| Irys | Publishing the encrypted Vault; separate publication/storage payment layer |
 | Arweave | Immutable long-term storage of the Capsule |
-| Business Layer | Business Quote → payment verification → Upload Token |
-| Storage Layer | Upload Token → Executor Hot → Storage Authority |
+| Business Layer | Creator Service Quote → payment verification → Upload Token |
+| Storage Layer | Upload Token → Storage Authority → Manifest Authority |
 | Seal | Storage Authority → Manifest Authority |
 
 ## Architectural Principles
 
-- The Business Quote is created before payment begins and is the sole commercial source of truth; it is not replaced or superseded by any post-verification authority object.
-- Payment verification confirms successful payment against the Business Quote, regardless of payment method (bank card or Web3), and does not create a separate authority object.
-- Upload Token is issued only after successful payment verification.
+- The Creator Service Quote is created before payment begins and is the sole commercial source of truth; it is not replaced or superseded by any post-verification authority object.
+- Payment verification confirms successful payment against the Creator Service Quote, independently of client claims, and does not create a separate authority object.
+- One verified AETERNA service payment creates at most one Creator Credit.
+- Creator Credit is bound to one Creator Identity and may authorize only one active capsule lifecycle while CONSUMING.
+- Upload Token is issued only after successful payment verification and required business authority conditions.
 - The Storage Layer begins publication only after receiving Upload Token.
-- Executor Hot pays for the Irys publication from its own available funds received as the current Web3 payment receiver.
+- Irys publication payment is separate from the AETERNA service payment. AETERNA service payment does not automatically fund Irys.
 - Storage Authority confirms successful publication of the Vault.
 - Manifest Authority is created only after a successful Seal and becomes the permanent source of truth for the Capsule's sealed identity, integrity, and Vault discovery. Per-object chunk-location resolution is a separate concern governed by Storage Authority via the Chunk Pointer Registry, not by the Manifest.
 - Crypto Layer, Business Layer, Storage Layer, and Runtime Layer are fully isolated from one another and have independent areas of responsibility.
@@ -397,9 +396,11 @@ Upload Token is an operational capability, not a protocol Authority, and is ther
 
 ```
 Commercial Authority
-(Business Quote)
+(Creator Service Quote)
           ↓
-      [Payment Verification — validates Business Quote, not a separate Authority]
+      [Payment Verification — validates Creator Service Quote, not a separate Authority]
+          ↓
+      [Creator Credit — server-authoritative entitlement]
           ↓
       [Upload Token — operational, non-authoritative]
           ↓
@@ -408,3 +409,35 @@ Storage Authority
           ↓
 Manifest Authority
 ```
+
+## Creator Identity and Credit Model
+
+Current canonical creator model:
+
+Creator Identity
+→ immutable Creator Service Quote
+→ $1 USD-equivalent AETERNA service payment
+→ independently verified payment
+→ Creator Credit AVAILABLE
+→ later capsule lifecycle reservation
+→ Credit CONSUMING
+→ separate Irys publication/payment
+→ authoritative publication verification
+→ authoritative Seal verification
+→ Credit CONSUMED
+
+Hard rules:
+- $1 USD = 1 Creator Credit.
+- Creator Credit does not expire.
+- Creator Credit is not storage pricing, Irys payment, gas, or capsule-size pricing.
+- One verified AETERNA service payment -> maximum one Creator Credit.
+- Duplicate payment verification -> no duplicate Credit.
+- Credit belongs to Creator Identity.
+- One Credit cannot authorize two active capsule lifecycles.
+- Credit is consumed only after authoritative publication AND authoritative Seal.
+- Failure before final success preserves/restores Credit according to canonical recovery rules.
+- Frontend is never authority.
+
+AETERNA service payment and Irys publication payment are independent layers.
+
+Historical note: legacy Paddle/bank-card and legacy Base/USDC web3 paths remain preserved for backward compatibility but are not part of the current canonical authority chain.

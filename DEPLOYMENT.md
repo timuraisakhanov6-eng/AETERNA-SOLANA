@@ -73,7 +73,7 @@ Production deployments MUST fail closed on uncertainty.
 
 Operational secrets MAY include:
 
-- payment provider credentials
+- payment verification secrets
 - storage credentials
 - upload credentials
 - webhook verification secrets
@@ -159,12 +159,22 @@ Cross-environment authority leakage is forbidden.
 
 Production payment systems MUST preserve:
 
-- Business Quote authority
+- Creator Service Quote authority
 - payment verification ordering
 - upload-after-payment enforcement
 - transaction verification integrity
 
-Payment providers MUST NOT gain:
+Payment systems MUST preserve:
+
+- Creator Service Quote authority
+- payment verification ordering
+- upload-after-payment enforcement
+- transaction verification integrity
+- USD 1.00 fixed service fee
+- one verified payment → at most one Creator Credit
+- frontend non-authority
+
+Payment integrations MUST NOT gain:
 
 - decrypt authority
 - protocol authority

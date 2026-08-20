@@ -28,7 +28,7 @@ const store = new Map<string, Entry>();
  * чтобы поддерживать Cloudflare IncomingRequestCfProperties typing
  */
 
-export function getClientIp(request: any): string {
+export function getClientIp(request: unknown): string {
 
   const ip =
     request.headers?.get("CF-Connecting-IP");

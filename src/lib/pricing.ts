@@ -140,7 +140,7 @@ export function calculatePrice(
     calculateBlocks(sizeBytes);
 
 
-  let price =
+  const price =
     FIRST_BLOCK_PRICE +
     (blocks - 1) *
     NEXT_BLOCK_PRICE;

@@ -253,11 +253,11 @@ if (!cryptoObj?.subtle) {
 
     try {
       material?.fill(0);
-    } catch {}
+    } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
     try {
       hash?.fill(0);
-    } catch {}
+    } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
     material = null;
     hash = null;

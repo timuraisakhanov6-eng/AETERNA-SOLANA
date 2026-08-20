@@ -3,35 +3,27 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-
     "strict": true,
     "noEmit": true,
-
     "types": [
       "@cloudflare/workers-types"
     ],
-
     "lib": [
       "ES2022",
       "WebWorker"
     ],
-
     "skipLibCheck": true,
     "isolatedModules": true,
-
     "baseUrl": "..",
-
     "paths": {
       "@/*": ["src/*"],
       "@/lib/*": ["src/lib/*"],
       "@/types/*": ["src/types/*"]
     }
   },
-
   "include": [
     "./**/*.ts"
   ],
-
   "exclude": [
     "node_modules"
   ]

@@ -261,7 +261,7 @@ function fail(
 /* ================= OPTIONS ================= */
 
 export const onRequestOptions =
-async (context: EventContext<SealEnv, any, any>) => {
+async (context: EventContext<SealEnv, unknown, unknown>) => {
   const origin = context.request.headers.get("origin") ?? "";
   return new Response(null, { status: 204, headers: baseHeaders(origin) });
 };
@@ -269,7 +269,7 @@ async (context: EventContext<SealEnv, any, any>) => {
 /* ================= POST ================= */
 
 export const onRequestPost =
-async (context: EventContext<SealEnv, any, any>) => {
+async (context: EventContext<SealEnv, unknown, unknown>) => {
 
   const { request, env } = context;
 

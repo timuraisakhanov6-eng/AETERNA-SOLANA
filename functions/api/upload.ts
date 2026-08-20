@@ -153,7 +153,7 @@ function decodeBase64(value: string): Uint8Array | null {
 /* ================= OPTIONS ================= */
 
 export const onRequestOptions = async (
-  context: EventContext<any, any, any>
+  context: EventContext<unknown, unknown, unknown>
 ): Promise<Response> => {
   const origin = context.request.headers.get("origin") ?? "";
   if (!ALLOWED_ORIGINS.includes(origin)) {
@@ -165,7 +165,7 @@ export const onRequestOptions = async (
 /* ================= POST ================= */
 
 export const onRequestPost = async (
-  context: EventContext<UploadEnv, any, any>
+  context: EventContext<UploadEnv, unknown, unknown>
 ): Promise<Response> => {
   const { request, env } = context;
 

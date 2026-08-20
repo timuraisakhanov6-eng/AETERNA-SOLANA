@@ -515,7 +515,7 @@ export async function onRequestPost(
 
       }
 
-    } catch {}
+    } catch { /* Intentional no-op: cleanup failure must not alter fail-closed path. */ }
 
   }
 

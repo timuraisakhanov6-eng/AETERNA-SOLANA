@@ -86,7 +86,7 @@ function fail(
 /* ================= OPTIONS ================= */
 
 export const onRequestOptions = async (
-  context: EventContext<ChunkPointerRegistryKV, any, any>
+  context: EventContext<ChunkPointerRegistryKV, unknown, unknown>
 ): Promise<Response> => {
   const origin = context.request.headers.get("origin") ?? "";
   return new Response(null, { status: 204, headers: baseHeaders(origin) });
@@ -95,7 +95,7 @@ export const onRequestOptions = async (
 /* ================= GET ================= */
 
 export const onRequestGet = async (
-  context: EventContext<ChunkPointerRegistryKV, any, any>
+  context: EventContext<ChunkPointerRegistryKV, unknown, unknown>
 ): Promise<Response> => {
   const { request, env, params } = context;
 

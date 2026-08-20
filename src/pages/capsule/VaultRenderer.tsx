@@ -36,14 +36,12 @@ import {
 /**
  * Reads a full MediaSession into a single Blob object URL.
  *
- * NOTE: the canonical streaming path (Service Worker intercepting
- * range requests against a live MediaSession) is not wired up yet —
- * runtime-sw.ts's fetch handler is still a stub. Until that lands,
- * video/audio/file sessions are read once, fully, into memory here,
- * exactly like openImage() already does. This keeps media actually
- * playable today without pretending to stream what isn't streamed.
+ * This path is now used only for media types/mime combinations
+ * that cannot be progressively streamed through MediaSource
+ * in the current browser. The canonical progressive path for
+ * supported video/audio is `sessionToMediaSource()`.
  */
-async function sessionToObjectUrl(
+export async function sessionToObjectUrl(
   session: MediaSession,
   size: number,
   mimeType: string,
@@ -65,6 +63,168 @@ async function sessionToObjectUrl(
     session.dispose();
 
   }
+
+}
+
+/**
+ * Streams a MediaSession through a MediaSource so the browser
+ * can begin playback before the entire object is materialized.
+ *
+ * This replaces the previous full-buffer Blob/object-URL path
+ * for video and audio when the browser supports progressive
+ * playback for the requested MIME type.
+ */
+export async function sessionToMediaSource(
+  session: MediaSession,
+  mimeType: string,
+  size: number,
+  signal?: AbortSignal,
+): Promise<string> {
+
+  if (
+    typeof MediaSource === "undefined" ||
+    !MediaSource.isTypeSupported(mimeType)
+  ) {
+    throw new Error(
+      `[AETERNA] Progressive playback unavailable for ${mimeType}`,
+    );
+  }
+
+  const mediaSource = new MediaSource();
+  const objectUrl = URL.createObjectURL(mediaSource);
+
+  await new Promise<void>((resolve, reject) => {
+
+    if (signal?.aborted) {
+      URL.revokeObjectURL(objectUrl);
+      reject(
+        new Error(
+          "[AETERNA] MediaSource stream cancelled.",
+        ),
+      );
+      return;
+    }
+
+    mediaSource.addEventListener(
+      "sourceopen",
+      async () => {
+        try {
+
+          const sourceBuffer =
+            mediaSource.addSourceBuffer(
+              mimeType,
+            );
+
+          let offset = 0;
+          const chunkSize = 256 * 1024;
+
+          const appendNext = async () => {
+
+            if (
+              signal?.aborted ||
+              offset >= size
+            ) {
+              if (
+                offset >= size &&
+                mediaSource.readyState === "open"
+              ) {
+                try {
+                  mediaSource.endOfStream();
+                } catch {
+                  // endOfStream can throw if already ended;
+                  // retain current state.
+                }
+              }
+              return;
+            }
+
+            const end =
+              Math.min(
+                offset + chunkSize,
+                size,
+              );
+
+            let bytes: Uint8Array;
+
+            try {
+
+              bytes =
+                await session.read(
+                  offset,
+                  end,
+                );
+
+            } catch (err) {
+
+              console.error(
+                "[AETERNA] MediaSource read failed",
+                err,
+              );
+
+              return;
+
+            }
+
+            if (signal?.aborted) {
+              return;
+            }
+
+            try {
+
+              sourceBuffer.appendBuffer(
+                bytes,
+              );
+
+            } catch (err) {
+
+              console.error(
+                "[AETERNA] MediaSource append failed",
+                err,
+              );
+
+            }
+
+            offset = end;
+
+          };
+
+          sourceBuffer.addEventListener(
+            "updateend",
+            appendNext,
+          );
+
+          sourceBuffer.addEventListener(
+            "error",
+            () => {
+              try {
+                if (
+                  mediaSource.readyState ===
+                  "open"
+                ) {
+                  mediaSource.endOfStream();
+                }
+              } catch {
+                // SourceBuffer error should not crash playback.
+              }
+            },
+          );
+
+          await appendNext();
+
+          resolve();
+
+        } catch (err) {
+
+          reject(err);
+
+        }
+      },
+      { once: true },
+    );
+
+  });
+
+  return objectUrl;
 
 }
 
@@ -348,6 +508,9 @@ function MediaItemV2Block({
   const startedSignatureRef =
     useRef<string | null>(null);
 
+  const abortRef =
+    useRef<(() => void) | null>(null);
+
 
   useEffect(() => {
 
@@ -421,11 +584,18 @@ function MediaItemV2Block({
             const session =
               await openVideo(request);
 
-            url = await sessionToObjectUrl(
+            const controller =
+              new AbortController();
+
+            url = await sessionToMediaSource(
               session,
-              media.size,
               media.mimeType,
+              media.size,
+              controller.signal,
             );
+
+            abortRef.current = () =>
+              controller.abort();
 
             break;
 
@@ -436,11 +606,18 @@ function MediaItemV2Block({
             const session =
               await openAudio(request);
 
-            url = await sessionToObjectUrl(
+            const controller =
+              new AbortController();
+
+            url = await sessionToMediaSource(
               session,
-              media.size,
               media.mimeType,
+              media.size,
+              controller.signal,
             );
+
+            abortRef.current = () =>
+              controller.abort();
 
             break;
 
@@ -519,6 +696,10 @@ function MediaItemV2Block({
 
       cancelled = true;
 
+      if (abortRef.current) {
+        abortRef.current();
+      }
+
       if (createdUrl)
         URL.revokeObjectURL(createdUrl);
 
@@ -527,6 +708,7 @@ function MediaItemV2Block({
   }, [
     cryptoKey,
     capsuleId,
+    item,
     item.chunks,
     chunkPointers,
   ]);

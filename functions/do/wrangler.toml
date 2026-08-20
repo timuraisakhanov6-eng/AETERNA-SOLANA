@@ -1,0 +1,13 @@
+name = "aeterna-credit-coordinator"
+main = "src/index.ts"
+compatibility_date = "2026-03-13"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "CREDIT_OP_COORDINATOR", class_name = "CreditOperationCoordinator" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CreditOperationCoordinator"]

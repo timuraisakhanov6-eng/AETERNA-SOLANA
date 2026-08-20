@@ -16,7 +16,6 @@ interface ItemPreviewModalProps {
   onClose: () => void;
 }
 
-
 const ItemPreviewModal = ({
   item,
   previewSrc,
@@ -25,6 +24,7 @@ const ItemPreviewModal = ({
 
   if (item == null) return null;
 
+  const Inner = () => {
 
 /* ================= SCROLL LOCK ================= */
 
@@ -44,7 +44,6 @@ const ItemPreviewModal = ({
     };
 
   }, []);
-
 
 /* ================= ESC CLOSE ================= */
 
@@ -72,7 +71,6 @@ const ItemPreviewModal = ({
 
   }, [onClose]);
 
-
 /* ================= SWIPE DOWN CLOSE ================= */
 
   const startY =
@@ -93,7 +91,6 @@ const ItemPreviewModal = ({
 
   };
 
-
   const handleTouchMove = (
     e: React.TouchEvent
   ): void => {
@@ -102,17 +99,14 @@ const ItemPreviewModal = ({
       startY.current == null
     ) return;
 
-
     const touch =
       e.touches[0];
 
     if (!touch) return;
 
-
     const delta =
-      touch.clientY -
+      e.touches[0].clientY -
       startY.current;
-
 
     if (delta > 120) {
 
@@ -128,14 +122,12 @@ const ItemPreviewModal = ({
 
   };
 
-
   const handleTouchEnd = (): void => {
 
     startY.current =
       null;
 
   };
-
 
 /* ================= PREVIEW SRC GUARD ================= */
 
@@ -154,7 +146,6 @@ const ItemPreviewModal = ({
     )
       ? previewSrc
       : null;
-
 
 /* ================= RENDER ================= */
 
@@ -236,7 +227,7 @@ const ItemPreviewModal = ({
             alignItems: "center",
             justifyContent: "center",
           }}
-        >
+          >
 
 
 {/* TEXT PREVIEW */}
@@ -379,7 +370,6 @@ const ItemPreviewModal = ({
 
                   </p>
 
-
                   <audio
                     src={safePreviewSrc}
                     controls
@@ -449,7 +439,10 @@ const ItemPreviewModal = ({
     </>
   );
 
-};
+  };
 
+  return <Inner />;
+
+};
 
 export default ItemPreviewModal;

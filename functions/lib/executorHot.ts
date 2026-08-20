@@ -282,7 +282,7 @@ export async function getExecutorAddress(env: ExecutorEnv): Promise<string> {
  * logged, or serialized.
  */
 async function getExecutorIrys(env: ExecutorEnv): Promise<{
-  irys: any;
+  irys: unknown;
   address: string;
 }> {
   if (!env.EXECUTOR_PRIVATE_KEY) {

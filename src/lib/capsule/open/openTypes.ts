@@ -103,23 +103,14 @@ export interface MediaSession {
 /**
  * Video Runtime session.
  */
-export interface OpenVideoSession
-    extends MediaSession {
-
-}
+export type OpenVideoSession = MediaSession;
 
 /**
  * Audio Runtime session.
  */
-export interface OpenAudioSession
-    extends MediaSession {
-
-}
+export type OpenAudioSession = MediaSession;
 
 /**
  * Download Runtime session.
  */
-export interface DownloadFileSession
-    extends MediaSession {
-
-}
+export type DownloadFileSession = MediaSession;

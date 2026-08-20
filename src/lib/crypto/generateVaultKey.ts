@@ -205,7 +205,7 @@ export async function generateVaultKey(params: {
     cryptoError();
   }
 
-  let secretBytes =
+  const secretBytes =
     hexToBytes(secret);
 
   /**
@@ -327,11 +327,11 @@ export async function generateVaultKey(params: {
 
   } finally {
 
-    try { secretBytes.fill(0); } catch {}
-    try { saltMaterial?.fill(0); } catch {}
-    try { salt?.fill(0); } catch {}
-    try { combined?.fill(0); } catch {}
-    try { pbkdfSalt?.fill(0); } catch {}
+    try { secretBytes.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
+    try { saltMaterial?.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
+    try { salt?.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
+    try { combined?.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
+    try { pbkdfSalt?.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
   }
 

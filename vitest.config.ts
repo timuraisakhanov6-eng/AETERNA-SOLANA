@@ -29,7 +29,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "functions/**/*.test.ts"],
     // The default "forks" pool crashed with a worker-exit error in
     // this sandbox (likely process-fork restrictions); "threads"
     // runs the same tests without that dependency.

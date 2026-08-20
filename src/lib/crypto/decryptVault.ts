@@ -235,12 +235,12 @@ export async function decryptVault(
 
   deepFreeze(envelope);
 
-  let iv =
+  const iv =
     decodeBase64Canonical(
       envelope.iv
     );
 
-  let ciphertext =
+  const ciphertext =
     decodeBase64Canonical(
       envelope.d
     );
@@ -310,20 +310,20 @@ export async function decryptVault(
     // parse failure, schema rejection. Guard handles the case where
     // crypto.subtle.decrypt itself threw before decryptedBuffer was set.
     if (decryptedBuffer !== undefined) {
-      try { new Uint8Array(decryptedBuffer).fill(0); } catch {}
+      try { new Uint8Array(decryptedBuffer).fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
     }
 
     try {
       aad?.fill(0);
-    } catch {}
+    } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
     try {
       iv.fill(0);
-    } catch {}
+    } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
     try {
       ciphertext.fill(0);
-    } catch {}
+    } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
   }
 

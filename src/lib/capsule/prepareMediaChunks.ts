@@ -167,11 +167,11 @@ export async function prepareMediaChunks(
           // Zero out sensitive buffers after use
           try {
             plaintext.fill(0);
-          } catch {}
+          } catch { /* Intentional no-op: cleanup failure must not alter fail-closed path. */ }
 
           try {
             ciphertext?.fill(0);
-          } catch {}
+          } catch { /* Intentional no-op: cleanup failure must not alter fail-closed path. */ }
 
         }
 

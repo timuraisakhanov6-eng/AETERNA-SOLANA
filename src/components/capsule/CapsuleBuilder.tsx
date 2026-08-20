@@ -11,7 +11,6 @@ import { DateTimePicker, normalizeOpenAt } from "./DateTimePicker";
 import { PaymentModal } from "./PaymentModal";
 import { Button } from "@/components/ui/button";
 import { CapsuleItem } from "@/types/capsule";
-import { calculatePrice } from "@/lib/pricing";
 import { preparePreparedCapsule } from "@/lib/capsule/preparePreparedCapsule";
 import {
   CAPSULE_ID_REGEX,
@@ -61,77 +60,6 @@ function normalizeMimeType(raw: string | undefined): string {
     : "application/octet-stream";
 }
 
-/* ================= PADDLE ================= */
-
-interface PaddleCheckoutResponse {
-  checkoutUrl: string;
-}
-
-interface PaddleSuccessData {
-  checkout?: {
-    id?: string;
-  };
-  transaction?: {
-    id?: string;
-  };
-  id?: string;
-}
-
-interface PaddleCheckoutSDK {
-  Checkout: {
-    open: (options: {
-      override: string;
-      successCallback: (data: PaddleSuccessData) => void;
-      closeCallback: () => void;
-    }) => void;
-  };
-}
-
-function isPaddleCheckoutResponse(
-  value: unknown
-): value is PaddleCheckoutResponse {
-
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { checkoutUrl?: unknown }).checkoutUrl === "string"
-  );
-
-}
-
-async function createPaddleCheckout(
-  expectedAmount: number,
-  billableSizeBytes: number,
-  capsuleId: string
-) {
-  if (typeof fetch !== "function") {
-    throw new Error("FETCH_UNAVAILABLE");
-  }
-
-  const res = await fetch("/api/paddle/create-checkout", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      expectedAmount,
-      billableSizeBytes,
-      capsuleId,
-      currency: "USD",
-    }),
-  });
-
-  let data: unknown;
-  try {
-    data = await res.json();
-  } catch {
-    throw new Error("PADDLE_CREATE_FAILED");
-  }
-
-  if (!res.ok || !isPaddleCheckoutResponse(data)) {
-    throw new Error("PADDLE_CREATE_FAILED");
-  }
-
-  return data;
-}
 
 /* ================= SESSION STORAGE (recoverable continuation fallback; includes recipientSecret/creatorAuthority for Hold restoration, без vaultBytes) ================= */
 
@@ -524,14 +452,9 @@ export default function CapsuleBuilder() {
 
     }, 0);
 
-  const previewVaultSize =
-  estimatedTextSize + estimatedMediaSize;
-
-  // NOTE: currentPrice is an estimate only (pre-encryption size), and is
-  // also the canonical Business Layer size (billableSizeBytes) used for
-  // pricing at seal-time — pricing is always based on what the user saw,
-  // never on encryptedSizeBytes (Crypto Layer, post-encryption padding).
-  const currentPrice = calculatePrice(previewVaultSize);
+  // AETERNA service entitlement is fixed at 1.00 USDC
+  // and MUST NOT be derived from capsule size or block pricing.
+  const currentPrice = 1.0;
 
   const canSeal =
     items.length > 0 &&
@@ -702,12 +625,9 @@ export default function CapsuleBuilder() {
           preparedCapsule,
 
         billableSizeBytes:
-          previewVaultSize,
+          0,
 
-        expectedAmount:
-          calculatePrice(
-            previewVaultSize
-          ),
+        expectedAmount: 1.0,
 
         openAt:
           unlockAt as OpenAtUtc,
@@ -791,7 +711,9 @@ export default function CapsuleBuilder() {
           "aeterna-prepared-capsule",
           JSON.stringify(sessionData)
         );
-      } catch {}
+      } catch {
+        // sessionStorage write failure is non-fatal
+      }
 
       setSealPhase("idle");
       setShowPaymentModal(true);
@@ -810,98 +732,101 @@ export default function CapsuleBuilder() {
 
   /* ================= PAYMENT ================= */
 
-  const handleConfirmPayment = async (opts?: { web3TxHash?: string }) => {
-    const prepared = preparedRef.current;
-    if (!prepared) return;
+  const reserveLifecycle = async (prepared: CapsuleHoldState, creatorCreditId: string) => {
+    const candidateLifecycleId = `lifecycle-${prepared.prepared.capsuleId}-${Date.now()}`
 
-    /* ── Web3 path ── */
-    if (opts?.web3TxHash) {
-      const preparedClone = structuredClone(prepared);
+    const response = await fetch("/api/creator/reserve-lifecycle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        capsuleId: prepared.prepared.capsuleId,
+        creatorIdentityId,
+        lifecycleId: candidateLifecycleId,
+      }),
+    })
+
+    const data = await response.json()
+    if (!response.ok || !data?.ok) {
+      throw new Error(data?.error || "LIFECYCLE_RESERVATION_FAILED")
+    }
+
+    return {
+      ok: true,
+      lifecycleId: data.lifecycleId ?? candidateLifecycleId,
+      creatorCreditId,
+    }
+  }
+
+  const handleReserveReady = async (result: { creatorCreditId: string }) => {
+    if (!preparedRef.current) return
+
+    const prepared = preparedRef.current
+    preparedRef.current = null
+
+    try {
+      const reserved = await reserveLifecycle(prepared, result.creatorCreditId)
+
+      const sessionData = {
+        ...prepared,
+        billableSizeBytes: prepared.billableSizeBytes,
+        expectedAmount: prepared.expectedAmount,
+        openAt: prepared.openAt,
+        ...(typeof description === "string" ? { description } : {}),
+        capsuleId: prepared.prepared.capsuleId,
+        itemIds: prepared.itemIds,
+        encryptedPayloadBase64:
+          typeof prepared.prepared.encryptedPayload !== "undefined"
+            ? uint8ArrayToBase64(prepared.prepared.encryptedPayload)
+            : "",
+        encryptedSizeBytes: prepared.prepared.encryptedSizeBytes,
+        vaultSha256: prepared.prepared.vaultSha256,
+        saltBase: prepared.prepared.saltBase,
+        recipientSecret: prepared.prepared.recipientSecret,
+        creatorAuthority: prepared.prepared.creatorAuthority,
+        chunkMetadata: prepared.prepared.chunkMetadata,
+      }
+
+      try {
+        sessionStorage.setItem(
+          "aeterna-prepared-capsule",
+          JSON.stringify(sessionData)
+        )
+      } catch {
+        // sessionStorage write failure is non-fatal
+      }
+
+      setShowPaymentModal(false)
+      setSealPhase("idle")
+
       navigate("/create/hold", {
         state: {
-          holdState: preparedClone,
-          transactionId: opts.web3TxHash,
-          paymentMethod: "web3",
+          holdState: structuredClone(prepared),
+          correlationTransactionId: null,
+          canonicalLifecycleId: reserved.lifecycleId,
         },
-      });
-
-      // Memory hygiene: CapsuleHold already has an independent copy via
-      // structuredClone, so the originating runtime no longer needs this
-      // object. PreparedCapsule's recipientSecret/creatorAuthority are
-      // readonly, so individual fields can't be zeroed in place — drop the
-      // whole reference instead so it's eligible for GC (Memory Safety Law).
-      // sessionStorage cleanup is owned by CapsuleHold STEP 6 (after successful seal).
-      preparedRef.current = null;
-
-      return;
-    }
-
-    /* ── Paddle path ── */
-    try {
-      const { checkoutUrl } = await createPaddleCheckout(
-        prepared.expectedAmount,
-        prepared.billableSizeBytes,
-        prepared.prepared.capsuleId
-      );
-
-      const PaddleSDK = (window as unknown as { Paddle?: PaddleCheckoutSDK })
-        .Paddle;
-      if (!PaddleSDK) throw new Error("Paddle SDK not loaded");
-
-      PaddleSDK.Checkout.open({
-        override: checkoutUrl,
-        successCallback: (data: PaddleSuccessData) => {
-          const currentPrepared = preparedRef.current;
-
-          if (!currentPrepared) {
-            return;
-          }
-
-          const transactionId =
-            data?.checkout?.id ??
-            data?.transaction?.id ??
-            data?.id ??
-            null;
-
-          const preparedClone = structuredClone(currentPrepared);
-
-          navigate("/create/hold", {
-            state: {
-              holdState: preparedClone,
-              transactionId,
-              paymentMethod: "card",
-            },
-          });
-
-          // Memory hygiene: mirrors web3 path — drop the whole reference
-          // rather than mutating readonly fields on PreparedCapsule.
-          // sessionStorage cleanup is owned by CapsuleHold STEP 6 (after successful seal).
-          preparedRef.current = null;
-        },
-        closeCallback: () => {
-          if (import.meta.env.DEV) {
-            console.warn("[AETERNA] Paddle overlay closed without payment.");
-      }
-       },
-      });
-
+      })
     } catch (err) {
-      if (import.meta.env.DEV) {
-        console.error("[AETERNA] Paddle checkout failed", err);
-     }
-      setSealError("Payment initialization failed");
+      setSealError(
+        err instanceof Error ? err.message : "Lifecycle reservation failed"
+      )
+      setShowPaymentModal(false)
+      setSealPhase("idle")
     }
- };
+  }
 
-  // Cancel payment only — the PreparedCapsule is KEPT. The canonical
-  // PREPARED boundary is single-shot: the cryptographic identity for this
-  // capsuleId cannot be regenerated, so the existing prepared state must
-  // survive the payment cancellation to be reused (or replaced by a new
-  // capsule identity via resetCapsule() if the inputs change).
+  const handleCreditReady = (result: { status: string; creatorCreditId?: string }) => {
+    if (result.status === "available" && result.creatorCreditId) {
+      void handleReserveReady({ creatorCreditId: result.creatorCreditId })
+    } else {
+      setShowPaymentModal(false)
+      setSealPhase("idle")
+    }
+  }
+
   const handleCancelPayment = () => {
-    setShowPaymentModal(false);
-    setSealPhase("idle");
-  };
+    setShowPaymentModal(false)
+    setSealPhase("idle")
+  }
 
   const remainingChars = MAX_DESCRIPTION - (description?.length ?? 0);
   const isPreparing = sealPhase === "preparing";
@@ -1032,7 +957,7 @@ export default function CapsuleBuilder() {
               </Button>
 
               <p className="text-[10px] text-muted-foreground uppercase tracking-[0.2em]">
-                Est. ${currentPrice.toFixed(2)} · Secure Payment via Paddle or USDC
+                AETERNA Service Payment · $1.00 USDC · Base Mainnet
               </p>
             </div>
           </section>

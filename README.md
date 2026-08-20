@@ -122,7 +122,7 @@ The protocol separates authority into independent domains:
 |---|---|
 | Ciphertext Authority | Vault integrity |
 | Open Authority | Trusted Time + unlock policy |
-| Business Authority | Business Quote + payment validation |
+| Business Authority | Creator Service Quote + service-payment validation + Creator Credit authority |
 | Storage Authority | Immutable ciphertext persistence |
 
 Authority Domains remain isolated.

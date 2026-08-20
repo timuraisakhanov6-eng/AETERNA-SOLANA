@@ -229,11 +229,11 @@ Business Layer never performs cryptography.
 
 ---
 
-## Business Quote
+## Creator Service Quote
 
-Business Quote is the canonical commercial authority.
+Creator Service Quote is the canonical commercial entitlement object.
 
-Business Quote is the sole commercial source of truth.
+Creator Service Quote is the sole commercial source of truth for the AETERNA service fee.
 
 It is created exactly once.
 
@@ -241,13 +241,15 @@ It is never recalculated.
 
 ---
 
-## billableSizeBytes
+## USD 1.00 Creator Credit
 
-billableSizeBytes is the canonical pricing size.
+USD 1.00 is the fixed AETERNA service fee.
 
 It is fixed before preparation.
 
 It never changes.
+
+Capsule size and storage volume do not affect the AETERNA service fee.
 
 ---
 

@@ -225,7 +225,7 @@ function fail(
  */
 
 export const onRequestOptions = async (
-  context: EventContext<ManifestEnv, any, any>
+  context: EventContext<ManifestEnv, unknown, unknown>
 ): Promise<Response> => {
 
   const origin =
@@ -249,7 +249,7 @@ export const onRequestOptions = async (
  */
 
 export const onRequestGet = async (
-  context: EventContext<ManifestEnv, any, any>
+  context: EventContext<ManifestEnv, unknown, unknown>
 ): Promise<Response> => {
 
   const { request, env, params } =

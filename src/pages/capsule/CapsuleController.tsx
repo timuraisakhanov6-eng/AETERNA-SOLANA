@@ -24,13 +24,11 @@ import type {
 } from "@/types/manifest";
 import type { Vault } from "@/types/vault";
 
-
 type Props = {
   capsuleId: string;
   secret?: string;
   creatorAuthorityFragment?: string;
 };
-
 
 type InternalState =
   | { status: "loading" }
@@ -42,7 +40,6 @@ type InternalState =
       cryptoKey?: CryptoKey;
     }
   | { status: "error" };
-
 
 /**
  * FINDING 2 — DEV-only diagnostics helper.
@@ -71,17 +68,16 @@ export default function CapsuleController({
   creatorAuthorityFragment,
 }: Props) {
 
-  if (!CAPSULE_ID_REGEX.test(capsuleId)) {
-
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground gap-4 p-6">
-        <p className="text-sm tracking-wider uppercase text-muted-foreground font-medium text-center">
-          Invalid capsule identifier.
-        </p>
-      </div>
+  const [invalidCapsuleId, setInvalidCapsuleId] =
+    useState<boolean>(() =>
+      !CAPSULE_ID_REGEX.test(capsuleId)
     );
 
-  }
+  useEffect(() => {
+    setInvalidCapsuleId(
+      !CAPSULE_ID_REGEX.test(capsuleId)
+    );
+  }, [capsuleId]);
 
   const secretRef =
     useRef<string>(secret ?? "");
@@ -104,13 +100,11 @@ export default function CapsuleController({
   const [displayOpenAt, setDisplayOpenAt] =
     useState<OpenAtUtc | null>(null);
 
-
   const manifestRef =
     useRef<ManifestV1 | null>(null);
 
   const heartbeatRef =
     useRef<number | undefined>(undefined);
-
 
   // openedRef: true ONLY on successful capsule open.
   // Semantic contract: "vault was decrypted and delivered to UI".
@@ -139,12 +133,10 @@ export default function CapsuleController({
   const terminatedRef =
     useRef<boolean>(false);
 
-
   const intervalRef =
     useRef<ReturnType<typeof setInterval> | null>(
       null
     );
-
 
   const heartbeatPollRef =
     useRef<ReturnType<typeof setInterval> | null>(
@@ -156,7 +148,6 @@ export default function CapsuleController({
   // full contract. Also read by the render-scoped onConfirmPresence.
   const generationRef =
     useRef<number>(0);
-
 
   useEffect(() => {
 
@@ -209,7 +200,6 @@ export default function CapsuleController({
           manifest == null
         ) return;
 
-
         if (manifest.version !== 1)
           throw new Error("Unsupported manifest version");
 
@@ -237,7 +227,6 @@ export default function CapsuleController({
         ) {
           throw new Error("Invalid manifest.openAt");
         }
-
 
         manifestRef.current =
           Object.freeze(
@@ -301,7 +290,6 @@ export default function CapsuleController({
           manifest: manifestRef.current!,
         });
 
-
         queueMicrotask(() => {
 
           if (
@@ -315,7 +303,6 @@ export default function CapsuleController({
 
         });
 
-
         intervalRef.current =
           setInterval(() => {
 
@@ -328,7 +315,6 @@ export default function CapsuleController({
             }
 
           }, 5000);
-
 
         heartbeatPollRef.current =
           setInterval(async () => {
@@ -418,7 +404,6 @@ export default function CapsuleController({
     }
 
 
-
     async function tryOpen(
       manifest: ManifestV1
     ): Promise<void> {
@@ -429,9 +414,7 @@ export default function CapsuleController({
         openingRef.current
       ) return;
 
-
       openingRef.current = true;
-
 
       let secretLocal =
         secretRef.current;
@@ -465,14 +448,12 @@ export default function CapsuleController({
 
           });
 
-
         if (nowUtc < effectiveOpenAt) {
 
           openingRef.current = false;
           return;
 
         }
-
 
         if (!secretLocal) {
 
@@ -482,10 +463,8 @@ export default function CapsuleController({
 
         }
 
-
         tookSecretOwnership = true;
         secretRef.current = "";
-
 
         const result =
           await openCapsule({
@@ -495,7 +474,6 @@ export default function CapsuleController({
             manifest,
 
           });
-
 
         if (isStale())
           return;
@@ -507,14 +485,12 @@ export default function CapsuleController({
         openedRef.current = true;
         terminatedRef.current = true;
 
-
         if (intervalRef.current) {
 
           clearInterval(intervalRef.current);
           intervalRef.current = null;
 
         }
-
 
         if (heartbeatPollRef.current) {
 
@@ -569,7 +545,6 @@ export default function CapsuleController({
           // openedRef remains false — the capsule was NOT successfully opened.
           // terminatedRef → "orchestration pipeline is permanently closed"
           terminatedRef.current = true;
-
 
           if (intervalRef.current) {
 
@@ -626,8 +601,6 @@ export default function CapsuleController({
 
     }
 
-
-
     function onFocus(): void {
 
       if (
@@ -639,7 +612,6 @@ export default function CapsuleController({
       }
 
     }
-
 
 
     function onVisibilityChange(): void {
@@ -657,9 +629,7 @@ export default function CapsuleController({
     }
 
 
-
     void init();
-
 
     window.addEventListener(
       "focus",
@@ -670,7 +640,6 @@ export default function CapsuleController({
       "visibilitychange",
       onVisibilityChange
     );
-
 
     return () => {
 
@@ -694,7 +663,6 @@ export default function CapsuleController({
 
       }
 
-
       if (heartbeatPollRef.current) {
 
         clearInterval(
@@ -712,7 +680,6 @@ export default function CapsuleController({
     secret,
     creatorAuthorityFragment,
   ]);
-
 
 
   const shareUrl =
@@ -779,7 +746,6 @@ export default function CapsuleController({
     }, [capsuleId, hasAuthorityCapability]);
 
 
-
   // RENDERER IDENTITY GATE — INVARIANTS.md §4.1.
   //
   // The component-level state persists across prop changes: after
@@ -816,7 +782,6 @@ export default function CapsuleController({
             hasAuthorityCapability,
 
           content: (
-
             <CapsuleOpened
 
               manifest={
@@ -848,7 +813,6 @@ export default function CapsuleController({
   }
 
 
-
   if (state.status === "preview" && stateMatchesRoute) {
 
     const { manifest } =
@@ -858,7 +822,6 @@ export default function CapsuleController({
 
       <CapsuleView
         state={{
-
           status: "preview",
 
           capsuleId: capsuleId,
@@ -1093,7 +1056,6 @@ export default function CapsuleController({
   }
 
 
-
   if (state.status === "error") {
 
     return (
@@ -1124,9 +1086,19 @@ export default function CapsuleController({
   }
 
 
+  if (invalidCapsuleId) {
+
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground gap-4 p-6">
+        <p className="text-sm tracking-wider uppercase text-muted-foreground font-medium text-center">
+          Invalid capsule identifier.
+        </p>
+      </div>
+    );
+
+  }
 
   return (
-
     <CapsuleView
       state={{
         status: "opening",

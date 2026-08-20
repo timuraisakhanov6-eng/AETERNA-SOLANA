@@ -10,10 +10,9 @@ export const USDC_CONTRACT =
   CONTRACTS.BASE.USDC;
 
 export const RECIPIENT_ADDRESS =
-  CONTRACTS.BASE.EXECUTOR_HOT;
+  CONTRACTS.BASE.SETTLEMENT_WALLET;
 
 export const USDC_DECIMALS = 6 as const;
-
 
 /* ───────────────── ERC20 ABI ───────────────── */
 
@@ -29,7 +28,6 @@ export const ERC20_TRANSFER_ABI = [
     outputs: [{ name: "", type: "bool" }],
   },
 ] as const;
-
 
 /* ───────────────── BASE CHAIN PARAMS (EIP-3085 compatible) ───────────────── */
 

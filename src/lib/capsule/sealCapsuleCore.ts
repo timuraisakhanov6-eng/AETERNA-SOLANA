@@ -467,14 +467,11 @@ export async function sealCapsuleCore(
 
 ): Promise<SealCapsuleResult> {
 
-  let {
+  const {
 
     capsuleId,
 
     saltBase,
-
-    recipientSecret,
-    creatorAuthority,
 
     openAt,
     description,
@@ -486,6 +483,13 @@ export async function sealCapsuleCore(
 
     runtime,
     chunkMetadata
+
+  } = params;
+
+  let {
+
+    recipientSecret,
+    creatorAuthority
 
   } = params;
 
@@ -610,7 +614,9 @@ export async function sealCapsuleCore(
         sessionStorage.removeItem(
           `aeterna-vault-txid:${capsuleId}`
         );
-      } catch {}
+      } catch {
+        // Intentional no-op: cleanup failure must not alter fail-closed path.
+      }
 
       clearPersistedSealManifest(capsuleId);
 
@@ -850,7 +856,9 @@ export async function sealCapsuleCore(
 
       }
 
-    } catch {}
+    } catch {
+      // Intentional no-op: cleanup failure must not alter fail-closed path.
+    }
 
 
     if (!vaultTxId) {
@@ -879,7 +887,9 @@ export async function sealCapsuleCore(
           vaultTxId
         );
 
-      } catch {}
+      } catch {
+        // Intentional no-op: cleanup failure must not alter fail-closed path.
+      }
 
     }
      
@@ -1084,7 +1094,9 @@ export async function sealCapsuleCore(
       sessionStorage.removeItem(
         `aeterna-vault-txid:${capsuleId}`
       );
-    } catch {}
+    } catch {
+      // Intentional no-op: cleanup failure must not alter fail-closed path.
+    }
 
     // FINDING 2 — manifest retry cache no longer needed.
     clearPersistedSealManifest(capsuleId);

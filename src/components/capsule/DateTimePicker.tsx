@@ -92,7 +92,7 @@ export function DateTimePicker({
 
   return (
     <div className={`space-y-4 ${disabled ? "opacity-60 pointer-events-none" : ""}`}>
-      <h3 className="text-sm font-semibold tracking-widest uppercase text-center text-muted-foreground">
+      <h3 className="text-sm font-semibold tracking-widest uppercase text-center text-foreground/80">
         SET OPENING CONDITIONS
       </h3>
 
@@ -119,7 +119,7 @@ export function DateTimePicker({
               </button>
             }
           />
-          <p className="mt-2 text-xs text-muted-foreground/60">
+          <p className="mt-2 text-xs text-foreground/60">
             Unlock occurs automatically on this date.
           </p>
         </div>

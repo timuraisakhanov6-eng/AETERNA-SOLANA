@@ -26,12 +26,12 @@ const ALLOWED_ORIGINS = [
  * Canonical-safe transactionId validator
  * Prevents KV namespace poisoning / unicode injection
  */
-const TRANSACTION_ID_REGEX = /^[A-Za-z0-9_\-]{10,200}$/;
+const TRANSACTION_ID_REGEX = /^[A-Za-z0-9_-]{10,200}$/;
 
 /**
  * Allowed request schema whitelist
  */
-const ALLOWED_BODY_FIELDS = ["capsuleId", "transactionId"];
+const ALLOWED_BODY_FIELDS = ["capsuleId", "canonicalLifecycleId", "correlationTransactionId"];
 
 /**
  * Canonical payment authority key prefix — must mirror webhook.ts and seal.ts.
@@ -125,7 +125,7 @@ function fail(origin: string, status = 400): Response {
  * OPTIONS handler
  */
 export const onRequestOptions = async (
-  context: EventContext<any, any, any>
+  context: EventContext<unknown, unknown, unknown>
 ): Promise<Response> => {
 
   const origin = context.request.headers.get("origin") ?? "";
@@ -142,7 +142,7 @@ export const onRequestOptions = async (
  * POST handler
  */
 export const onRequestPost = async (
-  context: EventContext<any, any, any>
+  context: EventContext<unknown, unknown, unknown>
 ): Promise<Response> => {
 
   const { request, env } = context;
@@ -193,7 +193,7 @@ export const onRequestPost = async (
     return fail(origin, 400);
   }
 
-  const { capsuleId, transactionId } = body;
+  const { capsuleId, canonicalLifecycleId, correlationTransactionId } = body;
 
   if (
     !capsuleId ||
@@ -203,39 +203,25 @@ export const onRequestPost = async (
     return fail(origin, 400);
   }
 
-  /**
-   * Canonical-safe transactionId validation
-   */
   if (
-    !transactionId ||
-    typeof transactionId !== "string" ||
-    !TRANSACTION_ID_REGEX.test(transactionId)
+    !canonicalLifecycleId ||
+    typeof canonicalLifecycleId !== "string"
   ) {
     return fail(origin, 400);
   }
 
   if (!env?.UPLOAD_TOKENS || !env?.VERIFIED_PAYMENTS) {
-
-    console.error(
-      "[AETERNA][upload-token] Missing KV bindings",
-      {
-        hasUploadTokens: !!env?.UPLOAD_TOKENS,
-        hasVerifiedPayments: !!env?.VERIFIED_PAYMENTS,
-      }
-    );
-
+    console.error("[AETERNA][upload-token] Missing KV bindings", {
+      hasUploadTokens: !!env?.UPLOAD_TOKENS,
+      hasVerifiedPayments: !!env?.VERIFIED_PAYMENTS,
+    });
     return fail(origin, 503);
-
   }
 
-  /**
-   * Load payment record via transactionId.
-   * Canonical topology: {transactionId} → full record.
-   */
   let verifiedEntry: Record<string, unknown> | null = null;
 
   try {
-    const raw = await env.VERIFIED_PAYMENTS.get(transactionId);
+    const raw = await env.VERIFIED_PAYMENTS.get(`capsule:${capsuleId}`);
     if (raw) {
       verifiedEntry = JSON.parse(raw) as Record<string, unknown>;
     }
@@ -243,10 +229,6 @@ export const onRequestPost = async (
     return fail(origin, 503);
   }
 
-  /**
-   * Worker-authoritative trusted time.
-   * All protocol timestamps originate from a single trusted time authority.
-   */
   const { nowUtc: now } = await getTrustedTime();
 
   if (
@@ -263,10 +245,18 @@ export const onRequestPost = async (
     Object.getPrototypeOf(verifiedEntry) !== Object.prototype ||
     verifiedEntry.ok !== true ||
     verifiedEntry.capsuleId !== capsuleId ||
-    verifiedEntry.transactionId !== transactionId ||
     !Number.isSafeInteger(verifiedEntry.expiresAt as number) ||
     (verifiedEntry.expiresAt as number) <= now
   ) {
+    return fail(origin, 403);
+  }
+
+  const creatorIdentityId =
+    typeof verifiedEntry.creatorIdentityId === "string"
+      ? verifiedEntry.creatorIdentityId
+      : null;
+
+  if (!creatorIdentityId) {
     return fail(origin, 403);
   }
 
@@ -338,7 +328,8 @@ export const onRequestPost = async (
       uploadToken,
       JSON.stringify({
         capsuleId,
-        transactionId,
+        canonicalLifecycleId,
+        correlationTransactionId: correlationTransactionId ?? "",
         issuedAt:  now,
         expiresAt,
         tokenVersion: 1,

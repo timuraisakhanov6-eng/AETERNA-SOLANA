@@ -14,7 +14,7 @@ export interface InjectedWallet {
  */
 
 function resolveWallet(
-  provider: any
+  provider: unknown
 ): InjectedWallet {
 
   if (!provider || typeof provider !== "object") {
@@ -71,7 +71,9 @@ Promise<InjectedWallet[]> {
   }
 
 
-  const eth = (window as any).ethereum;
+  const eth =
+    (window as Window).ethereum as
+      unknown;
 
   // Prefer canonical MetaMask provider when available
   if (eth?.isMetaMask) {
@@ -91,7 +93,11 @@ Promise<InjectedWallet[]> {
 
     const metamask =
       legacyProviders.find(
-        (p: any) => p.isMetaMask
+        (p: unknown) =>
+          typeof p === "object" &&
+          p !== null &&
+          "isMetaMask" in p &&
+          (p as { isMetaMask?: boolean }).isMetaMask
       );
 
     if (metamask) {
@@ -127,7 +133,9 @@ Promise<InjectedWallet[]> {
 
     }
 
-    catch {}
+    catch {
+      // Intentional no-op: wallet resolution failure must not alter fail-closed path.
+    }
 
   }
 
@@ -145,7 +153,10 @@ Promise<InjectedWallet[]> {
   ) {
 
     const detail =
-      (event as CustomEvent<any>)
+      (event as CustomEvent<{
+        info?: { rdns?: string; uuid?: string; name?: string };
+        provider?: unknown;
+      }>)
         .detail;
 
     if (

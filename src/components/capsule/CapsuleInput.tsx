@@ -202,7 +202,7 @@ const CapsuleInput = ({
                       lg:text-[17px]
                       leading-[1.45]
                       text-foreground
-                      placeholder:text-muted-foreground
+                      placeholder:text-foreground/60
                       overflow-y-auto
                       py-[6px]
                     "
@@ -253,7 +253,7 @@ const CapsuleInput = ({
                 text-[11px]
                 sm:text-xs
                 lg:text-sm
-                text-muted-foreground/80
+                text-foreground/70
               "
             >
               Start creating your story inside the capsule.

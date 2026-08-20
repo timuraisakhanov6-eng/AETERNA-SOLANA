@@ -216,3 +216,24 @@ body {
 html {
   overflow-y: scroll;
 }
+
+
+.aeterna-modal-capsule {
+  border-radius: 72px;
+}
+
+.dark .aeterna-modal-capsule {
+  border: 1px solid rgba(255,180,90,0.35);
+  background:
+    linear-gradient(
+      to bottom,
+      hsl(220 35% 10%),
+      hsl(220 35% 7%),
+      hsl(220 35% 5%)
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255,200,140,0.08),
+    0 0 0 1px rgba(255,180,90,0.12),
+    0 0 70px rgba(255,180,90,0.22);
+  color: hsl(45 20% 92%);
+}

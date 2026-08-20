@@ -299,9 +299,13 @@ export async function decryptChunk(
      * Guard here handles the error path where `decrypted` was
      * assigned but the slice or fill threw before completion.
      */
-    try { aad?.fill(0); } catch {}
+    try { aad?.fill(0); } catch {
+      // Intentional no-op: zeroization failure must not alter fail-closed path.
+    }
 
-    try { decrypted?.fill(0); } catch {}
+    try { decrypted?.fill(0); } catch {
+      // Intentional no-op: zeroization failure must not alter fail-closed path.
+    }
 
   }
 

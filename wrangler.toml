@@ -7,6 +7,16 @@ compatibility_flags = ["nodejs_compat"]
 pages_build_output_dir = "dist"
 
 [[kv_namespaces]]
+binding = "CREATOR_IDENTITIES"
+id = "24b0aa9fc8a24a79bb8a95270cb73344"
+preview_id = "PLACEHOLDER_CREATOR_IDENTITIES"
+
+[[kv_namespaces]]
+binding = "CREATOR_CREDITS"
+id = "8761646f92cd4fe7bd3b04d21fe10ad8"
+preview_id = "PLACEHOLDER_CREATOR_CREDITS"
+
+[[kv_namespaces]]
 binding = "CAPSULE_MANIFESTS"
 id = "1603d7be3d224d35b04c73656e01bc66"
 preview_id = "f331c07b1aa345d78e71b82f26dc9b95"
@@ -39,6 +49,23 @@ binding = "CHUNK_POINTER_REGISTRY"
 id = "29a72382d6274a30abba7a2a28f3f34d"
 
 # ─────────────────────────────────────────────
+# Credit Operation Coordinator (Durable Object)
+#
+# Binding: CREDIT_OP_COORDINATOR
+# Class: CreditOperationCoordinator
+# Module: functions/do/creditOperationCoordinator.ts
+#
+# Provides authoritative serialization for Creator Credit
+# reserve/finalize/recover operations.
+# ─────────────────────────────────────────────
+
+[durable_objects]
+[[durable_objects.bindings]]
+name = "CREDIT_OP_COORDINATOR"
+class_name = "CreditOperationCoordinator"
+script_name = "aeterna-credit-coordinator"
+
+# ─────────────────────────────────────────────
 # Trusted Time Authority
 #
 # Endpoint: /api/time
@@ -61,7 +88,6 @@ id = "29a72382d6274a30abba7a2a28f3f34d"
 [env.production.vars]
 
 VITE_WALLETCONNECT_PROJECT_ID = "02faf7986096e65a6e68c57898e961f5"
-PADDLE_ENV = "sandbox"
 DEBUG = "true"
 
 # ─────────────────────────────────────────────
@@ -137,22 +163,9 @@ id = "29a72382d6274a30abba7a2a28f3f34d"
 # Required production secrets:
 #
 # EXECUTOR_PRIVATE_KEY
-#   EVM private key of AETERNA_EXECUTOR_HOT.
-#   Signs and submits publication transactions.
+#   Operational signing key for publication execution.
 #
-# ALCHEMY_BASE_URL
-#   Base Mainnet RPC endpoint used by the project.
-#   Available for Executor infrastructure and
-#   payment verification.
-#
-# PADDLE_API_KEY
-#   Paddle API authentication key.
-#
-# PADDLE_WEBHOOK_SECRET
-#   Paddle webhook signing secret.
-#
-# PAYMENT_RECEIVER_ADDRESS
-#   Treasury Safe address receiving Web3 payments.
+# Note: payment verification secrets are defined separately.
 #
 # Current implementation notes:
 #
@@ -162,9 +175,10 @@ id = "29a72382d6274a30abba7a2a28f3f34d"
 #
 #   https://node1.irys.xyz
 #
-# Publication currently uses:
+# Publication currently uses the Irys Mainnet endpoint compiled into
+# executorHot.ts:
 #
-#   token = "base-eth"
+#   https://node1.irys.xyz
 #
 # These values are implementation constants,
 # not deployment secrets.

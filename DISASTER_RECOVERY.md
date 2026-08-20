@@ -49,7 +49,7 @@ Potential failure scenarios include:
 - API downtime
 - deployment corruption
 - DNS failures
-- payment provider outages
+- payment verification outage
 - infrastructure compromise
 - partial runtime unavailability
 
@@ -177,7 +177,7 @@ Storage providers MUST NOT gain:
 
 Payment outages MUST NOT weaken:
 
-- Business Quote authority
+- Creator Service Quote authority
 - payment verification ordering
 - upload-after-payment enforcement
 - authority isolation

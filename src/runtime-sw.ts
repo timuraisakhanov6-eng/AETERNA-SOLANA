@@ -2,7 +2,7 @@
 
 export {};
 
-declare var self: ServiceWorkerGlobalScope;
+declare let self: ServiceWorkerGlobalScope;
 
 import {
     handleRuntimeMessage,

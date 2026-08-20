@@ -477,11 +477,13 @@ export function DateTimePickerModal({
 
       <DialogContent
 
-        className="sm:max-w-[400px]"
+        className="sm:max-w-[400px] w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] overflow-y-auto p-4 sm:p-6 aeterna-modal-capsule"
+
+        showClose={false}
 
       >
 
-        <DialogHeader>
+        <div className="flex items-center justify-between">
 
           <DialogTitle>
 
@@ -489,8 +491,27 @@ export function DateTimePickerModal({
 
           </DialogTitle>
 
-        </DialogHeader>
+          <button
 
+            type="button"
+
+            onClick={() => setOpen(false)}
+
+            className="rounded-sm p-1 opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+
+            aria-label="Close"
+
+          >
+
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
+
+              <path d="M18 6 6 18M6 6l12 12" />
+
+            </svg>
+
+          </button>
+
+        </div>
 
         <div className="space-y-4 py-4">
 
@@ -530,7 +551,7 @@ export function DateTimePickerModal({
 
               className={cn(
 
-                "w-[140px]",
+                "w-full max-w-[140px]",
 
                 "text-center",
 
@@ -571,7 +592,7 @@ export function DateTimePickerModal({
 
           {/* Calendar */}
 
-          <div className="flex justify-center">
+          <div className="flex justify-center overflow-x-auto w-full">
 
             <Calendar
 
@@ -611,18 +632,16 @@ export function DateTimePickerModal({
 
           {/* Confirm */}
 
-          <div className="flex justify-center pt-2">
+          <div className="w-full pt-2">
 
             <Button
-
+              className="w-full"
               onClick={
                 handleConfirm
               }
-
               disabled={
                 !tempDate
               }
-
             >
 
               Confirm

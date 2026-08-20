@@ -115,9 +115,9 @@ PREPARED
 ↓
 Calculate Capacity
 ↓
-Business Quote Creation
+Creator Service Quote Creation
 ↓
-Business Quote
+Creator Service Quote
 ↓
 Payment
 ↓
@@ -138,10 +138,10 @@ Manifest Authority Established
 ↓
 SEALED
 Capacity is calculated after PREPARED according to the canonical Business Authority rules.
-Business Quote is then created exactly once.
-Business Quote becomes the canonical commercial authority of the capsule.
-All payment authorization and verification stages consume the existing Business Quote.
-No protocol stage after Business Quote creation may regenerate, replace or modify Business Quote.
+Creator Service Quote is then created exactly once.
+Creator Service Quote becomes the canonical commercial entitlement of the capsule.
+payment authorization and verification stages consume the existing Creator Service Quote.
+No protocol stage after Creator Service Quote creation may regenerate, replace or modify Creator Service Quote.
 
 Capability Generation
 Capability generators run before media encryption and before prepareVault().
@@ -221,7 +221,7 @@ PreparedCapsule activates the Ciphertext Authority Law.
 PreparedCapsule is consumed by:
 
 capacity calculation
-Business Quote creation
+Creator Service Quote creation
 CapsuleHold
 upload
 manifest creation
@@ -670,7 +670,7 @@ MEDIA_PREPARED
 ↓
 PREPARED
 ↓
-PAID
+PAYMENT VERIFIED
 ↓
 CAPSULE_HOLD
 ↓
@@ -685,7 +685,7 @@ OPENED
 DRAFT — capsule contents are being assembled; nothing has been created yet.
 MEDIA_PREPARED — prepareMediaChunks() is complete; PreparedChunk[] and ChunkMetadata[] exist. PREPARED has not yet been reached.
 PREPARED — capabilities are generated, the vault is encrypted into PreparedCapsule, the Ciphertext Authority Law is activated. chunkMetadata core fields, encryptedPayload, and all cryptographic authorities become immutable.
-PAID — payment has been successfully verified against the canonical Business Quote.
+PAYMENT VERIFIED — payment has been successfully verified against the canonical Creator Service Quote.
 CAPSULE_HOLD — the prepared ciphertext is held pending upload; no media encryption occurs at this stage.
 SEALED — the Manifest is created and verified; further capsule modification is closed.
 CONFIRM PRESENCE WINDOW — present for every capsule. It governs Heartbeat availability and renewal. Its behaviour depends only on the originally selected opening interval.
@@ -694,22 +694,22 @@ OPENED — the vault is decrypted and rendered; access becomes permanent.
 
 Business Layer Authority
 Pricing and settlement are governed by:
-AETERNA_PAYMENT_AND_ECONOMICS_MODEL_v1
+AETERNA_CREATOR_CREDIT_MODEL
 Business authority governs:
-
-capacity calculation
-creator pricing
-creator payment
-future treasury governance settlement
-storage settlement
+- service entitlement creation;
+- creator pricing;
+- AETERNA service payment;
+- Creator Service Quote;
+- Creator Credit authority;
+- future treasury governance settlement.
 
 Business authority does not govern:
-
-capability authority
-key derivation
-ciphertext continuity
-heartbeat semantics
-open semantics
+- capability authority;
+- key derivation;
+- ciphertext continuity;
+- heartbeat semantics;
+- open semantics;
+- Irys publication/storage payment.
 
 Business authority is isolated from:
 
@@ -722,26 +722,26 @@ open semantics
 ciphertext continuity
 
 If an implementation contradicts the business protocol, the implementation must be fixed. Business law must not be weakened.
-Business Quote Authority
-Business Quote is the canonical commercial authority of a capsule.
-Business Quote is created exactly once after PREPARED.
-Business Quote becomes immutable immediately after creation.
-Payment Authorization consumes Business Quote.
-Payment Verification consumes Business Quote.
+Creator Service Quote Authority
+Creator Service Quote is the canonical commercial entitlement object for a capsule.
+Creator Service Quote is created exactly once after PREPARED.
+Creator Service Quote becomes immutable immediately after creation.
+Entitlement verification consumes Creator Service Quote.
+Payment verification consumes Creator Service Quote.
 Verification never creates Business Authority.
-Business Quote is temporary Business Authority only.
-Business Quote never becomes part of:
+Creator Service Quote is temporary Business Authority only.
+Creator Service Quote never becomes part of:
 • PreparedCapsule
 • Vault
 • Manifest
-Business Quote expires after the payment lifecycle completes.
+Creator Service Quote expires after the payment lifecycle completes.
 Server Business Authority
-Business Quote is established exclusively by the server.
+Creator Service Quote is established exclusively by the server.
 The client may display creator pricing for user experience.
 The client never establishes Business Authority.
 The client never becomes the canonical commercial authority.
 Business Authority exists only after successful server validation.
-Server-created Business Quote is the sole commercial authority throughout the payment lifecycle.
+Server-created Creator Service Quote is the sole commercial authority throughout the payment lifecycle.
 
 Authority Domains
 The system is divided into four independent, non-intersecting authorities.
@@ -886,15 +886,15 @@ Ciphertext Authority Law
 ↓
 Calculate Capacity
 ↓
-Business Quote Creation
+Creator Service Quote Creation
 ↓
-Business Quote
+Creator Service Quote
 ↓
 Payment Authorization
 ↓
 Payment Verification
 ↓
-PAID
+PAYMENT VERIFIED
 ↓
 CapsuleHold
 ↓
@@ -1076,8 +1076,8 @@ Revision History (carried forward, correctness confirmed)
 ✔ STREAMING RECONSTRUCTION LAW added...
 ... (все предыдущие пункты сохранены)
 ✔ rev6.3: Runtime Layer + Streaming Upload Law + Creator Experience Principle + pricing independence + Runtime Session Ownership.
-✔ Добавлены STREAMING PREVIEW LAW, STREAMING DOWNLOAD LAW, Builder Independence Principle, Business Quote Authority и Server Business Authority.
-✔ Унифицированы PreparedCapsule consumers, PAID description и Final Protocol Summary.
+✔ Добавлены STREAMING PREVIEW LAW, STREAMING DOWNLOAD LAW, Builder Independence Principle, Creator Service Quote Authority и Server Business Authority.
+✔ Унифицированы PreparedCapsule consumers, PAYMENT VERIFIED description и Final Protocol Summary.
 ✔ Добавлены DECRYPTED DATA LIFETIME LAW, уточнения Runtime Ownership, Streaming Reconstruction, Builder Independence и Runtime Session Lifetime.
 ✔ Исправлен конфликт с Persistent Runtime. Заменены "should" → "shall" в Streaming Laws. Документ полностью согласован с текущей Runtime-архитектурой и Persistent Runtime Specification.
 ✔ v4.2 rev1: Heartbeat promoted to a full canonical specification ("Heartbeat Specification" section) covering purpose, the Heartbeat Window, Renewal Rules, interaction with Open Authority, and Emergency Runtime behavior. Expanded Heartbeat description in Core Entities. Updated Creator Path step to describe Presence availability rules. Added Heartbeat Window rule after Heartbeat Records. Added HEARTBEAT WINDOW stage to Capsule Lifecycle (conditional on heartbeatEnabled). Clarified Emergency Runtime's Confirm Presence exposure. Split "Trusted Time + Heartbeat" into "Trusted Time" → "Heartbeat Window Evaluation" → resolveEffectiveOpenAt() in the Final Protocol Summary. No changes to Ciphertext Authority, Vault, Manifest, PreparedCapsule, Runtime, Storage, Business Layer, Payment, Streaming, Crypto, or Capability Authority sections.

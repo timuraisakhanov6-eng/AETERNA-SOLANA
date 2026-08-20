@@ -243,7 +243,7 @@ Core entities include:
 - Prepared Capsule
 - Vault
 - Manifest
-- Business Quote
+- Creator Service Quote
 - Payment
 - Capability
 - Runtime
@@ -328,7 +328,7 @@ Business services implement commercial protocol requirements.
 
 Business Authority includes:
 
-- Business Quote
+- Creator Service Quote
 - Payment Verification
 - Commercial validation
 - Future treasury governance interaction

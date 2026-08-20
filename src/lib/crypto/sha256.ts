@@ -119,7 +119,7 @@ export async function sha256(
 
     try {
       bytes?.fill(0);
-    } catch {}
+    } catch { /* Intentional no-op: hash cleanup failure must not alter fail-closed path. */ }
 
   }
 

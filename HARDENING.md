@@ -146,13 +146,14 @@ Implicit trust assumptions are forbidden.
 
 Payment integrations SHOULD preserve:
 
-- Business Quote authority
+- Creator Service Quote authority
 - strict transaction validation
 - upload-after-payment enforcement
 - replay resistance
 - environment isolation
+- fixed USD 1.00 service fee
 
-Payment providers MUST remain non-authoritative.
+Payment integrations MUST remain non-authoritative.
 
 ---
 

@@ -74,8 +74,8 @@ type SessionCapsuleData = {
 
 type LocationState = Readonly<{
   holdState: CapsuleHoldState;
-  transactionId: string | null;
-  paymentMethod: "card" | "web3";
+  correlationTransactionId?: string | null;
+  canonicalLifecycleId?: string | null;
 }>;
 
 
@@ -193,18 +193,18 @@ export default function CapsuleHold() {
     new URLSearchParams(location.search);
 
 
-  const transactionId =
-    locationState?.transactionId ??
+  // transactionId is correlation data only.
+  // It is never authority for upload/hold.
+  const correlationTransactionId =
+    locationState?.correlationTransactionId ??
     params.get("transaction_id") ??
     params.get("checkout_id") ??
     null;
 
-
-  const paymentMethod:
-    | "card"
-    | "web3" =
-    locationState?.paymentMethod ??
-    "card";
+  const canonicalLifecycleId =
+    locationState?.canonicalLifecycleId ??
+    params.get("lifecycleId") ??
+    null;
 
 
   const holdStateRef =
@@ -253,7 +253,9 @@ export default function CapsuleHold() {
             };
           }
         }
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
 
     holdStateRef.current = resolved;
@@ -270,7 +272,7 @@ export default function CapsuleHold() {
 
     if (
       !holdState ||
-      !transactionId
+      !canonicalLifecycleId
     ) {
 
       navigate(
@@ -282,7 +284,7 @@ export default function CapsuleHold() {
 
   }, [
     holdState,
-    transactionId,
+    canonicalLifecycleId,
     navigate,
   ]);
 
@@ -360,7 +362,9 @@ export default function CapsuleHold() {
           sealLockKey
         );
 
-      } catch {}
+      } catch {
+        // ignore
+      }
 
       setRetryNonce(
         (n) => n + 1
@@ -385,7 +389,7 @@ export default function CapsuleHold() {
 
     if (
       !holdState ||
-      !transactionId ||
+      !canonicalLifecycleId ||
       startedRef.current ||
       error
     ) {
@@ -404,7 +408,7 @@ export default function CapsuleHold() {
       if (
         existingLock &&
         existingLock !==
-          transactionId
+          canonicalLifecycleId
       ) {
         return;
       }
@@ -412,10 +416,12 @@ export default function CapsuleHold() {
 
       sessionStorage.setItem(
         sealLockKey,
-        transactionId
+        canonicalLifecycleId
       );
 
-    } catch {}
+    } catch {
+        // ignore
+      }
 
 
     startedRef.current =
@@ -427,56 +433,7 @@ export default function CapsuleHold() {
 
         try {
 
-          /* ── STEP 1: Paddle verify ── */
-
-          if (
-            paymentMethod ===
-            "card"
-          ) {
-
-            const verifyRes =
-              await fetch(
-                "/api/paddle/verify",
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type":
-                      "application/json",
-                  },
-                  body:
-                    JSON.stringify({
-                      transactionId,
-                      capsuleId:
-                        holdState.prepared.capsuleId,
-                      expectedAmount:
-                        holdState.expectedAmount,
-                    }),
-                }
-              );
-
-
-            if (!verifyRes.ok)
-              throw new Error(
-                "PAYMENT_VERIFICATION_FAILED"
-              );
-
-
-            const verify =
-              await verifyRes.json().catch(() => null);
-
-
-            if (
-              !verify ||
-              verify.ok !== true
-            )
-              throw new Error(
-                "PAYMENT_NOT_CONFIRMED"
-              );
-
-          }
-
-
-          /* ── STEP 2: Upload token ── */
+          /* ── STEP 1: canonical upload token ── */
 
           const tokenRes =
             await fetch(
@@ -491,7 +448,9 @@ export default function CapsuleHold() {
                   JSON.stringify({
                     capsuleId:
                       holdState.prepared.capsuleId,
-                    transactionId,
+                    canonicalLifecycleId,
+                    correlationTransactionId:
+                      correlationTransactionId ?? "",
                   }),
               }
             );
@@ -739,7 +698,9 @@ export default function CapsuleHold() {
               sealLockKey
             );
 
-          } catch {}
+          } catch {
+        // ignore
+      }
 
 
           /* ── STEP 7: redirect ── */
@@ -789,7 +750,9 @@ export default function CapsuleHold() {
               sealLockKey
             );
 
-          } catch {}
+          } catch {
+        // ignore
+      }
 
 
           startedRef.current =
@@ -817,8 +780,8 @@ export default function CapsuleHold() {
 
   }, [
   holdState,
-  transactionId,
-  paymentMethod,
+  canonicalLifecycleId,
+  correlationTransactionId,
   navigate,
   error,
   retryNonce,
@@ -830,7 +793,7 @@ export default function CapsuleHold() {
 
   if (
     !holdState ||
-    !transactionId
+    !canonicalLifecycleId
   ) {
     return null;
   }

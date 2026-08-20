@@ -129,7 +129,7 @@ export async function loadManifest(
     if ("vaultSha256" in manifest.ext) {
 
       const hash =
-        (manifest.ext as any).vaultSha256;
+        (manifest.ext as { vaultSha256?: string }).vaultSha256;
 
 
       if (

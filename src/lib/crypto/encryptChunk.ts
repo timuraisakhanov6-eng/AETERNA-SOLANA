@@ -347,13 +347,13 @@ export async function encryptChunk(
 
   } finally {
 
-    try { payload?.fill(0); } catch {}
+    try { payload?.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
-    try { iv?.fill(0); } catch {}
+    try { iv?.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
-    try { cipher?.fill(0); } catch {}
+    try { cipher?.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
-    try { aad?.fill(0); } catch {}
+    try { aad?.fill(0); } catch { /* Intentional no-op: zeroization failure must not alter fail-closed path. */ }
 
   }
 

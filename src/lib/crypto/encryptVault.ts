@@ -320,13 +320,13 @@ export async function encryptVault(
 
   } finally {
 
-    try { data?.fill(0); } catch {}
+    try { data?.fill(0); } catch { /* Intentional no-op: cleanup failure must not alter fail-closed path. */ }
 
-    try { iv?.fill(0); } catch {}
+    try { iv?.fill(0); } catch { /* Intentional no-op: cleanup failure must not alter fail-closed path. */ }
 
-    try { aad?.fill(0); } catch {}
+    try { aad?.fill(0); } catch { /* Intentional no-op: cleanup failure must not alter fail-closed path. */ }
 
-    try { ciphertext?.fill(0); } catch {}
+    try { ciphertext?.fill(0); } catch { /* Intentional no-op: cleanup failure must not alter fail-closed path. */ }
 
   }
 

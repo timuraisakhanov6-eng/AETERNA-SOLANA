@@ -398,15 +398,15 @@ export default function CapsuleView({ state, className }: Props) {
               sm:rounded-[80px]
               xl:rounded-[100px]
               border
-              border-accent/25
-              dark:border-accent/15
+              border-amber-500/40
+              dark:border-amber-400/30
               bg-gradient-to-b
-              from-accent/[0.05]
-              via-transparent
-              to-accent/[0.03]
-              shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]
-              shadow-[0_0_0_1px_rgba(255,200,140,0.08),0_0_60px_rgba(255,200,140,0.18)]
-              dark:shadow-[0_0_40px_-15px_hsl(var(--accent)/0.15)]
+              from-[hsl(220,35%,10%)]
+              via-[hsl(220,35%,7%)]
+              to-[hsl(220,35%,5%)]
+              shadow-[inset_0_1px_0_rgba(255,200,140,0.08)]
+              shadow-[0_0_0_1px_rgba(255,180,90,0.12),0_0_70px_rgba(255,180,90,0.22)]
+              dark:shadow-[0_0_0_1px_rgba(255,180,90,0.1),0_0_60px_rgba(255,180,90,0.16)]
               px-7
               pt-12
               pb-14
@@ -435,7 +435,7 @@ export default function CapsuleView({ state, className }: Props) {
                 {/* Glow ring */}
                 <motion.div
                   aria-hidden
-                  className="absolute rounded-full bg-accent/50 blur-md"
+                  className="absolute rounded-full bg-amber-400/25 blur-md"
                   style={{ width: "54px", height: "80px" }}
                   animate={{
                     opacity: [0, 0.85, 0.12, 0.5, 0, 0, 0, 0, 0, 0],
@@ -457,24 +457,24 @@ export default function CapsuleView({ state, className }: Props) {
                     sm:w-9 sm:h-16
                     xl:w-10 xl:h-[72px]
                     rounded-full
-                    border border-accent/30
-                    bg-gradient-to-b from-accent/5 to-transparent
+                    border border-amber-400/80
+                    bg-gradient-to-b from-amber-400/10 to-transparent
                     overflow-hidden
                     will-change-transform
                   "
                   animate={{
                     scale:       [1, 1.18, 0.97, 1.09, 1, 1, 1, 1, 1, 1],
                     borderColor: [
-                      "hsl(var(--accent)/0.3)",
-                      "hsl(var(--accent)/0.75)",
-                      "hsl(var(--accent)/0.4)",
-                      "hsl(var(--accent)/0.6)",
-                      "hsl(var(--accent)/0.3)",
-                      "hsl(var(--accent)/0.3)",
-                      "hsl(var(--accent)/0.3)",
-                      "hsl(var(--accent)/0.3)",
-                      "hsl(var(--accent)/0.3)",
-                      "hsl(var(--accent)/0.3)",
+                      "rgba(255,180,90,0.8)",
+                      "rgba(255,190,110,1)",
+                      "rgba(255,180,90,0.85)",
+                      "rgba(255,185,100,0.95)",
+                      "rgba(255,180,90,0.8)",
+                      "rgba(255,180,90,0.8)",
+                      "rgba(255,180,90,0.8)",
+                      "rgba(255,180,90,0.8)",
+                      "rgba(255,180,90,0.8)",
+                      "rgba(255,180,90,0.8)",
                     ],
                   }}
                   transition={{
@@ -484,8 +484,8 @@ export default function CapsuleView({ state, className }: Props) {
                     times: [0, 0.08, 0.16, 0.26, 0.38, 0.5, 0.6, 0.7, 0.85, 1],
                   }}
                 >
-                  <div className="absolute inset-x-2 top-3 h-px bg-accent/20" />
-                  <div className="absolute inset-x-0 top-1/2 h-px bg-accent/15" />
+                  <div className="absolute inset-x-2 top-3 h-px bg-amber-300/60" />
+                  <div className="absolute inset-x-0 top-1/2 h-px bg-amber-300/40" />
                 </motion.div>
               </motion.div>
 
@@ -533,7 +533,7 @@ export default function CapsuleView({ state, className }: Props) {
                   md:text-[27px]
                   xl:text-[30px]
                   font-medium
-                  text-foreground
+                  text-amber-50
                   tracking-[0.18em]
                   mb-3
                 "
@@ -547,7 +547,7 @@ export default function CapsuleView({ state, className }: Props) {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: 0.4 }}
                 className="
-                  text-muted-foreground/80
+                  text-amber-100/70
                   italic
                   text-[13px]
                   md:text-[14px]
@@ -571,7 +571,7 @@ export default function CapsuleView({ state, className }: Props) {
                     text-[13px]
                     md:text-[14px]
                     xl:text-[15px]
-                    text-foreground/80
+                    text-amber-100/80
                     tracking-wide
                   "
                 >
@@ -582,13 +582,13 @@ export default function CapsuleView({ state, className }: Props) {
                     text-[11px]
                     md:text-[12px]
                     xl:text-[13px]
-                    text-muted-foreground/70
+                    text-amber-100/50
                     tracking-wide
                   "
                 >
                   ~{daysLeft} day{daysLeft === 1 ? "" : "s"} remaining
                 </p>
-                <p className="text-[10px] font-mono text-muted-foreground/40 mt-2 tracking-wide">
+                <p className="text-[10px] font-mono text-amber-100/35 mt-2 tracking-wide">
                   Link contains capsule access fragment
                 </p>
               </motion.div>
@@ -746,7 +746,7 @@ export default function CapsuleView({ state, className }: Props) {
                   text-[11px]
                   md:text-[12px]
                   xl:text-[13px]
-                  text-muted-foreground/60
+                  text-amber-100/50
                   leading-relaxed
                   tracking-wide
                 "
@@ -754,7 +754,7 @@ export default function CapsuleView({ state, className }: Props) {
                 {authorityMode ? (
                   <>
                     This link contains a capability fragment.{" "}
-                    <strong className="text-foreground/70 font-medium">
+                    <strong className="text-amber-100/80 font-medium">
                       Capability fragments control access to the capsule lifecycle.
                     </strong>
                   </>
@@ -762,7 +762,7 @@ export default function CapsuleView({ state, className }: Props) {
                   <>
                     This link contains the secret fragment.{" "}
                     Without it the capsule is mathematically unrecoverable.{" "}
-                    <strong className="text-foreground/70 font-medium">
+                    <strong className="text-amber-100/80 font-medium">
                       Store securely. Do not share.
                     </strong>
                   </>

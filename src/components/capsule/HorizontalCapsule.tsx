@@ -1,6 +1,26 @@
 import { CapsuleItem } from "@/types/capsule";
-import { calculatePrice, FIRST_BLOCK_MB, NEXT_BLOCK_MB, NEXT_BLOCK_PRICE } from "@/lib/pricing";
-import { Infinity } from "lucide-react";
+import { Infinity as InfinityIcon } from "lucide-react";
+
+const MB = 1024 * 1024;
+
+const FIRST_BLOCK_MB = 20;
+const NEXT_BLOCK_MB = 20;
+
+const FIRST_BLOCK_PRICE = 4.0;
+const NEXT_BLOCK_PRICE = 3.0;
+
+function calculateBlocks(totalBytes: number): number {
+  const totalMB = totalBytes / MB;
+
+  if (totalMB <= FIRST_BLOCK_MB) {
+    return 1;
+  }
+
+  const remaining = totalMB - FIRST_BLOCK_MB;
+  const extraBlocks = Math.ceil(remaining / NEXT_BLOCK_MB);
+
+  return 1 + extraBlocks;
+}
 
 interface HorizontalCapsuleProps {
   items: CapsuleItem[];
@@ -54,7 +74,6 @@ const HorizontalCapsule = ({
   const totalMB =
     totalBytes /
     (1024 * 1024);
-
 
   /* ===== BLOCK CALC ===== */
 
@@ -136,9 +155,7 @@ const HorizontalCapsule = ({
       return "hsl(45, 75%, 50%)";
 
     return "hsl(160, 55%, 42%)";
-
   };
-
 
   const getGlowColor = () => {
 
@@ -149,7 +166,6 @@ const HorizontalCapsule = ({
       return "rgba(240,190,90,0.65)";
 
     return "rgba(90,190,170,0.55)";
-
   };
 
 
@@ -162,25 +178,10 @@ const HorizontalCapsule = ({
       return "hsl(45, 85%, 55%)";
 
     return "hsl(160, 55%, 55%)";
-
   };
 
 
-  const rawPrice =
-  calculatePrice(totalBytes);
-
-if (
-  !Number.isFinite(rawPrice) ||
-  rawPrice < 0
-) {
-  throw new Error(
-    "[AETERNA] Invalid price calculation"
-  );
-}
-
-const price =
-  rawPrice.toFixed(2);
-
+  const price = "1.00";
 
   const handleClick = () => {
 
@@ -188,7 +189,6 @@ const price =
       onViewContents();
 
   };
-
 
   const handleKeyDown = (
     e: React.KeyboardEvent
@@ -366,11 +366,8 @@ const price =
           >
 
             {blockIndex}
-
           </span>
-
         </p>
-
 
         <p
           className="
@@ -383,7 +380,6 @@ const price =
         <p className="opacity-70 text-[9px] sm:text-[11px]">
           NEXT +{NEXT_BLOCK_MB}MB (+${NEXT_BLOCK_PRICE.toFixed(2)})
         </p>
-
 
         <div
           className="
@@ -404,10 +400,9 @@ const price =
           >
 
             ${price}
-
           </span>
 
-          <Infinity
+          <InfinityIcon
             size={26}
             color="hsl(35 70% 60%)"
             aria-hidden="true"
@@ -431,7 +426,6 @@ const price =
         >
 
           VIEW CONTENTS
-
         </div>
 
       </div>

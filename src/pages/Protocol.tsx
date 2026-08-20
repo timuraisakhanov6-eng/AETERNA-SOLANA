@@ -107,8 +107,13 @@ const Protocol = () => {
 
           <Section title="4. Permanence and sealing">
             <p>
-              After payment is completed and the capsule is successfully sealed,
-              the protocol commits the capsule to permanent storage.
+              After successful sealing, the protocol commits the capsule to
+              permanent storage.
+            </p>
+
+            <p>
+              Successful sealing requires both successful capsule publication
+              and a successful seal.
             </p>
 
             <p>After sealing:</p>
@@ -126,25 +131,82 @@ const Protocol = () => {
           </Section>
 
 
-          <Section title="5. Pricing and storage blocks">
+          <Section title="5. Creator Credit">
             <p>
-              Pricing reflects the amount of encrypted storage allocated for
-              the capsule vault container.
+              AETERNA uses a simple creator entitlement model called Creator Credit.
             </p>
 
+            <p>
+              One Creator Credit gives the creator the right to attempt to publish
+              one capsule successfully.
+            </p>
+
+            <p>Creator Credit:</p>
+
             <ul>
-              <li>First 20 MB: $4.00</li>
-              <li>Each additional 20 MB block: $3.00</li>
+              <li>costs a fixed USD 1.00 service fee;</li>
+              <li>does not depend on capsule size;</li>
+              <li>does not depend on storage volume;</li>
+              <li>does not expire;</li>
+              <li>is bound to the creator's wallet connection.</li>
             </ul>
 
             <p>
-              Payment is performed once during sealing. The protocol does not
-              require subscriptions or recurring payments.
+              The creator does not need to pay again while they have an
+              AVAILABLE Creator Credit.
+            </p>
+
+            <p>
+              After a capsule is successfully published and sealed, the used
+              Creator Credit becomes CONSUMED.
+            </p>
+
+            <p>
+              If creation does not finish successfully, the credit remains
+              AVAILABLE and can be reused for a later attempt.
+            </p>
+
+            <p>
+              Protocol Rules and payment terms are available before any payment
+              is started.
             </p>
           </Section>
 
 
-          <Section title="6. Responsibility for content">
+          <Section title="6. Irys storage and publication">
+            <p>
+              AETERNA service payment and Irys publication are separate steps.
+            </p>
+
+            <p>
+              The AETERNA Creator Credit covers only the AETERNA service
+              entitlement: the right to attempt to create one capsule.
+            </p>
+
+            <p>
+              Irys provides immutable storage and publication for the encrypted
+              capsule data. Its cost is determined by Irys based on the actual
+              published content and volume.
+            </p>
+
+            <p>
+              That cost is paid by the creator through the Irys
+              publication/storage flow supported by the current production
+              integration.
+            </p>
+
+            <p>
+              AETERNA does not bundle Irys cost into its fixed service fee.
+            </p>
+
+            <p>
+              A capsule's size does not change the AETERNA Creator Credit price,
+              although Irys publication cost may vary with the data being stored.
+            </p>
+          </Section>
+
+
+          <Section title="7. Responsibility for content">
             <p>
               You are solely responsible for the legality, ownership, and
               distribution of any content placed into a capsule.
@@ -162,29 +224,36 @@ const Protocol = () => {
           </Section>
 
 
-          <Section title="7. What happens at unlock time">
+          <Section title="8. Wallet binding and credit safety">
             <p>
-              Unlock eligibility is evaluated in UTC using trusted server time.
+              Creator Credit is bound to the wallet connection used during
+              payment verification.
             </p>
 
-            <ul>
-              <li>The capsule may become accessible</li>
-              <li>Anyone with the complete capsule link can open it</li>
-              <li>The protocol does not send automatic notifications</li>
-            </ul>
+            <p>
+              If the wallet is disconnected before the capsule is successfully
+              published and sealed, the current Creator Credit cannot be reused
+              through a different wallet connection.
+            </p>
 
             <p>
-              AETERNA does not guarantee that a recipient will open, receive,
-              download, or review a capsule. The protocol only determines whether
-              access becomes available.
+              Frontend state alone is not authoritative for credit ownership or
+              entitlement state.
+            </p>
+
+            <p>
+              Your Creator Credit is not consumed until your capsule is
+              successfully published and sealed.
+            </p>
+
+            <p>
+              If the process fails before that result, your credit remains
+              AVAILABLE.
             </p>
           </Section>
 
 
-          <Section
-            id="creator-presence"
-            title="8. Creator Presence Confirmation"
-          >
+          <Section title="9. Creator Presence Confirmation">
             <p>
               Every AETERNA capsule includes a Recipient Link and a Creator Link.
             </p>
@@ -273,44 +342,43 @@ const Protocol = () => {
           </Section>
 
 
-          <Section title="9. Payments">
+          <Section title="10. AETERNA service and Irys publication">
             <p>
-              Capsule pricing is determined by the storage capacity selected
-              during capsule creation.
+              AETERNA charges a fixed service fee of USD 1.00 for one Creator Credit.
             </p>
 
             <p>
-              The displayed capsule price is the final creator price.
+              One Creator Credit gives the creator the right to attempt to create
+              one capsule successfully.
             </p>
 
             <p>
-              Payments may be processed through supported payment providers,
-              including bank card payments and supported digital asset networks.
+              Capsule size does not change this fee.
             </p>
 
             <p>
-              Payment providers operate independently from AETERNA.
+              Irys publication and storage are separate from the AETERNA service
+              fee. Irys determines the actual cost of storing and publishing the
+              encrypted capsule data based on the published content.
             </p>
 
             <p>
-              Refunds, chargebacks, taxes, currency conversion fees, and
-              payment processing policies may be subject to the rules of the
-              applicable payment provider.
+              AETERNA Web3 payments use payment assets supported by the
+              production Irys payment/publication flow.
             </p>
 
             <p>
-              AETERNA may internally perform storage settlement operations
-              required to create and preserve capsules.
+              Payment verification is performed server-side. The frontend is
+              not the pricing or payment authority.
             </p>
 
             <p>
-              Such operations are part of the capsule creation process and
-              do not require additional creator payments.
+              A single verified payment can create at most one Creator Credit.
             </p>
           </Section>
 
 
-          <Section title="10. Long-Term Preservation">
+          <Section title="11. Long-Term Preservation">
             <p>
               AETERNA is designed for long-term preservation of digital
               memories and future access to sealed capsule contents.
@@ -336,7 +404,7 @@ const Protocol = () => {
 
           <section className="mb-14 rounded-xl border border-border bg-card/60 px-6 py-5">
             <h2 className="text-lg font-semibold mb-3">
-              11. Before continuing, please understand:
+              12. Before continuing, please understand:
             </h2>
 
             <ul className="list-disc pl-5 space-y-2 text-muted-foreground mb-4">
