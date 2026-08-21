@@ -21,6 +21,7 @@ export default defineConfig({
         rollupOptions: {
             output: {
                 entryFileNames: "scripts/emergency-runtime.js",
+                inlineDynamicImports: true,
             },
         },
     },

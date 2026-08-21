@@ -569,7 +569,7 @@ footer{
 
 <script type="module" src="scripts/emergency-runtime.js"></script>
 <script type="module">
-  import { initEmergencyRuntime } from './scripts/emergency-runtime.js';
+  import { initEmergencyRuntime as originalInitEmergencyRuntime } from './scripts/emergency-runtime.js';
 
   const stateSealed = document.getElementById('state-sealed');
   const stateOpening = document.getElementById('state-opening');
@@ -586,16 +586,15 @@ footer{
 
   showState(stateSealed);
 
-  const originalInit = initEmergencyRuntime;
-  initEmergencyRuntime = async (args) => {
+  async function initEmergencyRuntime(args) {
     showState(stateOpening);
     try {
-      await originalInit(args);
+      await originalInitEmergencyRuntime(args);
       showState(stateOpened);
     } catch {
       showState(stateSealed);
     }
-  };
+  }
 
   initEmergencyRuntime({ root, status });
 </script>

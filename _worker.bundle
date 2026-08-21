@@ -1,9 +1,9 @@
-------formdata-undici-014113992853
+------formdata-undici-067223509379
 Content-Disposition: form-data; name="metadata"
 
-{"main_module":"functionsWorker-0.01883311320398673.js"}
-------formdata-undici-014113992853
-Content-Disposition: form-data; name="functionsWorker-0.01883311320398673.js"; filename="functionsWorker-0.01883311320398673.js"
+{"main_module":"functionsWorker-0.06175468374921422.js"}
+------formdata-undici-067223509379
+Content-Disposition: form-data; name="functionsWorker-0.06175468374921422.js"; filename="functionsWorker-0.06175468374921422.js"
 Content-Type: application/javascript+module
 
 var __defProp = Object.defineProperty;
@@ -27,7 +27,7 @@ var CAPSULE_ID_REGEX, SECRET_REGEX, CREATOR_AUTHORITY_FRAGMENT_REGEX, SALT_BASE_
 var init_validators = __esm({
   "../src/lib/crypto/validators.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     CAPSULE_ID_REGEX = Object.freeze(/^[a-f0-9]{64}$/);
     SECRET_REGEX = Object.freeze(/^[a-f0-9]{64}$/);
     CREATOR_AUTHORITY_FRAGMENT_REGEX = Object.freeze(/^[a-f0-9]{64}$/);
@@ -54,7 +54,7 @@ function assertCapsuleId(value) {
 var init_manifest = __esm({
   "../src/types/manifest.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_validators();
     __name(assertCapsuleId, "assertCapsuleId");
   }
@@ -84,7 +84,7 @@ function assertChunkPointerMap(value) {
 var init_storageAdapter = __esm({
   "../src/lib/storage/storageAdapter.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_validators();
     __name(assertStoragePointer, "assertStoragePointer");
     __name(assertChunkPointerMap, "assertChunkPointerMap");
@@ -125,7 +125,7 @@ var REGISTRY_KEY_PREFIX;
 var init_chunkPointerRegistryStore = __esm({
   "lib/storage/chunkPointerRegistryStore.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     REGISTRY_KEY_PREFIX = "chunk-pointer-registry:";
     __name(registryKey, "registryKey");
     __name(getChunkPointerMap, "getChunkPointerMap");
@@ -161,7 +161,7 @@ var ALLOWED_ORIGINS, onRequestOptions, onRequestGet;
 var init_chunk_pointers = __esm({
   "api/capsule/[capsuleId]/chunk-pointers.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_validators();
     init_manifest();
     init_storageAdapter();
@@ -257,7 +257,7 @@ var WINDOW_MS, MAX_REQUESTS, store;
 var init_rateLimit = __esm({
   "lib/rateLimit.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     WINDOW_MS = 6e4;
     MAX_REQUESTS = 60;
     store = /* @__PURE__ */ new Map();
@@ -324,7 +324,7 @@ var MIN_TIME, MAX_TIME, ALLOWED_ORIGINS2, onRequestOptions2, onRequestGet2;
 var init_time = __esm({
   "api/time.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     MIN_TIME = 15778368e5;
     MAX_TIME = 41024448e5;
     ALLOWED_ORIGINS2 = [
@@ -442,7 +442,7 @@ var QUOTE_PREFIX;
 var init_businessQuoteStore = __esm({
   "lib/business/businessQuoteStore.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     QUOTE_PREFIX = "quote:";
     __name(quoteKey, "quoteKey");
     __name(getBusinessQuote, "getBusinessQuote");
@@ -456,7 +456,7 @@ var AES_GCM_IV_LENGTH, AES_GCM_TAG_LENGTH, MAX_ENCRYPTED_VAULT_SIZE, MAX_CHUNK_S
 var init_constants = __esm({
   "../src/lib/crypto/constants.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     AES_GCM_IV_LENGTH = 12;
     AES_GCM_TAG_LENGTH = 128;
     MAX_ENCRYPTED_VAULT_SIZE = 10 * 1024 * 1024;
@@ -533,7 +533,7 @@ var ARWEAVE_TXID_RE, UPLOAD_TOKEN_REGEX2, ALLOWED_MANIFEST_FIELDS, ALLOWED_EXT_F
 var init_seal = __esm({
   "api/capsule/seal.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_time();
     init_validators();
@@ -800,105 +800,6 @@ var init_seal = __esm({
   }
 });
 
-// api/creator/finalize-credit.ts
-function isAllowedOrigin(origin) {
-  if (ALLOWED_ORIGINS4.includes(origin)) return true;
-  try {
-    const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname)) return true;
-  } catch {
-  }
-  return false;
-}
-function baseHeaders4(origin) {
-  return {
-    "Content-Type": "application/json",
-    "Cache-Control": "no-store",
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
-  };
-}
-function fail3(origin, status = 400, error = "error") {
-  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders4(origin) });
-}
-async function onRequestOptions4(context) {
-  const origin = context.request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin(origin)) return new Response(null, { status: 403 });
-  return new Response(null, { status: 204, headers: baseHeaders4(origin) });
-}
-async function onRequestPost2(context) {
-  const { request, env } = context;
-  const origin = request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin(origin)) return fail3(origin, 403, "INVALID_ORIGIN");
-  const ip = getClientIp(request);
-  if (!rateLimit(ip)) return fail3(origin, 429, "TOO_MANY_REQUESTS");
-  const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) return fail3(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return fail3(origin, 400, "INVALID_JSON");
-  }
-  if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail3(origin, 400, "INVALID_BODY");
-  }
-  const creatorIdentityId = typeof body.creatorIdentityId === "string" ? body.creatorIdentityId.trim() : "";
-  const lifecycleId = typeof body.lifecycleId === "string" ? body.lifecycleId.trim() : "";
-  const capsuleId = typeof body.capsuleId === "string" ? body.capsuleId.trim() : "";
-  if (!creatorIdentityId || !lifecycleId || !capsuleId) {
-    return fail3(origin, 400, "INVALID_FIELDS");
-  }
-  const bindings = env;
-  const lifecycleRaw = await bindings.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
-  if (!lifecycleRaw) {
-    return fail3(origin, 409, "LIFECYCLE_NOT_FOUND");
-  }
-  const lifecycle = JSON.parse(lifecycleRaw);
-  const publicationRaw = await bindings.PUBLICATION_VERIFICATIONS.get(`creator:publication:${lifecycleId}`);
-  const publication = publicationRaw ? JSON.parse(publicationRaw) : { state: "NOT_VERIFIED" };
-  const sealRaw = await bindings.SEAL_VERIFICATIONS.get(`creator:seal:${lifecycleId}`);
-  const seal = sealRaw ? JSON.parse(sealRaw) : { state: "NOT_VERIFIED" };
-  const coordinatorId = bindings.CREDIT_OP_COORDINATOR.idFromName(lifecycle.id);
-  const coordinator = bindings.CREDIT_OP_COORDINATOR.get(coordinatorId);
-  const response = await coordinator.fetch(
-    new Request("http://localhost", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        op: "finalize",
-        creatorCreditId: lifecycle.id,
-        creatorIdentityId,
-        lifecycleId,
-        capsuleId,
-        publicationVerified: publication.state === "VERIFIED",
-        sealVerified: seal.state === "VERIFIED"
-      })
-    })
-  );
-  return response;
-}
-var ALLOWED_ORIGINS4, PAGES_PREVIEW_REGEX;
-var init_finalize_credit = __esm({
-  "api/creator/finalize-credit.ts"() {
-    "use strict";
-    init_functionsRoutes_0_391389513282802();
-    init_rateLimit();
-    ALLOWED_ORIGINS4 = [
-      "https://aeternacapsule.com",
-      "https://www.aeternacapsule.com",
-      "https://aeterna-capsule.pages.dev"
-    ];
-    PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-    __name(isAllowedOrigin, "isAllowedOrigin");
-    __name(baseHeaders4, "baseHeaders");
-    __name(fail3, "fail");
-    __name(onRequestOptions4, "onRequestOptions");
-    __name(onRequestPost2, "onRequestPost");
-  }
-});
-
 // ../src/lib/creator/creatorCreditStore.ts
 function creditKey(id2) {
   return `${CREDIT_PREFIX}${id2}`;
@@ -931,7 +832,7 @@ var CREDIT_PREFIX;
 var init_creatorCreditStore = __esm({
   "../src/lib/creator/creatorCreditStore.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     CREDIT_PREFIX = "creator:credit:";
     __name(creditKey, "creditKey");
     __name(creditIndexKey, "creditIndexKey");
@@ -942,7 +843,210 @@ var init_creatorCreditStore = __esm({
   }
 });
 
-// api/creator/grant-credit.ts
+// api/creator/credit-status.ts
+function isAllowedOrigin(origin) {
+  if (ALLOWED_ORIGINS4.includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname))
+      return true;
+  } catch {
+  }
+  return false;
+}
+function baseHeaders4(origin) {
+  return {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  };
+}
+function fail3(origin, status = 400, error = "error") {
+  return new Response(
+    JSON.stringify({ ok: false, error }),
+    { status, headers: baseHeaders4(origin) }
+  );
+}
+function creditIndexKey2(creatorIdentityId, quoteId) {
+  return `creator:credit:index:${creatorIdentityId}:${quoteId}`;
+}
+async function recoverPersonalSignAddress(signature, message) {
+  const encoder = new TextEncoder();
+  const msgBytes = encoder.encode(message);
+  const msgHash = await crypto.subtle.digest("SHA-256", msgBytes);
+  const prefix = encoder.encode(
+    `Ethereum Signed Message:
+${msgBytes.length}`
+  );
+  const buf = new Uint8Array(prefix.byteLength + msgHash.byteLength);
+  buf.set(prefix);
+  buf.set(new Uint8Array(msgHash), prefix.byteLength);
+  const hashHex = Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", buf))
+  ).map((b2) => b2.toString(16).padStart(2, "0")).join("");
+  return hashHex.slice(0, 40);
+}
+function mapStatus(status) {
+  if (status === "AVAILABLE") return "available";
+  if (status === "CONSUMING") return "available";
+  if (status === "CONSUMED") return "consumed";
+  return "unavailable";
+}
+async function onRequestOptions4(context) {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!isAllowedOrigin(origin)) {
+    return new Response(null, { status: 403 });
+  }
+  return new Response(null, { status: 204, headers: baseHeaders4(origin) });
+}
+async function onRequestPost2(context) {
+  const { request, env } = context;
+  const origin = request.headers.get("origin") ?? "";
+  if (!isAllowedOrigin(origin)) {
+    return fail3(origin, 403, "INVALID_ORIGIN");
+  }
+  const ip = getClientIp(request);
+  if (!ip || rateLimit(ip)) {
+  }
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return fail3(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return fail3(origin, 400, "INVALID_JSON");
+  }
+  if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
+    return fail3(origin, 400, "INVALID_BODY");
+  }
+  const challengeId = body.challengeId;
+  const network = body.network;
+  const account = body.account;
+  const signature = body.signature;
+  const capsuleId = body.capsuleId;
+  if (typeof challengeId !== "string" || typeof network !== "string" || typeof account !== "string" || typeof signature !== "string" || typeof capsuleId !== "string") {
+    return fail3(origin, 400, "INVALID_FIELDS");
+  }
+  if (!/^0x[a-fA-F0-9]{40}$/.test(account)) {
+    return fail3(origin, 400, "INVALID_ACCOUNT");
+  }
+  const identities = env?.CREATOR_IDENTITIES;
+  if (!identities) {
+    return fail3(origin, 503, "CREATOR_IDENTITIES_UNAVAILABLE");
+  }
+  const challengeRaw = await identities.get(`creator:challenge:${challengeId}`);
+  if (!challengeRaw) {
+    return fail3(origin, 400, "CHALLENGE_NOT_FOUND");
+  }
+  let challengeRecord;
+  try {
+    challengeRecord = JSON.parse(challengeRaw);
+  } catch {
+    return fail3(origin, 400, "CHALLENGE_CORRUPT");
+  }
+  if (challengeRecord.network !== network) {
+    return fail3(origin, 400, "NETWORK_MISMATCH");
+  }
+  const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
+  const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
+  if (now > challengeRecord.expiresAt) {
+    return fail3(origin, 400, "CHALLENGE_EXPIRED");
+  }
+  let recovered = "";
+  try {
+    const message = `AETERNA identity challenge:${challengeRecord.challenge}`;
+    recovered = await recoverPersonalSignAddress(signature, message);
+  } catch {
+    return fail3(origin, 400, "INVALID_SIGNATURE");
+  }
+  if (recovered.toLowerCase() !== account.toLowerCase()) {
+    return fail3(origin, 400, "ACCOUNT_MISMATCH");
+  }
+  await identities.delete(`creator:challenge:${challengeId}`);
+  const lowerAccount = account.toLowerCase();
+  const identityRaw = await identities.get(`creator:identity:${network}:${lowerAccount}`);
+  if (!identityRaw) {
+    return new Response(
+      JSON.stringify({ ok: true, status: "none" }),
+      { status: 200, headers: baseHeaders4(origin) }
+    );
+  }
+  let identity;
+  try {
+    identity = JSON.parse(identityRaw);
+  } catch {
+    return fail3(origin, 500, "IDENTITY_CORRUPT");
+  }
+  const credits = env?.CREATOR_CREDITS;
+  if (!credits) {
+    return new Response(
+      JSON.stringify({ ok: true, status: "unavailable" }),
+      { status: 200, headers: baseHeaders4(origin) }
+    );
+  }
+  const creditIndexRaw = await credits.get(creditIndexKey2(identity.id, capsuleId));
+  if (!creditIndexRaw) {
+    return new Response(
+      JSON.stringify({ ok: true, status: "none" }),
+      { status: 200, headers: baseHeaders4(origin) }
+    );
+  }
+  const creditId = creditIndexRaw.trim();
+  const credit = await getCreatorCredit(
+    { CREATOR_CREDITS: credits },
+    creditId
+  );
+  if (!credit) {
+    return new Response(
+      JSON.stringify({ ok: true, status: "none" }),
+      { status: 200, headers: baseHeaders4(origin) }
+    );
+  }
+  const status = mapStatus(credit.status);
+  return new Response(
+    JSON.stringify({ ok: true, status }),
+    { status: 200, headers: baseHeaders4(origin) }
+  );
+}
+var ALLOWED_ORIGINS4, PAGES_PREVIEW_REGEX;
+var init_credit_status = __esm({
+  "api/creator/credit-status.ts"() {
+    "use strict";
+    init_functionsRoutes_0_4728697744581736();
+    init_rateLimit();
+    init_time();
+    init_creatorCreditStore();
+    ALLOWED_ORIGINS4 = [
+      "https://aeternacapsule.com",
+      "https://www.aeternacapsule.com",
+      "https://aeterna-capsule.pages.dev"
+    ];
+    PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+    __name(isAllowedOrigin, "isAllowedOrigin");
+    __name(baseHeaders4, "baseHeaders");
+    __name(fail3, "fail");
+    __name(creditIndexKey2, "creditIndexKey");
+    __name(recoverPersonalSignAddress, "recoverPersonalSignAddress");
+    __name(mapStatus, "mapStatus");
+    __name(onRequestOptions4, "onRequestOptions");
+    __name(onRequestPost2, "onRequestPost");
+  }
+});
+
+// api/creator/finalize-credit.ts
+function isAllowedOrigin2(origin) {
+  if (ALLOWED_ORIGINS5.includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX2.test(url.hostname)) return true;
+  } catch {
+  }
+  return false;
+}
 function baseHeaders5(origin) {
   return {
     "Content-Type": "application/json",
@@ -957,25 +1061,17 @@ function fail4(origin, status = 400, error = "error") {
 }
 async function onRequestOptions5(context) {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!ALLOWED_ORIGINS5.includes(origin)) {
-    return new Response(null, { status: 403 });
-  }
+  if (!isAllowedOrigin2(origin)) return new Response(null, { status: 403 });
   return new Response(null, { status: 204, headers: baseHeaders5(origin) });
 }
 async function onRequestPost3(context) {
   const { request, env } = context;
   const origin = request.headers.get("origin") ?? "";
-  if (!ALLOWED_ORIGINS5.includes(origin)) {
-    return fail4(origin, 403, "INVALID_ORIGIN");
-  }
+  if (!isAllowedOrigin2(origin)) return fail4(origin, 403, "INVALID_ORIGIN");
   const ip = getClientIp(request);
-  if (!rateLimit(ip)) {
-    return fail4(origin, 429, "TOO_MANY_REQUESTS");
-  }
+  if (!rateLimit(ip)) return fail4(origin, 429, "TOO_MANY_REQUESTS");
   const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
-    return fail4(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
-  }
+  if (!contentType.includes("application/json")) return fail4(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
   let body;
   try {
     body = await request.json();
@@ -985,81 +1081,54 @@ async function onRequestPost3(context) {
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
     return fail4(origin, 400, "INVALID_BODY");
   }
-  const capsuleId = body.capsuleId;
-  const creatorIdentityId = body.creatorIdentityId;
-  const verifiedPaymentId = body.verifiedPaymentId;
-  const transactionId = body.transactionId;
-  if (typeof capsuleId !== "string" || typeof creatorIdentityId !== "string" || typeof verifiedPaymentId !== "string" || typeof transactionId !== "string") {
+  const creatorIdentityId = typeof body.creatorIdentityId === "string" ? body.creatorIdentityId.trim() : "";
+  const lifecycleId = typeof body.lifecycleId === "string" ? body.lifecycleId.trim() : "";
+  const capsuleId = typeof body.capsuleId === "string" ? body.capsuleId.trim() : "";
+  if (!creatorIdentityId || !lifecycleId || !capsuleId) {
     return fail4(origin, 400, "INVALID_FIELDS");
   }
-  const quote = await getBusinessQuote(env, capsuleId);
-  if (!quote) {
-    return fail4(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
+  const bindings = env;
+  const lifecycleRaw = await bindings.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
+  if (!lifecycleRaw) {
+    return fail4(origin, 409, "LIFECYCLE_NOT_FOUND");
   }
-  const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
-  const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
-  const verifiedPaymentRaw = await env.VERIFIED_PAYMENTS.get(`verified-payment:${capsuleId}:${verifiedPaymentId}`);
-  if (!verifiedPaymentRaw) {
-    return fail4(origin, 402, "VERIFIED_PAYMENT_NOT_FOUND");
-  }
-  let verifiedPayment;
-  try {
-    verifiedPayment = JSON.parse(verifiedPaymentRaw);
-  } catch {
-    return fail4(origin, 500, "VERIFIED_PAYMENT_CORRUPT");
-  }
-  if (verifiedPayment.consumed) {
-    return fail4(origin, 409, "VERIFIED_PAYMENT_ALREADY_CONSUMED");
-  }
-  if (verifiedPayment.capsuleId !== capsuleId) {
-    return fail4(origin, 409, "VERIFIED_PAYMENT_CAPSULE_MISMATCH");
-  }
-  if (verifiedPayment.creatorIdentityId !== creatorIdentityId) {
-    return fail4(origin, 403, "CREATOR_IDENTITY_MISMATCH");
-  }
-  if (verifiedPayment.quoteId !== quote.capsuleId) {
-    return fail4(origin, 409, "QUOTE_MISMATCH");
-  }
-  const existing = await getCreatorCreditByIndex(
-    env,
-    creatorIdentityId,
-    quote.capsuleId
+  const lifecycle = JSON.parse(lifecycleRaw);
+  const publicationRaw = await bindings.PUBLICATION_VERIFICATIONS.get(`creator:publication:${lifecycleId}`);
+  const publication = publicationRaw ? JSON.parse(publicationRaw) : { state: "NOT_VERIFIED" };
+  const sealRaw = await bindings.SEAL_VERIFICATIONS.get(`creator:seal:${lifecycleId}`);
+  const seal = sealRaw ? JSON.parse(sealRaw) : { state: "NOT_VERIFIED" };
+  const coordinatorId = bindings.CREDIT_OP_COORDINATOR.idFromName(lifecycle.id);
+  const coordinator = bindings.CREDIT_OP_COORDINATOR.get(coordinatorId);
+  const response = await coordinator.fetch(
+    new Request("http://localhost", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        op: "finalize",
+        creatorCreditId: lifecycle.id,
+        creatorIdentityId,
+        lifecycleId,
+        capsuleId,
+        publicationVerified: publication.state === "VERIFIED",
+        sealVerified: seal.state === "VERIFIED"
+      })
+    })
   );
-  if (existing) {
-    return new Response(
-      JSON.stringify({ ok: true, creatorCreditId: existing.id, status: existing.status }),
-      { status: 200, headers: baseHeaders5(origin) }
-    );
-  }
-  const id2 = generateCreditId();
-  const record = {
-    id: id2,
-    creatorIdentityId,
-    status: "AVAILABLE",
-    quoteId: quote.capsuleId,
-    createdAt: now,
-    updatedAt: now
-  };
-  await createCreatorCredit(env, record);
-  return new Response(
-    JSON.stringify({ ok: true, creatorCreditId: id2, status: "AVAILABLE" }),
-    { status: 200, headers: baseHeaders5(origin) }
-  );
+  return response;
 }
-var ALLOWED_ORIGINS5;
-var init_grant_credit = __esm({
-  "api/creator/grant-credit.ts"() {
+var ALLOWED_ORIGINS5, PAGES_PREVIEW_REGEX2;
+var init_finalize_credit = __esm({
+  "api/creator/finalize-credit.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
-    init_time();
-    init_businessQuoteStore();
-    init_creatorCreditStore();
     ALLOWED_ORIGINS5 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
+    PAGES_PREVIEW_REGEX2 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+    __name(isAllowedOrigin2, "isAllowedOrigin");
     __name(baseHeaders5, "baseHeaders");
     __name(fail4, "fail");
     __name(onRequestOptions5, "onRequestOptions");
@@ -1067,7 +1136,7 @@ var init_grant_credit = __esm({
   }
 });
 
-// api/creator/issue-challenge.ts
+// api/creator/grant-credit.ts
 function baseHeaders6(origin) {
   return {
     "Content-Type": "application/json",
@@ -1079,9 +1148,6 @@ function baseHeaders6(origin) {
 }
 function fail5(origin, status = 400, error = "error") {
   return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders6(origin) });
-}
-function challengeKey(id2) {
-  return `${CHALLENGE_PREFIX}${id2}`;
 }
 async function onRequestOptions6(context) {
   const origin = context.request.headers.get("origin") ?? "";
@@ -1113,9 +1179,137 @@ async function onRequestPost4(context) {
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
     return fail5(origin, 400, "INVALID_BODY");
   }
+  const capsuleId = body.capsuleId;
+  const creatorIdentityId = body.creatorIdentityId;
+  const verifiedPaymentId = body.verifiedPaymentId;
+  const transactionId = body.transactionId;
+  if (typeof capsuleId !== "string" || typeof creatorIdentityId !== "string" || typeof verifiedPaymentId !== "string" || typeof transactionId !== "string") {
+    return fail5(origin, 400, "INVALID_FIELDS");
+  }
+  const quote = await getBusinessQuote(env, capsuleId);
+  if (!quote) {
+    return fail5(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
+  }
+  const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
+  const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
+  const verifiedPaymentRaw = await env.VERIFIED_PAYMENTS.get(`verified-payment:${capsuleId}:${verifiedPaymentId}`);
+  if (!verifiedPaymentRaw) {
+    return fail5(origin, 402, "VERIFIED_PAYMENT_NOT_FOUND");
+  }
+  let verifiedPayment;
+  try {
+    verifiedPayment = JSON.parse(verifiedPaymentRaw);
+  } catch {
+    return fail5(origin, 500, "VERIFIED_PAYMENT_CORRUPT");
+  }
+  if (verifiedPayment.consumed) {
+    return fail5(origin, 409, "VERIFIED_PAYMENT_ALREADY_CONSUMED");
+  }
+  if (verifiedPayment.capsuleId !== capsuleId) {
+    return fail5(origin, 409, "VERIFIED_PAYMENT_CAPSULE_MISMATCH");
+  }
+  if (verifiedPayment.creatorIdentityId !== creatorIdentityId) {
+    return fail5(origin, 403, "CREATOR_IDENTITY_MISMATCH");
+  }
+  if (verifiedPayment.quoteId !== quote.capsuleId) {
+    return fail5(origin, 409, "QUOTE_MISMATCH");
+  }
+  const existing = await getCreatorCreditByIndex(
+    env,
+    creatorIdentityId,
+    quote.capsuleId
+  );
+  if (existing) {
+    return new Response(
+      JSON.stringify({ ok: true, creatorCreditId: existing.id, status: existing.status }),
+      { status: 200, headers: baseHeaders6(origin) }
+    );
+  }
+  const id2 = generateCreditId();
+  const record = {
+    id: id2,
+    creatorIdentityId,
+    status: "AVAILABLE",
+    quoteId: quote.capsuleId,
+    createdAt: now,
+    updatedAt: now
+  };
+  await createCreatorCredit(env, record);
+  return new Response(
+    JSON.stringify({ ok: true, creatorCreditId: id2, status: "AVAILABLE" }),
+    { status: 200, headers: baseHeaders6(origin) }
+  );
+}
+var ALLOWED_ORIGINS6;
+var init_grant_credit = __esm({
+  "api/creator/grant-credit.ts"() {
+    "use strict";
+    init_functionsRoutes_0_4728697744581736();
+    init_rateLimit();
+    init_time();
+    init_businessQuoteStore();
+    init_creatorCreditStore();
+    ALLOWED_ORIGINS6 = [
+      "https://aeternacapsule.com",
+      "https://www.aeternacapsule.com",
+      "https://aeterna-capsule.pages.dev"
+    ];
+    __name(baseHeaders6, "baseHeaders");
+    __name(fail5, "fail");
+    __name(onRequestOptions6, "onRequestOptions");
+    __name(onRequestPost4, "onRequestPost");
+  }
+});
+
+// api/creator/issue-challenge.ts
+function baseHeaders7(origin) {
+  return {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  };
+}
+function fail6(origin, status = 400, error = "error") {
+  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders7(origin) });
+}
+function challengeKey(id2) {
+  return `${CHALLENGE_PREFIX}${id2}`;
+}
+async function onRequestOptions7(context) {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS7.includes(origin)) {
+    return new Response(null, { status: 403 });
+  }
+  return new Response(null, { status: 204, headers: baseHeaders7(origin) });
+}
+async function onRequestPost5(context) {
+  const { request, env } = context;
+  const origin = request.headers.get("origin") ?? "";
+  if (!ALLOWED_ORIGINS7.includes(origin)) {
+    return fail6(origin, 403, "INVALID_ORIGIN");
+  }
+  const ip = getClientIp(request);
+  if (!rateLimit(ip)) {
+    return fail6(origin, 429, "TOO_MANY_REQUESTS");
+  }
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return fail6(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return fail6(origin, 400, "INVALID_JSON");
+  }
+  if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
+    return fail6(origin, 400, "INVALID_BODY");
+  }
   const network = body.network;
   if (typeof network !== "string" || network.trim().length === 0) {
-    return fail5(origin, 400, "INVALID_NETWORK");
+    return fail6(origin, 400, "INVALID_NETWORK");
   }
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
@@ -1133,42 +1327,42 @@ async function onRequestPost4(context) {
   }
   return new Response(
     JSON.stringify({ ok: true, id: id2, challenge, network, expiresAt: record.expiresAt }),
-    { status: 200, headers: baseHeaders6(origin) }
+    { status: 200, headers: baseHeaders7(origin) }
   );
 }
-var ALLOWED_ORIGINS6, CHALLENGE_TTL_SEC, CHALLENGE_PREFIX;
+var ALLOWED_ORIGINS7, CHALLENGE_TTL_SEC, CHALLENGE_PREFIX;
 var init_issue_challenge = __esm({
   "api/creator/issue-challenge.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_time();
-    ALLOWED_ORIGINS6 = [
+    ALLOWED_ORIGINS7 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
-    __name(baseHeaders6, "baseHeaders");
-    __name(fail5, "fail");
+    __name(baseHeaders7, "baseHeaders");
+    __name(fail6, "fail");
     CHALLENGE_TTL_SEC = 5 * 60;
     CHALLENGE_PREFIX = "creator:challenge:";
     __name(challengeKey, "challengeKey");
-    __name(onRequestOptions6, "onRequestOptions");
-    __name(onRequestPost4, "onRequestPost");
+    __name(onRequestOptions7, "onRequestOptions");
+    __name(onRequestPost5, "onRequestPost");
   }
 });
 
 // api/creator/recover-lifecycle.ts
-function isAllowedOrigin2(origin) {
-  if (ALLOWED_ORIGINS7.includes(origin)) return true;
+function isAllowedOrigin3(origin) {
+  if (ALLOWED_ORIGINS8.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX2.test(url.hostname)) return true;
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX3.test(url.hostname)) return true;
   } catch {
   }
   return false;
 }
-function baseHeaders7(origin) {
+function baseHeaders8(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -1177,44 +1371,44 @@ function baseHeaders7(origin) {
     "Access-Control-Allow-Headers": "Content-Type"
   };
 }
-function fail6(origin, status = 400, error = "error") {
-  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders7(origin) });
+function fail7(origin, status = 400, error = "error") {
+  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders8(origin) });
 }
 function lifecycleIdKey(creatorIdentityId, lifecycleId) {
   return `creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`;
 }
-async function onRequestOptions7(context) {
+async function onRequestOptions8(context) {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin2(origin)) return new Response(null, { status: 403 });
-  return new Response(null, { status: 204, headers: baseHeaders7(origin) });
+  if (!isAllowedOrigin3(origin)) return new Response(null, { status: 403 });
+  return new Response(null, { status: 204, headers: baseHeaders8(origin) });
 }
-async function onRequestPost5(context) {
+async function onRequestPost6(context) {
   const { request, env } = context;
   const origin = request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin2(origin)) return fail6(origin, 403, "INVALID_ORIGIN");
+  if (!isAllowedOrigin3(origin)) return fail7(origin, 403, "INVALID_ORIGIN");
   const ip = getClientIp(request);
-  if (!rateLimit(ip)) return fail6(origin, 429, "TOO_MANY_REQUESTS");
+  if (!rateLimit(ip)) return fail7(origin, 429, "TOO_MANY_REQUESTS");
   const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) return fail6(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+  if (!contentType.includes("application/json")) return fail7(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
   let body;
   try {
     body = await request.json();
   } catch {
-    return fail6(origin, 400, "INVALID_JSON");
+    return fail7(origin, 400, "INVALID_JSON");
   }
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail6(origin, 400, "INVALID_BODY");
+    return fail7(origin, 400, "INVALID_BODY");
   }
   const creatorIdentityId = typeof body.creatorIdentityId === "string" ? body.creatorIdentityId.trim() : "";
   const lifecycleId = typeof body.lifecycleId === "string" ? body.lifecycleId.trim() : "";
   const capsuleId = typeof body.capsuleId === "string" ? body.capsuleId.trim() : "";
   if (!creatorIdentityId || !lifecycleId || !capsuleId) {
-    return fail6(origin, 400, "INVALID_FIELDS");
+    return fail7(origin, 400, "INVALID_FIELDS");
   }
   const bindings = env;
   const lifecycleRaw = await bindings.CREATOR_CREDITS.get(lifecycleIdKey(creatorIdentityId, lifecycleId));
   if (!lifecycleRaw) {
-    return fail6(origin, 409, "LIFECYCLE_NOT_FOUND");
+    return fail7(origin, 409, "LIFECYCLE_NOT_FOUND");
   }
   const lifecycle = JSON.parse(lifecycleRaw);
   const publicationRaw = await bindings.PUBLICATION_VERIFICATIONS.get(`creator:publication:${lifecycleId}`);
@@ -1249,41 +1443,41 @@ async function onRequestPost5(context) {
   };
   return new Response(JSON.stringify(normalized), {
     status: response.status,
-    headers: baseHeaders7(origin)
+    headers: baseHeaders8(origin)
   });
 }
-var ALLOWED_ORIGINS7, PAGES_PREVIEW_REGEX2;
+var ALLOWED_ORIGINS8, PAGES_PREVIEW_REGEX3;
 var init_recover_lifecycle = __esm({
   "api/creator/recover-lifecycle.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
-    ALLOWED_ORIGINS7 = [
+    ALLOWED_ORIGINS8 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
-    PAGES_PREVIEW_REGEX2 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-    __name(isAllowedOrigin2, "isAllowedOrigin");
-    __name(baseHeaders7, "baseHeaders");
-    __name(fail6, "fail");
+    PAGES_PREVIEW_REGEX3 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+    __name(isAllowedOrigin3, "isAllowedOrigin");
+    __name(baseHeaders8, "baseHeaders");
+    __name(fail7, "fail");
     __name(lifecycleIdKey, "lifecycleIdKey");
-    __name(onRequestOptions7, "onRequestOptions");
-    __name(onRequestPost5, "onRequestPost");
+    __name(onRequestOptions8, "onRequestOptions");
+    __name(onRequestPost6, "onRequestPost");
   }
 });
 
 // api/creator/reserve-lifecycle.ts
-function isAllowedOrigin3(origin) {
-  if (ALLOWED_ORIGINS8.includes(origin)) return true;
+function isAllowedOrigin4(origin) {
+  if (ALLOWED_ORIGINS9.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX3.test(url.hostname)) return true;
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX4.test(url.hostname)) return true;
   } catch {
   }
   return false;
 }
-function baseHeaders8(origin) {
+function baseHeaders9(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -1292,56 +1486,56 @@ function baseHeaders8(origin) {
     "Access-Control-Allow-Headers": "Content-Type"
   };
 }
-function fail7(origin, status = 400, error = "error") {
-  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders8(origin) });
+function fail8(origin, status = 400, error = "error") {
+  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders9(origin) });
 }
 function parseLifecycleId(input) {
   if (typeof input !== "string") return null;
   const trimmed = input.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
-function creditIndexKey2(creatorIdentityId, quoteId) {
+function creditIndexKey3(creatorIdentityId, quoteId) {
   return `creator:credit:index:${creatorIdentityId}:${quoteId}`;
 }
-async function onRequestOptions8(context) {
+async function onRequestOptions9(context) {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin3(origin)) return new Response(null, { status: 403 });
-  return new Response(null, { status: 204, headers: baseHeaders8(origin) });
+  if (!isAllowedOrigin4(origin)) return new Response(null, { status: 403 });
+  return new Response(null, { status: 204, headers: baseHeaders9(origin) });
 }
-async function onRequestPost6(context) {
+async function onRequestPost7(context) {
   const { request, env } = context;
   const origin = request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin3(origin)) return fail7(origin, 403, "INVALID_ORIGIN");
+  if (!isAllowedOrigin4(origin)) return fail8(origin, 403, "INVALID_ORIGIN");
   const ip = getClientIp(request);
-  if (!rateLimit(ip)) return fail7(origin, 429, "TOO_MANY_REQUESTS");
+  if (!rateLimit(ip)) return fail8(origin, 429, "TOO_MANY_REQUESTS");
   const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) return fail7(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+  if (!contentType.includes("application/json")) return fail8(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
   let body;
   try {
     body = await request.json();
   } catch {
-    return fail7(origin, 400, "INVALID_JSON");
+    return fail8(origin, 400, "INVALID_JSON");
   }
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail7(origin, 400, "INVALID_BODY");
+    return fail8(origin, 400, "INVALID_BODY");
   }
   const creatorIdentityId = body.creatorIdentityId;
   const capsuleId = body.capsuleId;
   const lifecycleId = parseLifecycleId(body.lifecycleId);
   if (typeof creatorIdentityId !== "string" || typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
-    return fail7(origin, 400, "INVALID_FIELDS");
+    return fail8(origin, 400, "INVALID_FIELDS");
   }
   const bindings = env;
   const quoteRaw = await bindings.BUSINESS_QUOTES.get(capsuleId);
   if (!quoteRaw) {
-    return fail7(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
+    return fail8(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
   }
   if (!lifecycleId) {
-    return fail7(origin, 400, "LIFECYCLE_ID_REQUIRED");
+    return fail8(origin, 400, "LIFECYCLE_ID_REQUIRED");
   }
-  const creditIndexRaw = await bindings.CREATOR_CREDITS.get(creditIndexKey2(creatorIdentityId, capsuleId));
+  const creditIndexRaw = await bindings.CREATOR_CREDITS.get(creditIndexKey3(creatorIdentityId, capsuleId));
   if (!creditIndexRaw) {
-    return fail7(origin, 402, "CREATOR_CREDIT_NOT_FOUND");
+    return fail8(origin, 402, "CREATOR_CREDIT_NOT_FOUND");
   }
   const creatorCreditId = creditIndexRaw.trim();
   const coordinatorId = bindings.CREDIT_OP_COORDINATOR.idFromName(creatorCreditId);
@@ -1361,26 +1555,26 @@ async function onRequestPost6(context) {
   );
   return response;
 }
-var ALLOWED_ORIGINS8, PAGES_PREVIEW_REGEX3;
+var ALLOWED_ORIGINS9, PAGES_PREVIEW_REGEX4;
 var init_reserve_lifecycle = __esm({
   "api/creator/reserve-lifecycle.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_validators();
-    ALLOWED_ORIGINS8 = [
+    ALLOWED_ORIGINS9 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
-    PAGES_PREVIEW_REGEX3 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-    __name(isAllowedOrigin3, "isAllowedOrigin");
-    __name(baseHeaders8, "baseHeaders");
-    __name(fail7, "fail");
+    PAGES_PREVIEW_REGEX4 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+    __name(isAllowedOrigin4, "isAllowedOrigin");
+    __name(baseHeaders9, "baseHeaders");
+    __name(fail8, "fail");
     __name(parseLifecycleId, "parseLifecycleId");
-    __name(creditIndexKey2, "creditIndexKey");
-    __name(onRequestOptions8, "onRequestOptions");
-    __name(onRequestPost6, "onRequestPost");
+    __name(creditIndexKey3, "creditIndexKey");
+    __name(onRequestOptions9, "onRequestOptions");
+    __name(onRequestPost7, "onRequestPost");
   }
 });
 
@@ -1410,7 +1604,7 @@ var IDENTITY_PREFIX;
 var init_creatorIdentityStore = __esm({
   "../src/lib/creator/creatorIdentityStore.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     IDENTITY_PREFIX = "creator:identity:";
     __name(identityKey, "identityKey");
     __name(getCreatorIdentity, "getCreatorIdentity");
@@ -1420,7 +1614,7 @@ var init_creatorIdentityStore = __esm({
 });
 
 // api/creator/verify-proof.ts
-function baseHeaders9(origin) {
+function baseHeaders10(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -1429,77 +1623,77 @@ function baseHeaders9(origin) {
     "Access-Control-Allow-Headers": "Content-Type"
   };
 }
-function fail8(origin, status = 400, error = "error") {
-  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders9(origin) });
+function fail9(origin, status = 400, error = "error") {
+  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders10(origin) });
 }
-async function onRequestOptions9(context) {
+async function onRequestOptions10(context) {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!ALLOWED_ORIGINS9.includes(origin)) {
+  if (!ALLOWED_ORIGINS10.includes(origin)) {
     return new Response(null, { status: 403 });
   }
-  return new Response(null, { status: 204, headers: baseHeaders9(origin) });
+  return new Response(null, { status: 204, headers: baseHeaders10(origin) });
 }
-async function onRequestPost7(context) {
+async function onRequestPost8(context) {
   const { request, env } = context;
   const origin = request.headers.get("origin") ?? "";
-  if (!ALLOWED_ORIGINS9.includes(origin)) {
-    return fail8(origin, 403, "INVALID_ORIGIN");
+  if (!ALLOWED_ORIGINS10.includes(origin)) {
+    return fail9(origin, 403, "INVALID_ORIGIN");
   }
   const ip = getClientIp(request);
   if (!rateLimit(ip)) {
-    return fail8(origin, 429, "TOO_MANY_REQUESTS");
+    return fail9(origin, 429, "TOO_MANY_REQUESTS");
   }
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return fail8(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+    return fail9(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
   }
   let body;
   try {
     body = await request.json();
   } catch {
-    return fail8(origin, 400, "INVALID_JSON");
+    return fail9(origin, 400, "INVALID_JSON");
   }
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail8(origin, 400, "INVALID_BODY");
+    return fail9(origin, 400, "INVALID_BODY");
   }
   const challengeId = body.challengeId;
   const network = body.network;
   const account = body.account;
   const signature = body.signature;
   if (typeof challengeId !== "string" || typeof network !== "string" || typeof account !== "string" || typeof signature !== "string") {
-    return fail8(origin, 400, "INVALID_FIELDS");
+    return fail9(origin, 400, "INVALID_FIELDS");
   }
   if (!/^0x[a-fA-F0-9]{40}$/.test(account)) {
-    return fail8(origin, 400, "INVALID_ACCOUNT");
+    return fail9(origin, 400, "INVALID_ACCOUNT");
   }
   const challengeRaw = await env.CREATOR_IDENTITIES.get(`${CHALLENGE_PREFIX2}${challengeId}`);
   if (!challengeRaw) {
-    return fail8(origin, 400, "CHALLENGE_NOT_FOUND");
+    return fail9(origin, 400, "CHALLENGE_NOT_FOUND");
   }
   let challengeRecord;
   try {
     challengeRecord = JSON.parse(challengeRaw);
   } catch {
-    return fail8(origin, 400, "CHALLENGE_CORRUPT");
+    return fail9(origin, 400, "CHALLENGE_CORRUPT");
   }
   if (challengeRecord.network !== network) {
-    return fail8(origin, 400, "NETWORK_MISMATCH");
+    return fail9(origin, 400, "NETWORK_MISMATCH");
   }
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
   if (now > challengeRecord.expiresAt) {
-    return fail8(origin, 400, "CHALLENGE_EXPIRED");
+    return fail9(origin, 400, "CHALLENGE_EXPIRED");
   }
   let recovered = "";
   try {
     const message = `AETERNA identity challenge:${challengeRecord.challenge}`;
-    const recoveredAddress = await recoverPersonalSignAddress(signature, message);
+    const recoveredAddress = await recoverPersonalSignAddress2(signature, message);
     recovered = recoveredAddress;
   } catch {
-    return fail8(origin, 400, "INVALID_SIGNATURE");
+    return fail9(origin, 400, "INVALID_SIGNATURE");
   }
   if (recovered.toLowerCase() !== account.toLowerCase()) {
-    return fail8(origin, 400, "ACCOUNT_MISMATCH");
+    return fail9(origin, 400, "ACCOUNT_MISMATCH");
   }
   await env.CREATOR_IDENTITIES.delete(`${CHALLENGE_PREFIX2}${challengeId}`);
   const lowerAccount = account.toLowerCase();
@@ -1528,10 +1722,10 @@ async function onRequestPost7(context) {
   }
   return new Response(
     JSON.stringify({ ok: true, creatorIdentityId: identity.id, network, account: identity.account }),
-    { status: 200, headers: baseHeaders9(origin) }
+    { status: 200, headers: baseHeaders10(origin) }
   );
 }
-async function recoverPersonalSignAddress(signature, message) {
+async function recoverPersonalSignAddress2(signature, message) {
   const encoder = new TextEncoder();
   const msgBytes = encoder.encode(message);
   const msgHash = await crypto.subtle.digest("SHA-256", msgBytes);
@@ -1543,39 +1737,39 @@ ${msgBytes.length}`);
   const hashHex = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", buf))).map((b2) => b2.toString(16).padStart(2, "0")).join("");
   return hashHex.slice(0, 40);
 }
-var ALLOWED_ORIGINS9, CHALLENGE_PREFIX2;
+var ALLOWED_ORIGINS10, CHALLENGE_PREFIX2;
 var init_verify_proof = __esm({
   "api/creator/verify-proof.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_time();
     init_creatorIdentityStore();
-    ALLOWED_ORIGINS9 = [
+    ALLOWED_ORIGINS10 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
     CHALLENGE_PREFIX2 = "creator:challenge:";
-    __name(baseHeaders9, "baseHeaders");
-    __name(fail8, "fail");
-    __name(onRequestOptions9, "onRequestOptions");
-    __name(onRequestPost7, "onRequestPost");
-    __name(recoverPersonalSignAddress, "recoverPersonalSignAddress");
+    __name(baseHeaders10, "baseHeaders");
+    __name(fail9, "fail");
+    __name(onRequestOptions10, "onRequestOptions");
+    __name(onRequestPost8, "onRequestPost");
+    __name(recoverPersonalSignAddress2, "recoverPersonalSignAddress");
   }
 });
 
 // api/publication/verify.ts
-function isAllowedOrigin4(origin) {
-  if (ALLOWED_ORIGINS10.includes(origin)) return true;
+function isAllowedOrigin5(origin) {
+  if (ALLOWED_ORIGINS11.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX4.test(url.hostname)) return true;
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX5.test(url.hostname)) return true;
   } catch {
   }
   return false;
 }
-function baseHeaders10(origin) {
+function baseHeaders11(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -1584,8 +1778,8 @@ function baseHeaders10(origin) {
     "Access-Control-Allow-Headers": "Content-Type"
   };
 }
-function fail9(origin, status = 400, error = "error") {
-  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders10(origin) });
+function fail10(origin, status = 400, error = "error") {
+  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders11(origin) });
 }
 function publicationKey(lifecycleId) {
   return `creator:publication:${lifecycleId}`;
@@ -1595,27 +1789,27 @@ function parsePublicationInput(value) {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
-async function onRequestOptions10(context) {
+async function onRequestOptions11(context) {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin4(origin)) return new Response(null, { status: 403 });
-  return new Response(null, { status: 204, headers: baseHeaders10(origin) });
+  if (!isAllowedOrigin5(origin)) return new Response(null, { status: 403 });
+  return new Response(null, { status: 204, headers: baseHeaders11(origin) });
 }
-async function onRequestPost8(context) {
+async function onRequestPost9(context) {
   const { request, env } = context;
   const origin = request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin4(origin)) return fail9(origin, 403, "INVALID_ORIGIN");
+  if (!isAllowedOrigin5(origin)) return fail10(origin, 403, "INVALID_ORIGIN");
   const ip = getClientIp(request);
-  if (!rateLimit(ip)) return fail9(origin, 429, "TOO_MANY_REQUESTS");
+  if (!rateLimit(ip)) return fail10(origin, 429, "TOO_MANY_REQUESTS");
   const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) return fail9(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+  if (!contentType.includes("application/json")) return fail10(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
   let body;
   try {
     body = await request.json();
   } catch {
-    return fail9(origin, 400, "INVALID_JSON");
+    return fail10(origin, 400, "INVALID_JSON");
   }
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail9(origin, 400, "INVALID_BODY");
+    return fail10(origin, 400, "INVALID_BODY");
   }
   const creatorIdentityId = parsePublicationInput(body.creatorIdentityId);
   const lifecycleId = parsePublicationInput(body.lifecycleId);
@@ -1624,7 +1818,7 @@ async function onRequestPost8(context) {
   const txHash = parsePublicationInput(body.txHash);
   const providerRef = parsePublicationInput(body.providerRef);
   if (!creatorIdentityId || !lifecycleId || !capsuleId || !publicationId) {
-    return fail9(origin, 400, "INVALID_FIELDS");
+    return fail10(origin, 400, "INVALID_FIELDS");
   }
   const evidenceIds = [publicationId];
   if (txHash) evidenceIds.push(txHash);
@@ -1642,19 +1836,19 @@ async function onRequestPost8(context) {
         creatorIdentityId,
         verifiedAt: existing.verifiedAt
       }),
-      { status: 200, headers: baseHeaders10(origin) }
+      { status: 200, headers: baseHeaders11(origin) }
     );
   }
   const creditRaw = await env.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
   if (!creditRaw) {
-    return fail9(origin, 409, "LIFECYCLE_NOT_RESERVED");
+    return fail10(origin, 409, "LIFECYCLE_NOT_RESERVED");
   }
   const credit = JSON.parse(creditRaw);
   if (credit.status !== "CONSUMING") {
-    return fail9(origin, 409, "CREDIT_NOT_CONSUMING");
+    return fail10(origin, 409, "CREDIT_NOT_CONSUMING");
   }
   if (credit.creatorIdentityId !== creatorIdentityId) {
-    return fail9(origin, 409, "IDENTITY_MISMATCH");
+    return fail10(origin, 409, "IDENTITY_MISMATCH");
   }
   const verifierResult = await publicationVerifier.verifyPublication({
     publicationId,
@@ -1688,24 +1882,24 @@ async function onRequestPost8(context) {
       creatorIdentityId,
       verifiedAt: record.verifiedAt
     }),
-    { status: 200, headers: baseHeaders10(origin) }
+    { status: 200, headers: baseHeaders11(origin) }
   );
 }
-var ALLOWED_ORIGINS10, PAGES_PREVIEW_REGEX4, FailClosedPublicationVerifier, publicationVerifier;
+var ALLOWED_ORIGINS11, PAGES_PREVIEW_REGEX5, FailClosedPublicationVerifier, publicationVerifier;
 var init_verify = __esm({
   "api/publication/verify.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
-    ALLOWED_ORIGINS10 = [
+    ALLOWED_ORIGINS11 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
-    PAGES_PREVIEW_REGEX4 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-    __name(isAllowedOrigin4, "isAllowedOrigin");
-    __name(baseHeaders10, "baseHeaders");
-    __name(fail9, "fail");
+    PAGES_PREVIEW_REGEX5 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+    __name(isAllowedOrigin5, "isAllowedOrigin");
+    __name(baseHeaders11, "baseHeaders");
+    __name(fail10, "fail");
     __name(publicationKey, "publicationKey");
     __name(parsePublicationInput, "parsePublicationInput");
     FailClosedPublicationVerifier = class {
@@ -1724,8 +1918,8 @@ var init_verify = __esm({
       }
     };
     publicationVerifier = new FailClosedPublicationVerifier();
-    __name(onRequestOptions10, "onRequestOptions");
-    __name(onRequestPost8, "onRequestPost");
+    __name(onRequestOptions11, "onRequestOptions");
+    __name(onRequestPost9, "onRequestPost");
   }
 });
 
@@ -1748,22 +1942,22 @@ async function sha256(data) {
 var init_sha256 = __esm({
   "lib/sha256.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     __name(sha256, "sha256");
   }
 });
 
 // api/seal/verify.ts
-function isAllowedOrigin5(origin) {
-  if (ALLOWED_ORIGINS11.includes(origin)) return true;
+function isAllowedOrigin6(origin) {
+  if (ALLOWED_ORIGINS12.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX5.test(url.hostname)) return true;
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX6.test(url.hostname)) return true;
   } catch {
   }
   return false;
 }
-function baseHeaders11(origin) {
+function baseHeaders12(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -1772,8 +1966,8 @@ function baseHeaders11(origin) {
     "Access-Control-Allow-Headers": "Content-Type"
   };
 }
-function fail10(origin, status = 400, error = "error") {
-  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders11(origin) });
+function fail11(origin, status = 400, error = "error") {
+  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders12(origin) });
 }
 function sealKey(lifecycleId) {
   return `creator:seal:${lifecycleId}`;
@@ -1783,66 +1977,66 @@ async function computeManifestHash(manifest) {
   const digest = await sha256(new TextEncoder().encode(text));
   return `manifest:${digest}`;
 }
-async function onRequestOptions11(context) {
+async function onRequestOptions12(context) {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin5(origin)) return new Response(null, { status: 403 });
-  return new Response(null, { status: 204, headers: baseHeaders11(origin) });
+  if (!isAllowedOrigin6(origin)) return new Response(null, { status: 403 });
+  return new Response(null, { status: 204, headers: baseHeaders12(origin) });
 }
-async function onRequestPost9(context) {
+async function onRequestPost10(context) {
   const { request, env } = context;
   const origin = request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin5(origin)) return fail10(origin, 403, "INVALID_ORIGIN");
+  if (!isAllowedOrigin6(origin)) return fail11(origin, 403, "INVALID_ORIGIN");
   const ip = getClientIp(request);
-  if (!rateLimit(ip)) return fail10(origin, 429, "TOO_MANY_REQUESTS");
+  if (!rateLimit(ip)) return fail11(origin, 429, "TOO_MANY_REQUESTS");
   const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) return fail10(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+  if (!contentType.includes("application/json")) return fail11(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
   let body;
   try {
     body = await request.json();
   } catch {
-    return fail10(origin, 400, "INVALID_JSON");
+    return fail11(origin, 400, "INVALID_JSON");
   }
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail10(origin, 400, "INVALID_BODY");
+    return fail11(origin, 400, "INVALID_BODY");
   }
   const creatorIdentityId = typeof body.creatorIdentityId === "string" ? body.creatorIdentityId.trim() : "";
   const lifecycleId = typeof body.lifecycleId === "string" ? body.lifecycleId.trim() : "";
   const capsuleId = typeof body.capsuleId === "string" ? body.capsuleId.trim() : "";
   const manifest = body.manifest;
   if (!creatorIdentityId || !lifecycleId || !capsuleId || !manifest || typeof manifest !== "object") {
-    return fail10(origin, 400, "INVALID_FIELDS");
+    return fail11(origin, 400, "INVALID_FIELDS");
   }
   const creditRaw = await env.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
   if (!creditRaw) {
-    return fail10(origin, 409, "LIFECYCLE_NOT_RESERVED");
+    return fail11(origin, 409, "LIFECYCLE_NOT_RESERVED");
   }
   const credit = JSON.parse(creditRaw);
   if (credit.status !== "CONSUMING") {
-    return fail10(origin, 409, "CREDIT_NOT_CONSUMING");
+    return fail11(origin, 409, "CREDIT_NOT_CONSUMING");
   }
   if (credit.creatorIdentityId !== creatorIdentityId) {
-    return fail10(origin, 409, "IDENTITY_MISMATCH");
+    return fail11(origin, 409, "IDENTITY_MISMATCH");
   }
   const publicationRaw = await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${lifecycleId}`);
   if (!publicationRaw) {
-    return fail10(origin, 409, "PUBLICATION_NOT_VERIFIED");
+    return fail11(origin, 409, "PUBLICATION_NOT_VERIFIED");
   }
   const publication = JSON.parse(publicationRaw);
   if (publication.state !== "VERIFIED") {
-    return fail10(origin, 409, "PUBLICATION_NOT_VERIFIED");
+    return fail11(origin, 409, "PUBLICATION_NOT_VERIFIED");
   }
   if (publication.capsuleId !== capsuleId || publication.lifecycleId !== lifecycleId) {
-    return fail10(origin, 409, "PUBLICATION_BINDING_MISMATCH");
+    return fail11(origin, 409, "PUBLICATION_BINDING_MISMATCH");
   }
   const storedManifest = await env.CAPSULE_MANIFESTS.get(capsuleId);
   if (!storedManifest) {
-    return fail10(origin, 409, "MANIFEST_NOT_FOUND");
+    return fail11(origin, 409, "MANIFEST_NOT_FOUND");
   }
   const storedManifestObj = JSON.parse(storedManifest);
   const storedHash = await computeManifestHash(storedManifestObj);
   const submittedHash = await computeManifestHash(manifest);
   if (storedHash !== submittedHash) {
-    return fail10(origin, 409, "MANIFEST_MISMATCH");
+    return fail11(origin, 409, "MANIFEST_MISMATCH");
   }
   const key = sealKey(lifecycleId);
   const existingRaw = await env.SEAL_VERIFICATIONS.get(key);
@@ -1857,7 +2051,7 @@ async function onRequestPost9(context) {
         creatorIdentityId,
         verifiedAt: existing.verifiedAt
       }),
-      { status: 200, headers: baseHeaders11(origin) }
+      { status: 200, headers: baseHeaders12(origin) }
     );
   }
   const now = Date.now();
@@ -1882,43 +2076,44 @@ async function onRequestPost9(context) {
       creatorIdentityId,
       verifiedAt: now
     }),
-    { status: 200, headers: baseHeaders11(origin) }
+    { status: 200, headers: baseHeaders12(origin) }
   );
 }
-var ALLOWED_ORIGINS11, PAGES_PREVIEW_REGEX5;
+var ALLOWED_ORIGINS12, PAGES_PREVIEW_REGEX6;
 var init_verify2 = __esm({
   "api/seal/verify.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_sha256();
-    ALLOWED_ORIGINS11 = [
+    ALLOWED_ORIGINS12 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
-    PAGES_PREVIEW_REGEX5 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-    __name(isAllowedOrigin5, "isAllowedOrigin");
-    __name(baseHeaders11, "baseHeaders");
-    __name(fail10, "fail");
+    PAGES_PREVIEW_REGEX6 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+    __name(isAllowedOrigin6, "isAllowedOrigin");
+    __name(baseHeaders12, "baseHeaders");
+    __name(fail11, "fail");
     __name(sealKey, "sealKey");
     __name(computeManifestHash, "computeManifestHash");
-    __name(onRequestOptions11, "onRequestOptions");
-    __name(onRequestPost9, "onRequestPost");
+    __name(onRequestOptions12, "onRequestOptions");
+    __name(onRequestPost10, "onRequestPost");
   }
 });
 
 // api/service-payment/create-quote.ts
-function isAllowedOrigin6(origin) {
-  if (ALLOWED_ORIGINS12.includes(origin)) return true;
+function isAllowedOrigin7(origin) {
+  if (ALLOWED_ORIGINS13.includes(origin)) return true;
+  if (LOCALHOST_REGEX.test(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX6.test(url.hostname)) return true;
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX7.test(url.hostname)) return true;
   } catch {
   }
   return false;
 }
-function baseHeaders12(origin) {
+function baseHeaders13(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, no-transform",
@@ -1936,50 +2131,50 @@ function baseHeaders12(origin) {
     "Content-Security-Policy": "default-src 'none'"
   };
 }
-function fail11(origin, status = 400, error = "error") {
-  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders12(origin) });
+function fail12(origin, status = 400, error = "error") {
+  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders13(origin) });
 }
-async function onRequestOptions12(context) {
+async function onRequestOptions13(context) {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin6(origin)) {
+  if (!isAllowedOrigin7(origin)) {
     return new Response(null, { status: 403 });
   }
-  return new Response(null, { status: 204, headers: baseHeaders12(origin) });
+  return new Response(null, { status: 204, headers: baseHeaders13(origin) });
 }
-async function onRequestPost10(context) {
+async function onRequestPost11(context) {
   const { request, env } = context;
   const bindings = env;
   const origin = request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin6(origin)) {
+  if (!isAllowedOrigin7(origin)) {
     console.error("[service-payment/create-quote] INVALID_ORIGIN", { origin });
-    return fail11(origin, 403, "INVALID_ORIGIN");
+    return fail12(origin, 403, "INVALID_ORIGIN");
   }
   const ip = getClientIp(request);
   if (!rateLimit(ip)) {
     console.error("[service-payment/create-quote] RATE_LIMIT", { ip });
-    return fail11(origin, 429, "TOO_MANY_REQUESTS");
+    return fail12(origin, 429, "TOO_MANY_REQUESTS");
   }
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return fail11(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+    return fail12(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
   }
   if (!bindings.BUSINESS_QUOTES) {
     console.error("[service-payment/create-quote] BUSINESS_QUOTES_MISSING");
-    return fail11(origin, 503, "BUSINESS_QUOTES_MISSING");
+    return fail12(origin, 503, "BUSINESS_QUOTES_MISSING");
   }
   let body;
   try {
     body = await request.json();
   } catch {
     console.error("[service-payment/create-quote] INVALID_JSON");
-    return fail11(origin, 400, "INVALID_JSON");
+    return fail12(origin, 400, "INVALID_JSON");
   }
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail11(origin, 400, "INVALID_BODY");
+    return fail12(origin, 400, "INVALID_BODY");
   }
   const capsuleId = body.capsuleId;
   if (typeof capsuleId !== "string" || !CAPSULE_ID_REGEX2.test(capsuleId)) {
-    return fail11(origin, 400, "INVALID_CAPSULE_ID");
+    return fail12(origin, 400, "INVALID_CAPSULE_ID");
   }
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
@@ -1992,7 +2187,7 @@ async function onRequestPost10(context) {
         currency: existing.currency,
         expiresAt: existing.expiresAt
       }),
-      { status: 200, headers: baseHeaders12(origin) }
+      { status: 200, headers: baseHeaders13(origin) }
     );
   }
   const quote = {
@@ -2007,7 +2202,7 @@ async function onRequestPost10(context) {
     await createBusinessQuote(bindings, quote);
   } catch (err) {
     console.error("[service-payment/create-quote] QUOTE_CREATE_FAILED", err);
-    return fail11(origin, 500, "QUOTE_CREATE_FAILED");
+    return fail12(origin, 500, "QUOTE_CREATE_FAILED");
   }
   return new Response(
     JSON.stringify({
@@ -2016,46 +2211,47 @@ async function onRequestPost10(context) {
       currency: quote.currency,
       expiresAt: quote.expiresAt
     }),
-    { status: 200, headers: baseHeaders12(origin) }
+    { status: 200, headers: baseHeaders13(origin) }
   );
 }
-var CAPSULE_ID_REGEX2, ALLOWED_ORIGINS12, PAGES_PREVIEW_REGEX6, SERVICE_FEE_USD, QUOTE_TTL_MS;
+var CAPSULE_ID_REGEX2, ALLOWED_ORIGINS13, PAGES_PREVIEW_REGEX7, LOCALHOST_REGEX, SERVICE_FEE_USD, QUOTE_TTL_MS;
 var init_create_quote = __esm({
   "api/service-payment/create-quote.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_time();
     init_businessQuoteStore();
     CAPSULE_ID_REGEX2 = /^[a-f0-9]{64}$/;
-    ALLOWED_ORIGINS12 = [
+    ALLOWED_ORIGINS13 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
-    PAGES_PREVIEW_REGEX6 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-    __name(isAllowedOrigin6, "isAllowedOrigin");
+    PAGES_PREVIEW_REGEX7 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+    LOCALHOST_REGEX = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
+    __name(isAllowedOrigin7, "isAllowedOrigin");
     SERVICE_FEE_USD = 1;
     QUOTE_TTL_MS = 30 * 60 * 1e3;
-    __name(baseHeaders12, "baseHeaders");
-    __name(fail11, "fail");
-    __name(onRequestOptions12, "onRequestOptions");
-    __name(onRequestPost10, "onRequestPost");
+    __name(baseHeaders13, "baseHeaders");
+    __name(fail12, "fail");
+    __name(onRequestOptions13, "onRequestOptions");
+    __name(onRequestPost11, "onRequestPost");
   }
 });
 
 // api/service-payment/verify.ts
-function isAllowedOrigin7(origin) {
-  if (ALLOWED_ORIGINS13.includes(origin)) return true;
+function isAllowedOrigin8(origin) {
+  if (ALLOWED_ORIGINS14.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX7.test(url.hostname))
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX8.test(url.hostname))
       return true;
   } catch {
   }
   return false;
 }
-function baseHeaders13(origin) {
+function baseHeaders14(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -2065,10 +2261,10 @@ function baseHeaders13(origin) {
     "X-Aeterna-Service-Payment-Verify-Version": "v1"
   };
 }
-function fail12(origin, status = 400, error = "error") {
+function fail13(origin, status = 400, error = "error") {
   return new Response(
     JSON.stringify({ ok: false, error }),
-    { status, headers: baseHeaders13(origin) }
+    { status, headers: baseHeaders14(origin) }
   );
 }
 function quoteKey2(capsuleId) {
@@ -2201,60 +2397,60 @@ function findTransferLog(receipt) {
   }
   return { found: false, reason: "Transfer not found" };
 }
-async function onRequestOptions13(context) {
+async function onRequestOptions14(context) {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin7(origin)) {
+  if (!isAllowedOrigin8(origin)) {
     return new Response(null, { status: 403 });
   }
-  return new Response(null, { status: 204, headers: baseHeaders13(origin) });
+  return new Response(null, { status: 204, headers: baseHeaders14(origin) });
 }
-async function onRequestPost11(context) {
+async function onRequestPost12(context) {
   const { request, env } = context;
   const origin = request.headers.get("origin") ?? "";
-  if (!isAllowedOrigin7(origin)) {
-    return fail12(origin, 403, "INVALID_ORIGIN");
+  if (!isAllowedOrigin8(origin)) {
+    return fail13(origin, 403, "INVALID_ORIGIN");
   }
   const ip = getClientIp(request);
   if (!ip || !rateLimit(ip)) {
-    return fail12(origin, 429, "TOO_MANY_REQUESTS");
+    return fail13(origin, 429, "TOO_MANY_REQUESTS");
   }
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return fail12(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+    return fail13(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
   }
   let body;
   try {
     body = await request.json();
   } catch {
-    return fail12(origin, 400, "INVALID_JSON");
+    return fail13(origin, 400, "INVALID_JSON");
   }
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail12(origin, 400, "INVALID_BODY");
+    return fail13(origin, 400, "INVALID_BODY");
   }
   const capsuleId = body.capsuleId;
   const creatorIdentityId = body.creatorIdentityId;
   const evidenceId = typeof body.evidenceId === "string" ? body.evidenceId.trim() : "";
   const transactionId = typeof body.transactionId === "string" ? body.transactionId.trim() : "";
   if (typeof capsuleId !== "string" || typeof creatorIdentityId !== "string" || !capsuleId || !creatorIdentityId || !evidenceId) {
-    return fail12(origin, 400, "INVALID_FIELDS");
+    return fail13(origin, 400, "INVALID_FIELDS");
   }
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
   const quoteRaw = await env.BUSINESS_QUOTES.get(quoteKey2(capsuleId));
   if (!quoteRaw) {
-    return fail12(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
+    return fail13(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
   }
   let quote;
   try {
     quote = JSON.parse(quoteRaw);
   } catch {
-    return fail12(origin, 500, "QUOTE_CORRUPT");
+    return fail13(origin, 500, "QUOTE_CORRUPT");
   }
   if (quote.capsuleId !== capsuleId) {
-    return fail12(origin, 400, "QUOTE_MISMATCH");
+    return fail13(origin, 400, "QUOTE_MISMATCH");
   }
   if (now > quote.expiresAt) {
-    return fail12(origin, 402, "QUOTE_EXPIRED");
+    return fail13(origin, 402, "QUOTE_EXPIRED");
   }
   let identityOk = true;
   if (env?.CREATOR_IDENTITIES) {
@@ -2275,7 +2471,7 @@ async function onRequestPost11(context) {
     }
   }
   if (!identityOk) {
-    return fail12(origin, 403, "CREATOR_IDENTITY_NOT_FOUND");
+    return fail13(origin, 403, "CREATOR_IDENTITY_NOT_FOUND");
   }
   const evidenceKey = verifiedPaymentKey(capsuleId, evidenceId);
   const existingRaw = await env.VERIFIED_PAYMENTS.get(evidenceKey);
@@ -2284,13 +2480,13 @@ async function onRequestPost11(context) {
     try {
       existing = JSON.parse(existingRaw);
     } catch {
-      return fail12(origin, 500, "VERIFIED_PAYMENT_CORRUPT");
+      return fail13(origin, 500, "VERIFIED_PAYMENT_CORRUPT");
     }
     if (existing.consumed) {
-      return fail12(origin, 409, "VERIFIED_PAYMENT_ALREADY_CONSUMED");
+      return fail13(origin, 409, "VERIFIED_PAYMENT_ALREADY_CONSUMED");
     }
     if (existing.creatorIdentityId !== creatorIdentityId) {
-      return fail12(origin, 409, "VERIFIED_PAYMENT_IDENTITY_MISMATCH");
+      return fail13(origin, 409, "VERIFIED_PAYMENT_IDENTITY_MISMATCH");
     }
     return new Response(
       JSON.stringify({
@@ -2299,55 +2495,55 @@ async function onRequestPost11(context) {
         verifiedAt: existing.verifiedAt,
         creatorIdentityId: existing.creatorIdentityId
       }),
-      { status: 200, headers: baseHeaders13(origin) }
+      { status: 200, headers: baseHeaders14(origin) }
     );
   }
   const txHash = typeof transactionId === "string" && transactionId.length === 66 && transactionId.startsWith("0x") ? transactionId : typeof body.txHash === "string" && body.txHash.length === 66 && body.txHash.startsWith("0x") ? body.txHash : "";
   if (!txHash) {
-    return fail12(origin, 400, "INVALID_TX_HASH");
+    return fail13(origin, 400, "INVALID_TX_HASH");
   }
   if (quote.expectedAmount !== 1 || quote.currency !== "USD") {
-    return fail12(origin, 402, "QUOTE_NOT_1_USD");
+    return fail13(origin, 402, "QUOTE_NOT_1_USD");
   }
   const primary = await queryPrimary(env, txHash);
   const secondary = await querySecondary(env, txHash);
   const providers = [primary, secondary].filter((p) => !!p.chainId || !!p.receipt);
   if (providers.length === 0) {
-    return fail12(origin, 503, "PROVIDERS_UNAVAILABLE");
+    return fail13(origin, 503, "PROVIDERS_UNAVAILABLE");
   }
   const uniqueChainIds = new Set(
     providers.map((p) => typeof p.chainId === "string" ? p.chainId.toLowerCase() : "").filter(Boolean)
   );
   if (uniqueChainIds.size > 1) {
-    return fail12(origin, 503, "PROVIDER_DISAGREEMENT");
+    return fail13(origin, 503, "PROVIDER_DISAGREEMENT");
   }
   const agreedChainId = providers[0]?.chainId?.toLowerCase();
   if (agreedChainId !== BASE_CHAIN_ID.toLowerCase()) {
-    return fail12(origin, 503, "WRONG_CHAIN");
+    return fail13(origin, 503, "WRONG_CHAIN");
   }
   const receiptResults = providers.map((p) => findTransferLog(p.receipt)).filter((r) => r.found);
   if (receiptResults.length === 0) {
     const reasons = providers.map((p) => findTransferLog(p.receipt).reason).filter(Boolean);
-    return fail12(origin, 402, `TRANSFER_NOT_FOUND: ${reasons[0] ?? "unknown"}`);
+    return fail13(origin, 402, `TRANSFER_NOT_FOUND: ${reasons[0] ?? "unknown"}`);
   }
   const receipt = providers.find((p) => findTransferLog(p.receipt).found)?.receipt;
   if (!receipt || receipt.status !== "0x1") {
-    return fail12(origin, 402, "TX_NOT_SUCCESSFUL");
+    return fail13(origin, 402, "TX_NOT_SUCCESSFUL");
   }
   if (!receipt.blockNumber || typeof receipt.blockNumber !== "string") {
-    return fail12(origin, 503, "INVALID_BLOCK_NUMBER");
+    return fail13(origin, 503, "INVALID_BLOCK_NUMBER");
   }
   const latestBlocks = providers.map((p) => p.latestBlock).filter((b2) => typeof b2 === "string");
   if (latestBlocks.length === 0) {
-    return fail12(origin, 503, "CHAIN_HEAD_UNAVAILABLE");
+    return fail13(origin, 503, "CHAIN_HEAD_UNAVAILABLE");
   }
   const latestBlock = latestBlocks[0];
   if (!/^0x[0-9a-f]+$/i.test(latestBlock) || !/^0x[0-9a-f]+$/i.test(receipt.blockNumber)) {
-    return fail12(origin, 503, "INVALID_BLOCK_HEX");
+    return fail13(origin, 503, "INVALID_BLOCK_HEX");
   }
   const confirmationCount = hexToBigInt(latestBlock) - hexToBigInt(receipt.blockNumber);
   if (confirmationCount < MIN_CONFIRMATIONS) {
-    return fail12(origin, 202, "PENDING");
+    return fail13(origin, 202, "PENDING");
   }
   const verifiedAt = now;
   const expiresAt = now + VERIFIED_PAYMENT_TTL_MS;
@@ -2379,7 +2575,7 @@ async function onRequestPost11(context) {
       { expirationTtl: VERIFIED_PAYMENT_TTL_SEC }
     );
   } catch {
-    return fail12(origin, 503, "VERIFIED_PAYMENT_WRITE_FAILED");
+    return fail13(origin, 503, "VERIFIED_PAYMENT_WRITE_FAILED");
   }
   return new Response(
     JSON.stringify({
@@ -2388,22 +2584,22 @@ async function onRequestPost11(context) {
       verifiedAt,
       creatorIdentityId
     }),
-    { status: 200, headers: baseHeaders13(origin) }
+    { status: 200, headers: baseHeaders14(origin) }
   );
 }
-var ALLOWED_ORIGINS13, PAGES_PREVIEW_REGEX7, QUOTE_TTL_MS2, VERIFIED_PAYMENT_TTL_MS, VERIFIED_PAYMENT_TTL_SEC, VERIFIED_PAYMENT_PREFIX, QUOTE_PREFIX2, BASE_CHAIN_ID, USDC_CONTRACT, SETTLEMENT_WALLET, EXPECTED_ATOMIC_AMOUNT, TRANSFER_TOPIC, MIN_CONFIRMATIONS, RPC_TIMEOUT_MS, RpcTimeoutError;
+var ALLOWED_ORIGINS14, PAGES_PREVIEW_REGEX8, QUOTE_TTL_MS2, VERIFIED_PAYMENT_TTL_MS, VERIFIED_PAYMENT_TTL_SEC, VERIFIED_PAYMENT_PREFIX, QUOTE_PREFIX2, BASE_CHAIN_ID, USDC_CONTRACT, SETTLEMENT_WALLET, EXPECTED_ATOMIC_AMOUNT, TRANSFER_TOPIC, MIN_CONFIRMATIONS, RPC_TIMEOUT_MS, RpcTimeoutError;
 var init_verify3 = __esm({
   "api/service-payment/verify.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_time();
-    ALLOWED_ORIGINS13 = [
+    ALLOWED_ORIGINS14 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
-    PAGES_PREVIEW_REGEX7 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+    PAGES_PREVIEW_REGEX8 = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
     QUOTE_TTL_MS2 = 30 * 60 * 1e3;
     VERIFIED_PAYMENT_TTL_MS = 60 * 60 * 1e3;
     VERIFIED_PAYMENT_TTL_SEC = Math.max(60, Math.ceil(VERIFIED_PAYMENT_TTL_MS / 1e3));
@@ -2416,9 +2612,9 @@ var init_verify3 = __esm({
     TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
     MIN_CONFIRMATIONS = 1n;
     RPC_TIMEOUT_MS = 1e4;
-    __name(isAllowedOrigin7, "isAllowedOrigin");
-    __name(baseHeaders13, "baseHeaders");
-    __name(fail12, "fail");
+    __name(isAllowedOrigin8, "isAllowedOrigin");
+    __name(baseHeaders14, "baseHeaders");
+    __name(fail13, "fail");
     __name(quoteKey2, "quoteKey");
     __name(verifiedPaymentKey, "verifiedPaymentKey");
     RpcTimeoutError = class extends Error {
@@ -2435,8 +2631,8 @@ var init_verify3 = __esm({
     __name(querySecondary, "querySecondary");
     __name(hexToBigInt, "hexToBigInt");
     __name(findTransferLog, "findTransferLog");
-    __name(onRequestOptions13, "onRequestOptions");
-    __name(onRequestPost11, "onRequestPost");
+    __name(onRequestOptions14, "onRequestOptions");
+    __name(onRequestPost12, "onRequestPost");
   }
 });
 
@@ -2458,8 +2654,8 @@ function isValidChunkPointers2(value) {
   }
   return true;
 }
-function baseHeaders14(origin, cache = false) {
-  const allowed = origin && ALLOWED_ORIGINS14.includes(origin) ? origin : void 0;
+function baseHeaders15(origin, cache = false) {
+  const allowed = origin && ALLOWED_ORIGINS15.includes(origin) ? origin : void 0;
   const headers = {
     "Content-Type": "application/json",
     "X-Content-Type-Options": "nosniff",
@@ -2475,7 +2671,7 @@ function baseHeaders14(origin, cache = false) {
   }
   return headers;
 }
-function fail13(status = 400, message = "error", origin) {
+function fail14(status = 400, message = "error", origin) {
   return new Response(
     JSON.stringify({
       ok: false,
@@ -2483,15 +2679,15 @@ function fail13(status = 400, message = "error", origin) {
     }),
     {
       status,
-      headers: baseHeaders14(origin)
+      headers: baseHeaders15(origin)
     }
   );
 }
-var MIN_TIME3, MAX_TIME3, MIN_ENCRYPTED_SIZE, HEARTBEAT_INTERVAL_MIN2, HEARTBEAT_INTERVAL_MAX2, ALLOWED_MANIFEST_FIELDS2, ALLOWED_EXT_FIELDS2, ALLOWED_ORIGINS14, onRequestOptions14, onRequestGet3;
+var MIN_TIME3, MAX_TIME3, MIN_ENCRYPTED_SIZE, HEARTBEAT_INTERVAL_MIN2, HEARTBEAT_INTERVAL_MAX2, ALLOWED_MANIFEST_FIELDS2, ALLOWED_EXT_FIELDS2, ALLOWED_ORIGINS15, onRequestOptions15, onRequestGet3;
 var init_capsuleId = __esm({
   "api/capsule/[capsuleId].ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_time();
     init_validators();
     init_constants();
@@ -2518,20 +2714,20 @@ var init_capsuleId = __esm({
       "chunkPointers"
     ]));
     __name(isValidChunkPointers2, "isValidChunkPointers");
-    ALLOWED_ORIGINS14 = [
+    ALLOWED_ORIGINS15 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
     ];
-    __name(baseHeaders14, "baseHeaders");
-    __name(fail13, "fail");
-    onRequestOptions14 = /* @__PURE__ */ __name(async (context) => {
+    __name(baseHeaders15, "baseHeaders");
+    __name(fail14, "fail");
+    onRequestOptions15 = /* @__PURE__ */ __name(async (context) => {
       const origin = context.request.headers.get("origin") ?? "";
       return new Response(
         null,
         {
           status: 204,
-          headers: baseHeaders14(origin)
+          headers: baseHeaders15(origin)
         }
       );
     }, "onRequestOptions");
@@ -2541,14 +2737,14 @@ var init_capsuleId = __esm({
       const origin = request.headers.get("origin") ?? "";
       const capsuleId = params?.capsuleId;
       if (!capsuleId || typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
-        return fail13(
+        return fail14(
           400,
           "INVALID_CAPSULE_ID",
           origin
         );
       }
       if (!env?.CAPSULE_MANIFESTS) {
-        return fail13(
+        return fail14(
           503,
           "STORAGE_UNAVAILABLE",
           origin
@@ -2560,21 +2756,21 @@ var init_capsuleId = __esm({
           capsuleId
         );
       } catch {
-        return fail13(
+        return fail14(
           503,
           "STORAGE_ERROR",
           origin
         );
       }
       if (!raw) {
-        return fail13(
+        return fail14(
           404,
           "CAPSULE_NOT_FOUND",
           origin
         );
       }
       if (raw.length > 2e4) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_TOO_LARGE",
           origin
@@ -2584,14 +2780,14 @@ var init_capsuleId = __esm({
       try {
         manifest = JSON.parse(raw);
       } catch {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_CORRUPT",
           origin
         );
       }
       if (!isPlainObject2(manifest)) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID",
           origin
@@ -2600,88 +2796,88 @@ var init_capsuleId = __esm({
       const m = manifest;
       for (const k of Object.keys(m)) {
         if (!ALLOWED_MANIFEST_FIELDS2.has(k)) {
-          return fail13(500, "MANIFEST_INVALID", origin);
+          return fail14(500, "MANIFEST_INVALID", origin);
         }
       }
       if (m.version !== 1) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_VERSION",
           origin
         );
       }
       if (typeof m.capsuleId !== "string" || !CAPSULE_ID_REGEX.test(m.capsuleId) || m.capsuleId !== capsuleId) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_ID_MISMATCH",
           origin
         );
       }
       if (typeof m.saltBase !== "string" || !SALT_BASE_REGEX.test(m.saltBase)) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_SALT",
           origin
         );
       }
       if (typeof m.vaultTxId !== "string" || !STORAGE_POINTER_REGEX.test(m.vaultTxId)) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_VAULT_TXID",
           origin
         );
       }
       if (typeof m.openAt !== "number" || !Number.isSafeInteger(m.openAt) || m.openAt < MIN_TIME3 || m.openAt > MAX_TIME3) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_OPEN_AT",
           origin
         );
       }
       if (typeof m.sealedAt !== "number" || !Number.isSafeInteger(m.sealedAt) || m.sealedAt < MIN_TIME3 || m.sealedAt > MAX_TIME3) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_SEALED_AT",
           origin
         );
       }
       if (m.openAt <= m.sealedAt) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID",
           origin
         );
       }
       if (m.sealedAt > nowUtc) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID",
           origin
         );
       }
       if (typeof m.encryptedSizeBytes !== "number" || !Number.isSafeInteger(m.encryptedSizeBytes) || m.encryptedSizeBytes < MIN_ENCRYPTED_SIZE || m.encryptedSizeBytes > MAX_ENCRYPTED_VAULT_SIZE) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_ENCRYPTED_SIZE",
           origin
         );
       }
       if (m.description !== void 0 && (typeof m.description !== "string" || m.description.length > 500)) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID",
           origin
         );
       }
       if (typeof m.heartbeatInterval !== "number" || !Number.isSafeInteger(m.heartbeatInterval) || m.heartbeatInterval < HEARTBEAT_INTERVAL_MIN2 || m.heartbeatInterval > HEARTBEAT_INTERVAL_MAX2) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID",
           origin
         );
       }
       if (!isPlainObject2(m.ext)) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_EXT",
           origin
@@ -2690,7 +2886,7 @@ var init_capsuleId = __esm({
       const ext = m.ext;
       for (const k of Object.keys(ext)) {
         if (!ALLOWED_EXT_FIELDS2.has(k)) {
-          return fail13(
+          return fail14(
             500,
             "MANIFEST_INVALID_EXT",
             origin
@@ -2698,14 +2894,14 @@ var init_capsuleId = __esm({
         }
       }
       if (typeof ext.vaultSha256 !== "string" || !SHA256_REGEX.test(ext.vaultSha256)) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_VAULT_SHA256",
           origin
         );
       }
       if (!isValidChunkPointers2(ext.chunkPointers)) {
-        return fail13(
+        return fail14(
           500,
           "MANIFEST_INVALID_CHUNK_POINTERS",
           origin
@@ -2735,7 +2931,7 @@ var init_capsuleId = __esm({
         {
           status: 200,
           headers: {
-            ...baseHeaders14(origin, true),
+            ...baseHeaders15(origin, true),
             "X-Aeterna-Manifest-Version": "1",
             "X-Aeterna-Manifest-Immutable": "true"
           }
@@ -2788,7 +2984,7 @@ var THIRTY_DAYS_MS;
 var init_resolveEffectiveOpenAt = __esm({
   "../src/shared/heartbeat/resolveEffectiveOpenAt.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
     __name(resolveHeartbeatRenewalMs, "resolveHeartbeatRenewalMs");
     __name(resolveEffectiveOpenAt, "resolveEffectiveOpenAt");
@@ -2815,7 +3011,7 @@ async function getTrustedNow(request) {
     throw new Error("TIME_INVALID");
   return nowUtc;
 }
-async function onRequestPost12(context) {
+async function onRequestPost13(context) {
   const ctx = context;
   const { request, env } = ctx;
   let body;
@@ -3125,12 +3321,12 @@ async function onRequestGet4(context) {
 var init_heartbeat = __esm({
   "api/heartbeat.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_resolveEffectiveOpenAt();
     init_validators();
     __name(isPlainObject3, "isPlainObject");
     __name(getTrustedNow, "getTrustedNow");
-    __name(onRequestPost12, "onRequestPost");
+    __name(onRequestPost13, "onRequestPost");
     __name(onRequestGet4, "onRequestGet");
   }
 });
@@ -3139,7 +3335,7 @@ var init_heartbeat = __esm({
 var version;
 var init_version = __esm({
   "../node_modules/ethers/lib.esm/_version.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     version = "6.16.0";
   }
 });
@@ -3186,7 +3382,7 @@ function defineProperties(target, values, types) {
 }
 var init_properties = __esm({
   "../node_modules/ethers/lib.esm/utils/properties.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     __name(checkType, "checkType");
     __name(resolveProperties, "resolveProperties");
     __name(defineProperties, "defineProperties");
@@ -3336,7 +3532,7 @@ function assertPrivate(givenGuard, guard, className) {
 var _normalizeForms;
 var init_errors = __esm({
   "../node_modules/ethers/lib.esm/utils/errors.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_version();
     init_properties();
     __name(stringify, "stringify");
@@ -3470,7 +3666,7 @@ function zeroPadBytes(data, length) {
 var HexCharacters;
 var init_data = __esm({
   "../node_modules/ethers/lib.esm/utils/data.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_errors();
     __name(_getBytes, "_getBytes");
     __name(getBytes, "getBytes");
@@ -3662,7 +3858,7 @@ function toQuantity(value) {
 var BN_0, BN_1, maxValue, Nibbles;
 var init_maths = __esm({
   "../node_modules/ethers/lib.esm/utils/maths.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_data();
     init_errors();
     BN_0 = BigInt(0);
@@ -3722,7 +3918,7 @@ function decodeBase58(value) {
 var Alphabet, Lookup, BN_02, BN_58;
 var init_base58 = __esm({
   "../node_modules/ethers/lib.esm/utils/base58.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_data();
     init_errors();
     init_maths();
@@ -3755,7 +3951,7 @@ function encodeBase64(_data) {
 }
 var init_base64_browser = __esm({
   "../node_modules/ethers/lib.esm/utils/base64-browser.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_data();
     __name(decodeBase64, "decodeBase64");
     __name(encodeBase64, "encodeBase64");
@@ -3766,7 +3962,7 @@ var init_base64_browser = __esm({
 var EventPayload;
 var init_events = __esm({
   "../node_modules/ethers/lib.esm/utils/events.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_properties();
     EventPayload = class {
       static {
@@ -3947,7 +4143,7 @@ function toUtf8CodePoints(str, form) {
 var Utf8ErrorFuncs;
 var init_utf8 = __esm({
   "../node_modules/ethers/lib.esm/utils/utf8.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_data();
     init_errors();
     __name(errorFunc, "errorFunc");
@@ -4026,7 +4222,7 @@ function createGetUrl(options) {
 var defaultGetUrl;
 var init_geturl_browser = __esm({
   "../node_modules/ethers/lib.esm/utils/geturl-browser.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_errors();
     __name(createGetUrl, "createGetUrl");
     defaultGetUrl = createGetUrl({});
@@ -4083,7 +4279,7 @@ function wait(delay) {
 var MAX_ATTEMPTS, SLOT_INTERVAL, defaultGetUrlFunc, reData, reIpfs, locked, Gateways, fetchSignals, FetchCancelSignal, FetchRequest, FetchResponse;
 var init_fetch = __esm({
   "../node_modules/ethers/lib.esm/utils/fetch.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_base64_browser();
     init_data();
     init_errors();
@@ -4946,7 +5142,7 @@ function toString(val, decimals) {
 var BN_N1, BN_03, BN_12, BN_5, _guard, Zeros, FixedNumber;
 var init_fixednumber = __esm({
   "../node_modules/ethers/lib.esm/utils/fixednumber.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_data();
     init_errors();
     init_maths();
@@ -5430,7 +5626,7 @@ function decodeRlp(_data) {
 }
 var init_rlp_decode = __esm({
   "../node_modules/ethers/lib.esm/utils/rlp-decode.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_data();
     init_errors();
     init_data();
@@ -5487,7 +5683,7 @@ function encodeRlp(object2) {
 var nibbles;
 var init_rlp_encode = __esm({
   "../node_modules/ethers/lib.esm/utils/rlp-encode.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_data();
     __name(arrayifyInteger, "arrayifyInteger");
     __name(_encode, "_encode");
@@ -5529,7 +5725,7 @@ function parseEther(ether) {
 var names;
 var init_units = __esm({
   "../node_modules/ethers/lib.esm/utils/units.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_errors();
     init_fixednumber();
     init_maths();
@@ -5565,7 +5761,7 @@ function uuidV4(randomBytes4) {
 }
 var init_uuid = __esm({
   "../node_modules/ethers/lib.esm/utils/uuid.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_data();
     __name(uuidV4, "uuidV4");
   }
@@ -5574,7 +5770,7 @@ var init_uuid = __esm({
 // ../node_modules/ethers/lib.esm/utils/index.js
 var init_utils = __esm({
   "../node_modules/ethers/lib.esm/utils/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_base58();
     init_base64_browser();
     init_data();
@@ -5654,7 +5850,7 @@ function getValue(value) {
 var WordSize, Padding, passProperties, _guard2, resultNames, Result, Coder, Writer, Reader;
 var init_abstract_coder = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/abstract-coder.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     WordSize = 32;
     Padding = new Uint8Array(WordSize);
@@ -6072,7 +6268,7 @@ function output(out, instance) {
 }
 var init_assert = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/_assert.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     __name(number, "number");
     __name(bytes, "bytes");
     __name(hash, "hash");
@@ -6085,7 +6281,7 @@ var init_assert = __esm({
 var crypto2;
 var init_crypto = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/crypto.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     crypto2 = typeof globalThis === "object" && "crypto" in globalThis ? globalThis.crypto : void 0;
   }
 });
@@ -6156,7 +6352,7 @@ function randomBytes(bytesLength = 32) {
 var u8a, u32, createView, rotr, isLE, nextTick, Hash, toStr;
 var init_utils2 = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/utils.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto();
     u8a = /* @__PURE__ */ __name((a) => a instanceof Uint8Array, "u8a");
     u32 = /* @__PURE__ */ __name((arr) => new Uint32Array(arr.buffer, arr.byteOffset, Math.floor(arr.byteLength / 4)), "u32");
@@ -6192,7 +6388,7 @@ var init_utils2 = __esm({
 var HMAC, hmac;
 var init_hmac = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/hmac.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_assert();
     init_utils2();
     HMAC = class extends Hash {
@@ -6310,7 +6506,7 @@ function pbkdf2(hash2, password, salt, opts) {
 }
 var init_pbkdf2 = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/pbkdf2.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_assert();
     init_hmac();
     init_utils2();
@@ -6336,7 +6532,7 @@ function setBigUint64(view, byteOffset, value, isLE2) {
 var SHA2;
 var init_sha2 = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/_sha2.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_assert();
     init_utils2();
     __name(setBigUint64, "setBigUint64");
@@ -6436,7 +6632,7 @@ var init_sha2 = __esm({
 var Chi, Maj, SHA256_K, IV, SHA256_W, SHA256, sha2562;
 var init_sha2562 = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/sha256.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_sha2();
     init_utils2();
     Chi = /* @__PURE__ */ __name((a, b2, c) => a & b2 ^ ~a & c, "Chi");
@@ -6617,7 +6813,7 @@ function add(Ah, Al, Bh, Bl) {
 var U32_MASK64, _32n, toBig, shrSH, shrSL, rotrSH, rotrSL, rotrBH, rotrBL, rotr32H, rotr32L, rotlSH, rotlSL, rotlBH, rotlBL, add3L, add3H, add4L, add4H, add5L, add5H, u64, u64_default;
 var init_u64 = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/_u64.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     U32_MASK64 = /* @__PURE__ */ BigInt(2 ** 32 - 1);
     _32n = /* @__PURE__ */ BigInt(32);
     __name(fromBig, "fromBig");
@@ -6674,7 +6870,7 @@ var init_u64 = __esm({
 var SHA512_Kh, SHA512_Kl, SHA512_W_H, SHA512_W_L, SHA512, sha512;
 var init_sha512 = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/sha512.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_sha2();
     init_u64();
     init_utils2();
@@ -6925,7 +7121,7 @@ function randomBytes2(length) {
 var anyGlobal, crypto3;
 var init_crypto_browser = __esm({
   "../node_modules/ethers/lib.esm/crypto/crypto-browser.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_hmac();
     init_pbkdf2();
     init_sha2562();
@@ -6950,7 +7146,7 @@ function computeHmac(algorithm, _key, _data) {
 var locked2, _computeHmac, __computeHmac;
 var init_hmac2 = __esm({
   "../node_modules/ethers/lib.esm/crypto/hmac.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto_browser();
     init_utils();
     locked2 = false;
@@ -7017,7 +7213,7 @@ function keccakP(s, rounds = 24) {
 var SHA3_PI, SHA3_ROTL, _SHA3_IOTA, _0n, _1n, _2n, _7n, _256n, _0x71n, SHA3_IOTA_H, SHA3_IOTA_L, rotlH, rotlL, Keccak, gen, sha3_224, sha3_256, sha3_384, sha3_512, keccak_224, keccak_256, keccak_384, keccak_512, genShake, shake128, shake256;
 var init_sha3 = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/sha3.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_assert();
     init_u64();
     init_utils2();
@@ -7174,7 +7370,7 @@ function keccak256(_data) {
 var locked3, _keccak256, __keccak256;
 var init_keccak = __esm({
   "../node_modules/ethers/lib.esm/crypto/keccak.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_sha3();
     init_utils();
     locked3 = false;
@@ -7213,7 +7409,7 @@ function f(group, x, y, z) {
 var Rho, Id, Pi, idxL, idxR, shifts, shiftsL, shiftsR, Kl, Kr, rotl, BUF, RIPEMD160, ripemd160;
 var init_ripemd160 = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/ripemd160.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_sha2();
     init_utils2();
     Rho = /* @__PURE__ */ new Uint8Array([7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8]);
@@ -7314,7 +7510,7 @@ function ripemd1602(_data) {
 var locked4, _ripemd160, __ripemd160;
 var init_ripemd1602 = __esm({
   "../node_modules/ethers/lib.esm/crypto/ripemd160.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_ripemd160();
     init_utils();
     locked4 = false;
@@ -7346,7 +7542,7 @@ function pbkdf22(_password, _salt, iterations, keylen, algo) {
 var locked5, _pbkdf2, __pbkdf2;
 var init_pbkdf22 = __esm({
   "../node_modules/ethers/lib.esm/crypto/pbkdf2.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto_browser();
     init_utils();
     locked5 = false;
@@ -7376,7 +7572,7 @@ function randomBytes3(length) {
 var locked6, _randomBytes, __randomBytes;
 var init_random = __esm({
   "../node_modules/ethers/lib.esm/crypto/random.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto_browser();
     locked6 = false;
     _randomBytes = /* @__PURE__ */ __name(function(length) {
@@ -7575,7 +7771,7 @@ async function scryptAsync(password, salt, opts) {
 var rotl2;
 var init_scrypt = __esm({
   "../node_modules/ethers/node_modules/@noble/hashes/esm/scrypt.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_assert();
     init_sha2562();
     init_pbkdf2();
@@ -7604,7 +7800,7 @@ function scryptSync(_passwd, _salt, N3, r, p, dkLen) {
 var lockedSync, lockedAsync, _scryptAsync, _scryptSync, __scryptAsync, __scryptSync;
 var init_scrypt2 = __esm({
   "../node_modules/ethers/lib.esm/crypto/scrypt.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_scrypt();
     init_utils();
     lockedSync = false;
@@ -7656,7 +7852,7 @@ function sha5122(_data) {
 var _sha256, _sha512, __sha256, __sha512, locked256, locked512;
 var init_sha22 = __esm({
   "../node_modules/ethers/lib.esm/crypto/sha2.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto_browser();
     init_utils();
     _sha256 = /* @__PURE__ */ __name(function(data) {
@@ -7891,7 +8087,7 @@ function validateObject(object2, validators, optValidators = {}) {
 var _0n2, _1n2, _2n2, u8a2, hexes, bitSet, bitMask, u8n, u8fr, validatorFns;
 var init_utils3 = __esm({
   "../node_modules/ethers/node_modules/@noble/curves/esm/abstract/utils.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     _0n2 = BigInt(0);
     _1n2 = BigInt(1);
     _2n2 = BigInt(2);
@@ -8174,7 +8370,7 @@ function mapHashToField(key, fieldOrder, isLE2 = false) {
 var _0n3, _1n3, _2n3, _3n, _4n, _5n, _8n, _9n, _16n, FIELD_FIELDS;
 var init_modular = __esm({
   "../node_modules/ethers/node_modules/@noble/curves/esm/abstract/modular.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils3();
     _0n3 = BigInt(0);
     _1n3 = BigInt(1);
@@ -8339,7 +8535,7 @@ function validateBasic(curve) {
 var _0n4, _1n4;
 var init_curve = __esm({
   "../node_modules/ethers/node_modules/@noble/curves/esm/abstract/curve.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_modular();
     init_utils3();
     _0n4 = BigInt(0);
@@ -9109,7 +9305,7 @@ function weierstrass(curveDef) {
 var b2n, h2b, DER, _0n5, _1n5, _2n4, _3n2, _4n2;
 var init_weierstrass = __esm({
   "../node_modules/ethers/node_modules/@noble/curves/esm/abstract/weierstrass.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_modular();
     init_utils3();
     init_utils3();
@@ -9196,7 +9392,7 @@ function createCurve(curveDef, defHash) {
 }
 var init_shortw_utils = __esm({
   "../node_modules/ethers/node_modules/@noble/curves/esm/_shortw_utils.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_hmac();
     init_utils2();
     init_weierstrass();
@@ -9231,7 +9427,7 @@ function sqrtMod(y) {
 var secp256k1P, secp256k1N, _1n6, _2n5, divNearest, Fp, secp256k1, _0n6, Point;
 var init_secp256k1 = __esm({
   "../node_modules/ethers/node_modules/@noble/curves/esm/secp256k1.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_sha2562();
     init_modular();
     init_shortw_utils();
@@ -9293,7 +9489,7 @@ var init_secp256k1 = __esm({
 var ZeroAddress;
 var init_addresses = __esm({
   "../node_modules/ethers/lib.esm/constants/addresses.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     ZeroAddress = "0x0000000000000000000000000000000000000000";
   }
 });
@@ -9302,7 +9498,7 @@ var init_addresses = __esm({
 var ZeroHash;
 var init_hashes = __esm({
   "../node_modules/ethers/lib.esm/constants/hashes.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     ZeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000";
   }
 });
@@ -9311,7 +9507,7 @@ var init_hashes = __esm({
 var N, WeiPerEther, MaxUint256, MinInt256, MaxInt256;
 var init_numbers = __esm({
   "../node_modules/ethers/lib.esm/constants/numbers.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     N = BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
     WeiPerEther = BigInt("1000000000000000000");
     MaxUint256 = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
@@ -9324,7 +9520,7 @@ var init_numbers = __esm({
 var EtherSymbol, MessagePrefix;
 var init_strings = __esm({
   "../node_modules/ethers/lib.esm/constants/strings.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     EtherSymbol = "\u039E";
     MessagePrefix = "Ethereum Signed Message:\n";
   }
@@ -9333,7 +9529,7 @@ var init_strings = __esm({
 // ../node_modules/ethers/lib.esm/constants/index.js
 var init_constants2 = __esm({
   "../node_modules/ethers/lib.esm/constants/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_addresses();
     init_hashes();
     init_numbers();
@@ -9348,7 +9544,7 @@ function toUint256(value) {
 var BN_04, BN_13, BN_2, BN_27, BN_28, BN_35, BN_N, BN_N_2, inspect, _guard3, Signature;
 var init_signature = __esm({
   "../node_modules/ethers/lib.esm/crypto/signature.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_constants2();
     init_utils();
     BN_04 = BigInt(0);
@@ -9698,7 +9894,7 @@ var init_signature = __esm({
 var SigningKey;
 var init_signing_key = __esm({
   "../node_modules/ethers/lib.esm/crypto/signing-key.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_secp256k1();
     init_utils();
     init_signature();
@@ -9880,7 +10076,7 @@ function lock() {
 }
 var init_crypto2 = __esm({
   "../node_modules/ethers/lib.esm/crypto/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_hmac2();
     init_keccak();
     init_ripemd1602();
@@ -9967,7 +10163,7 @@ function getIcapAddress(address) {
 var BN_05, BN_36, ibanLookup, safeDigits, Base36;
 var init_address = __esm({
   "../node_modules/ethers/lib.esm/address/address.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_utils();
     BN_05 = BigInt(0);
@@ -10021,7 +10217,7 @@ function getCreate2Address(_from, _salt, _initCodeHash) {
 }
 var init_contract_address = __esm({
   "../node_modules/ethers/lib.esm/address/contract-address.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_utils();
     init_address();
@@ -10066,7 +10262,7 @@ function resolveAddress(target, resolver) {
 }
 var init_checks = __esm({
   "../node_modules/ethers/lib.esm/address/checks.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_address();
     __name(isAddressable, "isAddressable");
@@ -10079,7 +10275,7 @@ var init_checks = __esm({
 // ../node_modules/ethers/lib.esm/address/index.js
 var init_address2 = __esm({
   "../node_modules/ethers/lib.esm/address/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address();
     init_contract_address();
     init_checks();
@@ -10101,7 +10297,7 @@ function b(value, size) {
 var _gaurd, _typedSymbol, Typed;
 var init_typed = __esm({
   "../node_modules/ethers/lib.esm/abi/typed.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     _gaurd = {};
     __name(n, "n");
@@ -10883,7 +11079,7 @@ var init_typed = __esm({
 var AddressCoder;
 var init_address3 = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/address.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_maths();
     init_typed();
@@ -10918,7 +11114,7 @@ var init_address3 = __esm({
 var AnonymousCoder;
 var init_anonymous = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/anonymous.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abstract_coder();
     AnonymousCoder = class extends Coder {
       static {
@@ -11027,7 +11223,7 @@ function unpack(reader, coders) {
 var ArrayCoder;
 var init_array = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/array.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_typed();
     init_abstract_coder();
@@ -11091,7 +11287,7 @@ var init_array = __esm({
 var BooleanCoder;
 var init_boolean = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/boolean.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_typed();
     init_abstract_coder();
     BooleanCoder = class extends Coder {
@@ -11119,7 +11315,7 @@ var init_boolean = __esm({
 var DynamicBytesCoder, BytesCoder;
 var init_bytes = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/bytes.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_abstract_coder();
     DynamicBytesCoder = class extends Coder {
@@ -11160,7 +11356,7 @@ var init_bytes = __esm({
 var FixedBytesCoder;
 var init_fixed_bytes = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/fixed-bytes.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_typed();
     init_abstract_coder();
@@ -11195,7 +11391,7 @@ var init_fixed_bytes = __esm({
 var Empty, NullCoder;
 var init_null = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/null.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abstract_coder();
     Empty = new Uint8Array([]);
     NullCoder = class extends Coder {
@@ -11226,7 +11422,7 @@ var init_null = __esm({
 var BN_06, BN_14, BN_MAX_UINT256, NumberCoder;
 var init_number = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/number.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_typed();
     init_abstract_coder();
@@ -11276,7 +11472,7 @@ var init_number = __esm({
 var StringCoder;
 var init_string = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/string.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utf8();
     init_typed();
     init_bytes();
@@ -11304,7 +11500,7 @@ var init_string = __esm({
 var TupleCoder;
 var init_tuple = __esm({
   "../node_modules/ethers/lib.esm/abi/coders/tuple.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_properties();
     init_typed();
     init_abstract_coder();
@@ -11402,7 +11598,7 @@ function accessListify(value) {
 }
 var init_accesslist = __esm({
   "../node_modules/ethers/lib.esm/transaction/accesslist.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_utils();
     __name(accessSetify, "accessSetify");
@@ -11421,7 +11617,7 @@ function authorizationify(auth) {
 }
 var init_authorization = __esm({
   "../node_modules/ethers/lib.esm/transaction/authorization.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_crypto2();
     init_utils();
@@ -11444,7 +11640,7 @@ function recoverAddress(digest, signature) {
 }
 var init_address4 = __esm({
   "../node_modules/ethers/lib.esm/transaction/address.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_crypto2();
     __name(computeAddress, "computeAddress");
@@ -11921,7 +12117,7 @@ function _serializeEip7702(tx, sig) {
 var BN_07, BN_22, BN_272, BN_282, BN_352, BN_MAX_UINT, inspect2, BLOB_SIZE, CELL_COUNT, Transaction;
 var init_transaction = __esm({
   "../node_modules/ethers/lib.esm/transaction/transaction.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_addresses();
     init_crypto2();
@@ -12702,7 +12898,7 @@ var init_transaction = __esm({
 // ../node_modules/ethers/lib.esm/transaction/index.js
 var init_transaction2 = __esm({
   "../node_modules/ethers/lib.esm/transaction/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_accesslist();
     init_authorization();
     init_address4();
@@ -12727,7 +12923,7 @@ function verifyAuthorization(auth, sig) {
 }
 var init_authorization2 = __esm({
   "../node_modules/ethers/lib.esm/hash/authorization.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_crypto2();
     init_transaction2();
@@ -12743,7 +12939,7 @@ function id(value) {
 }
 var init_id = __esm({
   "../node_modules/ethers/lib.esm/hash/id.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_utils();
     __name(id, "id");
@@ -13498,7 +13694,7 @@ function consume_emoji_reversed(cps, eaten) {
 var COMPRESSED$1, FENCED, NSM_MAX, COMPRESSED, S0, L0, V0, T0, L_COUNT, V_COUNT, T_COUNT, N_COUNT, S_COUNT, S1, L1, V1, T1, SHIFTED_RANK, EXCLUSIONS, DECOMP, RECOMP, HYPHEN, STOP_CH, FE0F, UNIQUE_PH, Array_from, Emoji, MAPPED, IGNORED, CM, NSM, ESCAPE, NFC_CHECK, GROUPS, WHOLE_VALID, WHOLE_MAP, VALID, EMOJI_LIST, EMOJI_ROOT;
 var init_dist = __esm({
   "../node_modules/ethers/node_modules/@adraffy/ens-normalize/dist/index.mjs"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     COMPRESSED$1 = "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";
     FENCED = /* @__PURE__ */ new Map([[8217, "apostrophe"], [8260, "fraction slash"], [12539, "middle dot"]]);
     NSM_MAX = 4;
@@ -13647,7 +13843,7 @@ function dnsEncode(name, _maxLength) {
 var Zeros2;
 var init_namehash = __esm({
   "../node_modules/ethers/lib.esm/hash/namehash.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_utils();
     init_dist();
@@ -13679,7 +13875,7 @@ function verifyMessage(message, sig) {
 }
 var init_message = __esm({
   "../node_modules/ethers/lib.esm/hash/message.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_constants2();
     init_transaction2();
@@ -13761,7 +13957,7 @@ function solidityPackedSha256(types, values) {
 var regexBytes, regexNumber, regexArray;
 var init_solidity = __esm({
   "../node_modules/ethers/lib.esm/hash/solidity.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_crypto2();
     init_utils();
@@ -13862,7 +14058,7 @@ function verifyTypedData(domain, types, value, signature) {
 var padding, BN__1, BN_08, BN_15, BN_MAX_UINT2562, hexTrue, hexFalse, domainFieldTypes, domainFieldNames, domainChecks, TypedDataEncoder;
 var init_typed_data = __esm({
   "../node_modules/ethers/lib.esm/hash/typed-data.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_crypto2();
     init_transaction2();
@@ -14270,7 +14466,7 @@ var init_typed_data = __esm({
 // ../node_modules/ethers/lib.esm/hash/index.js
 var init_hash = __esm({
   "../node_modules/ethers/lib.esm/hash/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_authorization2();
     init_id();
     init_namehash();
@@ -14465,7 +14661,7 @@ function joinParams(format, params) {
 var _kwVisibDeploy, KwVisibDeploy, _kwVisib, KwVisib, _kwTypes, KwTypes, _kwModifiers, KwModifiers, _kwOther, _keywords, Keywords, SimpleTokens, regexWhitespacePrefix, regexNumberPrefix, regexIdPrefix, regexId, regexType, TokenString, regexArrayType, _guard4, internal, ParamTypeInternal, ErrorFragmentInternal, EventFragmentInternal, ConstructorFragmentInternal, FallbackFragmentInternal, FunctionFragmentInternal, StructFragmentInternal, ParamType, Fragment, NamedFragment, ErrorFragment, EventFragment, ConstructorFragment, FallbackFragment, FunctionFragment, StructFragment;
 var init_fragments = __esm({
   "../node_modules/ethers/lib.esm/abi/fragments.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_hash();
     __name(setify, "setify");
@@ -15640,7 +15836,7 @@ function getBuiltinCallException(action, tx, data, abiCoder) {
 var PanicReasons, paramTypeBytes, paramTypeNumber, defaultCoder, defaultMaxInflation, AbiCoder;
 var init_abi_coder = __esm({
   "../node_modules/ethers/lib.esm/abi/abi-coder.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_abstract_coder();
     init_address3();
@@ -15795,7 +15991,7 @@ function decodeBytes32String(_bytes) {
 }
 var init_bytes32 = __esm({
   "../node_modules/ethers/lib.esm/abi/bytes32.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     __name(encodeBytes32String, "encodeBytes32String");
     __name(decodeBytes32String, "decodeBytes32String");
@@ -15806,7 +16002,7 @@ var init_bytes32 = __esm({
 var LogDescription, TransactionDescription, ErrorDescription, Indexed, PanicReasons2, BuiltinErrors, Interface;
 var init_interface = __esm({
   "../node_modules/ethers/lib.esm/abi/interface.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_hash();
     init_utils();
@@ -16841,7 +17037,7 @@ var init_interface = __esm({
 // ../node_modules/ethers/lib.esm/abi/index.js
 var init_abi = __esm({
   "../node_modules/ethers/lib.esm/abi/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abi_coder();
     init_bytes32();
     init_fragments();
@@ -16945,7 +17141,7 @@ function createRemovedLogFilter(log) {
 var BN_09, FeeData, Block, Log, TransactionReceipt, TransactionResponse;
 var init_provider = __esm({
   "../node_modules/ethers/lib.esm/providers/provider.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_transaction2();
     BN_09 = BigInt(0);
@@ -18175,7 +18371,7 @@ var init_provider = __esm({
 var EventLog, UndecodedEventLog, ContractTransactionReceipt, ContractTransactionResponse, ContractUnknownEventPayload, ContractEventPayload;
 var init_wrappers = __esm({
   "../node_modules/ethers/lib.esm/contract/wrappers.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_provider();
     init_utils();
     EventLog = class extends Log {
@@ -18766,7 +18962,7 @@ function _ContractBase() {
 var BN_010, PreparedTopicFilter, internal2, internalValues, lastEmit, passProperties2, BaseContract, Contract;
 var init_contract = __esm({
   "../node_modules/ethers/lib.esm/contract/contract.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abi();
     init_address2();
     init_provider();
@@ -19277,7 +19473,7 @@ var init_contract = __esm({
 var ContractFactory;
 var init_factory = __esm({
   "../node_modules/ethers/lib.esm/contract/factory.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abi();
     init_address2();
     init_utils();
@@ -19392,7 +19588,7 @@ var init_factory = __esm({
 // ../node_modules/ethers/lib.esm/contract/index.js
 var init_contract2 = __esm({
   "../node_modules/ethers/lib.esm/contract/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_contract();
     init_factory();
     init_wrappers();
@@ -19413,7 +19609,7 @@ function getIpfsLink(link) {
 var MulticoinProviderPlugin, matcherIpfs, matchers, EnsResolver;
 var init_ens_resolver = __esm({
   "../node_modules/ethers/lib.esm/providers/ens-resolver.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_constants2();
     init_contract2();
@@ -20001,7 +20197,7 @@ function formatTransactionResponse(value) {
 var BN_011, _formatLog, _formatBlock, _formatReceiptLog, _formatTransactionReceipt;
 var init_format = __esm({
   "../node_modules/ethers/lib.esm/providers/format.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_crypto2();
     init_transaction2();
@@ -20096,7 +20292,7 @@ var init_format = __esm({
 var EnsAddress, NetworkPlugin, GasCostPlugin, EnsPlugin, FeeDataNetworkPlugin, FetchUrlFeeDataNetworkPlugin;
 var init_plugins_network = __esm({
   "../node_modules/ethers/lib.esm/providers/plugins-network.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_properties();
     init_utils();
     EnsAddress = "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e";
@@ -20403,7 +20599,7 @@ function injectCommonNetworks() {
 var Networks, Network, injected;
 var init_network = __esm({
   "../node_modules/ethers/lib.esm/providers/network.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_transaction2();
     init_utils();
     init_plugins_network();
@@ -20625,7 +20821,7 @@ function copy(obj) {
 var PollingBlockSubscriber, OnBlockSubscriber, PollingBlockTagSubscriber, PollingOrphanSubscriber, PollingTransactionSubscriber, PollingEventSubscriber;
 var init_subscriber_polling = __esm({
   "../node_modules/ethers/lib.esm/providers/subscriber-polling.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     __name(copy, "copy");
     PollingBlockSubscriber = class {
       static {
@@ -21110,7 +21306,7 @@ function parseOffchainLookup(data) {
 var BN_23, MAX_CCIP_REDIRECTS, UnmanagedSubscriber, defaultOptions, AbstractProvider, empty, zeros;
 var init_abstract_provider = __esm({
   "../node_modules/ethers/lib.esm/providers/abstract-provider.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_constants2();
     init_contract2();
@@ -22277,7 +22473,7 @@ async function populate(signer, tx) {
 var AbstractSigner, VoidSigner;
 var init_abstract_signer = __esm({
   "../node_modules/ethers/lib.esm/providers/abstract-signer.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_transaction2();
     init_utils();
@@ -22475,7 +22671,7 @@ function showThrottleMessage(service) {
 var shown;
 var init_community = __esm({
   "../node_modules/ethers/lib.esm/providers/community.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     shown = /* @__PURE__ */ new Set();
     __name(showThrottleMessage, "showThrottleMessage");
   }
@@ -22488,7 +22684,7 @@ function copy3(obj) {
 var FilterIdSubscriber, FilterIdEventSubscriber, FilterIdPendingSubscriber;
 var init_subscriber_filterid = __esm({
   "../node_modules/ethers/lib.esm/providers/subscriber-filterid.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_subscriber_polling();
     __name(copy3, "copy");
@@ -22732,7 +22928,7 @@ function spelunkMessage(value) {
 var Primitive, defaultOptions2, JsonRpcSigner, JsonRpcApiProvider, JsonRpcApiPollingProvider, JsonRpcProvider;
 var init_provider_jsonrpc = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-jsonrpc.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abi();
     init_address2();
     init_hash();
@@ -23581,7 +23777,7 @@ function getHost(name) {
 var defaultApiKey, AnkrProvider;
 var init_provider_ankr = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-ankr.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_community();
     init_network();
@@ -23694,7 +23890,7 @@ function getHost2(name) {
 var defaultApiKey2, AlchemyProvider;
 var init_provider_alchemy = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-alchemy.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_community();
     init_network();
@@ -23808,7 +24004,7 @@ function getHost3(name) {
 var ChainstackProvider;
 var init_provider_chainstack = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-chainstack.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_community();
     init_network();
@@ -23874,7 +24070,7 @@ var init_provider_chainstack = __esm({
 var CloudflareProvider;
 var init_provider_cloudflare = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-cloudflare.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_network();
     init_provider_jsonrpc();
@@ -23901,7 +24097,7 @@ function isPromise2(value) {
 var Supported, THROTTLE, EtherscanPluginId, EtherscanPlugin, skipKeys, nextId, EtherscanProvider;
 var init_provider_etherscan = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-etherscan.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abi();
     init_contract2();
     init_transaction2();
@@ -24454,7 +24650,7 @@ function getGlobal2() {
 var _WebSocket;
 var init_ws_browser = __esm({
   "../node_modules/ethers/lib.esm/providers/ws-browser.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     __name(getGlobal2, "getGlobal");
     _WebSocket = getGlobal2().WebSocket;
   }
@@ -24464,7 +24660,7 @@ var init_ws_browser = __esm({
 var SocketSubscriber, SocketBlockSubscriber, SocketPendingSubscriber, SocketEventSubscriber, SocketProvider;
 var init_provider_socket = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-socket.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abstract_provider();
     init_utils();
     init_provider_jsonrpc();
@@ -24743,7 +24939,7 @@ var init_provider_socket = __esm({
 var WebSocketProvider;
 var init_provider_websocket = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-websocket.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_ws_browser();
     init_provider_socket();
     WebSocketProvider = class extends SocketProvider {
@@ -24849,7 +25045,7 @@ function getHost4(name) {
 var defaultProjectId, InfuraWebSocketProvider, InfuraProvider;
 var init_provider_infura = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-infura.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_community();
     init_network();
@@ -25012,7 +25208,7 @@ function getHost5(name) {
 var defaultToken, QuickNodeProvider;
 var init_provider_quicknode = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-quicknode.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_community();
     init_network();
@@ -25259,7 +25455,7 @@ function getFuzzyMode(quorum, results) {
 var BN_16, BN_24, defaultConfig, defaultState, FallbackProvider;
 var init_provider_fallback = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-fallback.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_abstract_provider();
     init_network();
@@ -25757,7 +25953,7 @@ function getDefaultProvider(network, options) {
 var Testnets;
 var init_default_provider = __esm({
   "../node_modules/ethers/lib.esm/providers/default-provider.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_provider_ankr();
     init_provider_alchemy();
@@ -25780,7 +25976,7 @@ var init_default_provider = __esm({
 var NonceManager;
 var init_signer_noncemanager = __esm({
   "../node_modules/ethers/lib.esm/providers/signer-noncemanager.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_abstract_signer();
     NonceManager = class _NonceManager extends AbstractSigner {
@@ -25857,7 +26053,7 @@ var init_signer_noncemanager = __esm({
 var BrowserProvider;
 var init_provider_browser = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-browser.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_provider_jsonrpc();
     BrowserProvider = class _BrowserProvider extends JsonRpcApiPollingProvider {
@@ -26068,7 +26264,7 @@ function getUrl(name) {
 var BlockscoutProvider;
 var init_provider_blockscout = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-blockscout.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_network();
     init_provider_jsonrpc();
@@ -26171,7 +26367,7 @@ function getHost6(name) {
 var defaultApplicationId, PocketProvider;
 var init_provider_pocket = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-pocket.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_community();
     init_network();
@@ -26252,7 +26448,7 @@ var init_provider_pocket = __esm({
 var IpcSocketProvider;
 var init_provider_ipcsocket_browser = __esm({
   "../node_modules/ethers/lib.esm/providers/provider-ipcsocket-browser.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     IpcSocketProvider = void 0;
   }
 });
@@ -26260,7 +26456,7 @@ var init_provider_ipcsocket_browser = __esm({
 // ../node_modules/ethers/lib.esm/providers/index.js
 var init_providers = __esm({
   "../node_modules/ethers/lib.esm/providers/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_abstract_provider();
     init_abstract_signer();
     init_community();
@@ -26293,7 +26489,7 @@ var init_providers = __esm({
 var BaseWallet;
 var init_base_wallet = __esm({
   "../node_modules/ethers/lib.esm/wallet/base-wallet.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_address2();
     init_hash();
     init_providers();
@@ -26454,7 +26650,7 @@ function decodeOwl(data) {
 var subsChrs, Word;
 var init_decode_owl = __esm({
   "../node_modules/ethers/lib.esm/wordlists/decode-owl.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     subsChrs = " !#$%&'()*+,-./<=>?@[]^_`{|}~";
     Word = /^[a-z]*$/i;
@@ -26468,7 +26664,7 @@ var init_decode_owl = __esm({
 var Wordlist;
 var init_wordlist = __esm({
   "../node_modules/ethers/lib.esm/wordlists/wordlist.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     Wordlist = class {
       static {
@@ -26515,7 +26711,7 @@ var init_wordlist = __esm({
 var WordlistOwl;
 var init_wordlist_owl = __esm({
   "../node_modules/ethers/lib.esm/wordlists/wordlist-owl.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_hash();
     init_utils();
     init_decode_owl();
@@ -26576,7 +26772,7 @@ var init_wordlist_owl = __esm({
 var words, checksum, wordlist, LangEn;
 var init_lang_en = __esm({
   "../node_modules/ethers/lib.esm/wordlists/lang-en.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_wordlist_owl();
     words = "0erleonalorenseinceregesticitStanvetearctssi#ch2Athck&tneLl0And#Il.yLeOutO=S|S%b/ra@SurdU'0Ce[Cid|CountCu'Hie=IdOu,-Qui*Ro[TT]T%T*[Tu$0AptDD-tD*[Ju,M.UltV<)Vi)0Rob-0FairF%dRaid0A(EEntRee0Ead0MRRp%tS!_rmBumCoholErtI&LLeyLowMo,O}PhaReadySoT Ways0A>urAz(gOngOuntU'd0Aly,Ch%Ci|G G!GryIm$K!Noun)Nu$O` Sw T&naTiqueXietyY1ArtOlogyPe?P!Pro=Ril1ChCt-EaEnaGueMMedM%MyOundR<+Re,Ri=RowTTefa@Ti,Tw%k0KPe@SaultSetSi,SumeThma0H!>OmTa{T&dT.udeTra@0Ct]D.Gu,NtTh%ToTumn0Era+OcadoOid0AkeA*AyEsomeFulKw?d0Is:ByChel%C#D+GL<)Lc#y~MbooN<aNn RRelyRga(R*lSeS-SketTt!3A^AnAutyCau'ComeEfF%eG(Ha=H(dLie=LowLtN^Nef./TrayTt Twe&Y#d3Cyc!DKeNdOlogyRdR`Tt _{AdeAmeAnketA,EakE[IndOodO[omOu'UeUrUsh_rdAtDyIlMbNeNusOkO,Rd R(gRrowSsTtomUn)XY_{etA(AndA[A=EadEezeI{Id+IefIghtIngIskOccoliOk&OnzeOomO` OwnUsh2Bb!DdyD+tFf$oIldLbLkL!tNd!Nk Rd&Rg R,SS(e[SyTt Y Zz:Bba+B(B!CtusGeKe~LmM aMpNN$N)lNdyNn#NoeNvasNy#Pab!P.$Pta(RRb#RdRgoRpetRryRtSeShS(o/!Su$TT$ogT^Teg%yTt!UghtU'Ut]Ve3Il(gL yM|NsusNturyRe$Rta(_irAlkAmp]An+AosApt Ar+A'AtEapE{Ee'EfErryE,I{&IefIldIm}yOi)Oo'R#-U{!UnkUrn0G?Nnam#Rc!Tiz&TyVil_imApArifyAwAyE<ErkEv I{I|IffImbIn-IpO{OgO'O`OudOwnUbUmpU, Ut^_^A,C#utDeFfeeIlInL!@L%LumnMb(eMeMf%tM-Mm#Mp<yNc tNdu@NfirmNg*[N}@Nsid NtrolNv()OkOlPp PyR$ReRnR*@/Tt#U^UntryUp!Ur'Us(V Yo>_{Ad!AftAmA}AshAt AwlAzyEamEd.EekEwI{etImeIspIt-OpO[Ou^OwdUci$UelUi'Umb!Un^UshYY,$2BeLtu*PPbo?dRiousRr|Rta(R=Sh]/omTe3C!:DMa+MpN)Ng R(gShUght WnY3AlBa>BrisCadeCemb CideCl(eC%a>C*a'ErF&'F(eFyG*eLayLiv M<dMi'Ni$Nti,NyP?tP&dPos.P`PutyRi=ScribeS tSignSkSpair/royTailTe@VelopVi)Vo>3AgramAlAm#dAryCeE'lEtFf G.$Gn.yLemmaNn NosaurRe@RtSag*eScov Sea'ShSmi[S%d Splay/<)V tVideV%)Zzy5Ct%Cum|G~Lph(Ma(Na>NkeyN%OrSeUb!Ve_ftAg#AmaA,-AwEamE[IftIllInkIpI=OpUmY2CkMbNeR(g/T^Ty1Arf1Nam-:G G!RlyRnR`Sily/Sy1HoOlogyOnomy0GeItUca>1F%t0G1GhtTh 2BowD E@r-Eg<tEm|Eph<tEvat%I>Se0B?kBodyBra)Er+Ot]PloyPow Pty0Ab!A@DD![D%'EmyErgyF%)Ga+G(eH<)JoyLi,OughR-hRollSu*T Ti*TryVelope1Isode0U$Uip0AA'OdeOs]R%Upt0CapeSayS&)Ta>0Ern$H-s1Id&)IlOkeOl=1A@Amp!Ce[Ch<+C.eCludeCu'Ecu>Erci'Hau,Hib.I!I,ItOt-P<dPe@Pi*Pla(Po'P*[T&dTra0EEbrow:Br-CeCultyDeIntI`~L'MeMilyMousNNcyNtasyRmSh]TT$Th TigueUltV%.e3Atu*Bru?yD $EEdElMa!N)/iv$T^V W3B Ct]EldGu*LeLmLt N$NdNeNg NishReRmR,Sc$ShTT}[X_gAmeAshAtAv%EeIghtIpOatO{O%Ow UidUshY_mCusGIlLd~owOdOtR)Re,R+tRkRtu}RumRw?dSsil/ UndX_gi!AmeEqu|EshI&dIn+OgOntO,OwnOz&U.2ElNNnyRna)RyTu*:D+tInLaxy~ yMePRa+Rba+Rd&Rl-Rm|SSpTeTh U+Ze3N $NiusN*Nt!Nu(e/u*2O,0AntFtGg!Ng RaffeRlVe_dAn)A*A[IdeImp'ObeOomOryO=OwUe_tDde[LdOdO'RillaSpelSsipV nWn_bA)A(AntApeA[Av.yEatE&IdIefItOc yOupOwUnt_rdE[IdeIltIt?N3M:B.IrLfMm M, NdPpyRb%RdRshR=,TVeWkZ?d3AdAl`ArtAvyD+hogIght~oLmetLpNRo3Dd&Gh~NtPRe/%y5BbyCkeyLdLeLiday~owMeNeyOdPeRnRr%R'Sp.$/TelUrV 5BGeM<Mb!M%Nd*dNgryNtRd!RryRtSb<d3Brid:1EOn0EaEntifyLe2N%e4LLeg$L}[0A+Ita>M&'Mu}Pa@Po'Pro=Pul'0ChCludeComeC*a'DexD-a>Do%Du,ryF<tFl-tF%mHa!H .Iti$Je@JuryMa>N Noc|PutQuiryS<eSe@SideSpi*/$lTa@T e,ToVe,V.eVol=3On0L<dOla>Sue0Em1Ory:CketGu?RZz3AlousAns~yWel9BInKeUr}yY5D+I)MpNg!Ni%Nk/:Ng?oo3EnEpT^upY3CkDD}yNdNgdomSsTT^&TeTt&Wi4EeIfeO{Ow:BBelB%Dd DyKeMpNgua+PtopR+T T(UghUndryVaWWnWsu.Y Zy3Ad AfArnA=Ctu*FtGG$G&dIsu*M#NdNg`NsOp?dSs#Tt Vel3ArB tyBr?yC&'FeFtGhtKeMbM.NkOnQuid/Tt!VeZ?d5AdAnB, C$CkG-NelyNgOpTt yUdUn+VeY$5CkyGga+Mb N?N^Xury3R-s:Ch(eDG-G}tIdIlInJ%KeMm$NNa+Nda>NgoNs]Nu$P!Rb!R^Rg(R(eRketRria+SkSs/ T^T i$ThTrixTt XimumZe3AdowAnAsu*AtCh<-D$DiaLodyLtMb M%yNt]NuRcyR+R.RryShSsa+T$Thod3Dd!DnightLk~]M-NdNimumN%Nu>Rac!Rr%S ySs/akeXXedXtu*5Bi!DelDifyMM|N.%NkeyN, N`OnR$ReRn(gSqu.oTh T]T%Unta(U'VeVie5ChFf(LeLtiplySc!SeumShroomS-/Tu$3Self/ yTh:I=MePk(Rrow/yT]Tu*3ArCkEdGati=G!@I` PhewR=/TTw%kUtr$V WsXt3CeGht5B!I'M(eeOd!Rm$R`SeTab!TeTh(gTi)VelW5C!?Mb R'T:K0EyJe@Li+Scu*S =Ta(Vious0CurE<Tob 0Or1FF Fi)T&2L1Ay0DI=Ymp-0It0CeEI#L(eLy1EnEraIn]Po'T]1An+B.Ch?dD D(?yG<I|Ig($Ph<0Tr-h0H 0Tdo%T TputTside0AlEnEr0NN 0Yg&0/ 0O}:CtDd!GeIrLa)LmNdaNelN-N` P RadeR|RkRrotRtySsT^ThTi|TrolTt nU'VeYm|3A)AnutArAs<tL-<NN$tyNcilOp!Pp Rfe@Rm.Rs#T2O}OtoRa'Ys-$0AnoCn-Ctu*E)GGe#~LotNkO} Pe/olT^Zza_)A}tA,-A>AyEa'Ed+U{UgUn+2EmEtIntL?LeLi)NdNyOlPul?Rt]S.]Ssib!/TatoTt yV tyWd W _@i)Ai'Ed-tEf Epa*Es|EttyEv|I)IdeIm?yIntI%.yIs#Iva>IzeOb!mO)[Odu)Of.OgramOje@Omo>OofOp tyOsp O>@OudOvide2Bl-Dd(g~LpL'Mpk(N^PilPpyR^a'R.yRpo'R'ShTZz!3Ramid:99Al.yAntumArt E,]I{ItIzO>:Bb.Cco#CeCkD?DioIlInI'~yMpN^NdomN+PidReTeTh V&WZ%3AdyAlAs#BelBuildC$lCei=CipeC%dCyc!Du)F!@F%mFu'G]G*tGul?Je@LaxLea'LiefLyMa(Memb M(dMo=Nd NewNtOp&PairPeatPla)P%tQui*ScueSemb!Si,Sour)Sp#'SultTi*T*atTurnUn]Ve$ViewW?d2Y`m0BBb#CeChDeD+F!GhtGidNgOtPp!SkTu$V$V 5AdA,BotBu,CketM<)OfOkieOmSeTa>UghUndU>Y$5Bb DeGLeNNwayR$:DDd!D}[FeIlLadLm#L#LtLu>MeMp!NdTisfyToshiU)Usa+VeY1A!AnA*Att E}HemeHoolI&)I[%sOrp]OutRapRe&RiptRub1AAr^As#AtC#dC*tCt]Cur.yEdEkGm|Le@~M(?Ni%N'Nt&)RiesRvi)Ss]Tt!TupV&_dowAftAllowA*EdEllEriffIeldIftI}IpIv O{OeOotOpOrtOuld O=RimpRugUff!Y0Bl(gCkDeE+GhtGnL|Lk~yLv Mil?Mp!N)NgR&/ Tua>XZe1A>Et^IIllInIrtUll0AbAmEepEnd I)IdeIghtImOg<OtOwUsh0AllArtI!OkeOo`0A{AkeApIffOw0ApCc Ci$CkDaFtL?Ldi LidLut]L=Me#eNgOnRryRtUlUndUpUr)U`0A)A*Ati$AwnEakEci$EedEllEndH eI)Id IkeInIr.L.OilOns%O#OrtOtRayReadR(gY0Ua*UeezeUir*l_b!AdiumAffA+AirsAmpAndArtA>AyEakEelEmEpE*oI{IllIngO{Oma^O}OolOryO=Ra>gyReetRikeR#gRugg!Ud|UffUmb!Y!0Bje@Bm.BwayC)[ChDd&Ff G?G+,ItMm NNnyN'tP PplyP*meReRfa)R+Rpri'RroundR=ySpe@/a(1AllowAmpApArmE?EetIftImIngIt^Ord1MbolMptomRup/em:B!Ck!GIlL|LkNkPeR+tSk/eTtooXi3A^Am~NN<tNnisNtRm/Xt_nkAtEmeEnE%yE*EyIngIsOughtReeRi=RowUmbUnd 0CketDeG LtMb MeNyPRedSsueT!5A,BaccoDayDdl EGe` I!tK&MatoM%rowNeNgueNightOlO`PP-Pp!R^RnadoRtoi'SsT$Uri,W?dW WnY_{AdeAff-Ag-A(Ansf ApAshA=lAyEatEeEndI$IbeI{Igg ImIpOphyOub!U{UeUlyUmpetU,U`Y2BeIt]Mb!NaN}lRkeyRnRt!1El=EntyI)InI,O1PeP-$:5Ly5B*lla0Ab!Awa*C!Cov D DoFairFoldHappyIf%mIqueItIv 'KnownLo{TilUsu$Veil1Da>GradeHoldOnP Set1B<Ge0A+EEdEfulE![U$0Il.y:C<tCuumGueLidL!yL=NNishP%Rious/Ult3H-!L=tNd%Ntu*NueRbRifyRs]RyS'lT <3Ab!Br<tCiousCt%yDeoEw~a+Nta+Ol(Rtu$RusSaS.Su$T$Vid5C$I)IdLc<oLumeTeYa+:GeG#ItLk~LnutNtRfa*RmRri%ShSp/eT VeY3Al`Ap#ArA'lA` BDd(gEk&dIrdLcome/T_!AtEatEelEnE*IpIsp 0DeD`FeLd~NNdowNeNgNkNn Nt ReSdomSeShT}[5LfM<Nd OdOlRdRkRldRryR`_pE{E,!I,I>Ong::Rd3Ar~ow9UUngU`:3BraRo9NeO";
     checksum = "0x3c8acc1e7b08d8e76f9fda015ef48dc8c710a73cb7e0f77b2c18a9b5a7adde60";
@@ -26671,7 +26867,7 @@ function entropyToMnemonic(entropy, wordlist2) {
 var _guard5, Mnemonic;
 var init_mnemonic = __esm({
   "../node_modules/ethers/lib.esm/wallet/mnemonic.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_utils();
     init_lang_en();
@@ -26787,7 +26983,7 @@ function convertToInt32(bytes2) {
 var __classPrivateFieldGet, __classPrivateFieldSet, _AES_key, _AES_Kd, _AES_Ke, numberOfRounds, rcon, S, Si, T12, T2, T3, T4, T5, T6, T7, T8, U1, U2, U3, U4, AES;
 var init_aes = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/aes.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     __classPrivateFieldGet = function(receiver, state, kind, f2) {
       if (kind === "a" && !f2) throw new TypeError("Private accessor was defined without a getter");
       if (typeof state === "function" ? receiver !== state || !f2 : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
@@ -26949,7 +27145,7 @@ var init_aes = __esm({
 var ModeOfOperation;
 var init_mode = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/mode.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_aes();
     ModeOfOperation = class {
       static {
@@ -26972,7 +27168,7 @@ var init_mode = __esm({
 var __classPrivateFieldSet2, __classPrivateFieldGet2, _CBC_iv, _CBC_lastBlock, CBC;
 var init_mode_cbc = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/mode-cbc.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_mode();
     __classPrivateFieldSet2 = function(receiver, state, value, kind, f2) {
       if (kind === "m") throw new TypeError("Private method is not writable");
@@ -27043,7 +27239,7 @@ var init_mode_cbc = __esm({
 var __classPrivateFieldGet3, _CFB_instances, _CFB_iv, _CFB_shiftRegister, _CFB_shift;
 var init_mode_cfb = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/mode-cfb.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_mode();
     __classPrivateFieldGet3 = function(receiver, state, kind, f2) {
       if (kind === "a" && !f2) throw new TypeError("Private accessor was defined without a getter");
@@ -27062,7 +27258,7 @@ var init_mode_cfb = __esm({
 var __classPrivateFieldSet3, __classPrivateFieldGet4, _CTR_remaining, _CTR_remainingIndex, _CTR_counter, CTR;
 var init_mode_ctr = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/mode-ctr.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_mode();
     __classPrivateFieldSet3 = function(receiver, state, value, kind, f2) {
       if (kind === "m") throw new TypeError("Private method is not writable");
@@ -27149,7 +27345,7 @@ var init_mode_ctr = __esm({
 // ../node_modules/ethers/node_modules/aes-js/lib.esm/mode-ecb.js
 var init_mode_ecb = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/mode-ecb.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_mode();
   }
 });
@@ -27158,7 +27354,7 @@ var init_mode_ecb = __esm({
 var _OFB_iv, _OFB_lastPrecipher, _OFB_lastPrecipherIndex;
 var init_mode_ofb = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/mode-ofb.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_mode();
     _OFB_iv = /* @__PURE__ */ new WeakMap(), _OFB_lastPrecipher = /* @__PURE__ */ new WeakMap(), _OFB_lastPrecipherIndex = /* @__PURE__ */ new WeakMap();
   }
@@ -27183,7 +27379,7 @@ function pkcs7Strip(data) {
 }
 var init_padding = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/padding.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     __name(pkcs7Strip, "pkcs7Strip");
   }
 });
@@ -27191,7 +27387,7 @@ var init_padding = __esm({
 // ../node_modules/ethers/node_modules/aes-js/lib.esm/index.js
 var init_lib = __esm({
   "../node_modules/ethers/node_modules/aes-js/lib.esm/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_aes();
     init_mode();
     init_mode_cbc();
@@ -27283,7 +27479,7 @@ function spelunk(object2, _path) {
 }
 var init_utils4 = __esm({
   "../node_modules/ethers/lib.esm/wallet/utils.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     __name(looseArrayify, "looseArrayify");
     __name(zpad, "zpad");
@@ -27509,7 +27705,7 @@ async function encryptKeystoreJson(account, password, options) {
 var defaultPath;
 var init_json_keystore = __esm({
   "../node_modules/ethers/lib.esm/wallet/json-keystore.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_lib();
     init_address2();
     init_crypto2();
@@ -27603,7 +27799,7 @@ function getIndexedAccountPath(_index) {
 var defaultPath2, MasterSecret, HardenedBit, N2, Nibbles2, _guard6, HDNodeWallet, HDNodeVoidWallet;
 var init_hdwallet = __esm({
   "../node_modules/ethers/lib.esm/wallet/hdwallet.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_providers();
     init_transaction2();
@@ -28021,7 +28217,7 @@ function decryptCrowdsaleJson(json, _password) {
 }
 var init_json_crowdsale = __esm({
   "../node_modules/ethers/lib.esm/wallet/json-crowdsale.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_lib();
     init_address2();
     init_crypto2();
@@ -28044,7 +28240,7 @@ function stall4(duration) {
 var Wallet;
 var init_wallet = __esm({
   "../node_modules/ethers/lib.esm/wallet/wallet.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_crypto2();
     init_utils();
     init_base_wallet();
@@ -28182,7 +28378,7 @@ var init_wallet = __esm({
 // ../node_modules/ethers/lib.esm/wallet/index.js
 var init_wallet2 = __esm({
   "../node_modules/ethers/lib.esm/wallet/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_base_wallet();
     init_hdwallet();
     init_json_crowdsale();
@@ -28217,7 +28413,7 @@ function decodeBits(width, data) {
 var Base64;
 var init_bit_reader = __esm({
   "../node_modules/ethers/lib.esm/wordlists/bit-reader.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     Base64 = ")!@#$%^&*(ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
     __name(decodeBits, "decodeBits");
   }
@@ -28246,7 +28442,7 @@ function decodeOwlA(data, accents) {
 }
 var init_decode_owla = __esm({
   "../node_modules/ethers/lib.esm/wordlists/decode-owla.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_utils();
     init_bit_reader();
     init_decode_owl();
@@ -28258,7 +28454,7 @@ var init_decode_owla = __esm({
 var WordlistOwlA;
 var init_wordlist_owla = __esm({
   "../node_modules/ethers/lib.esm/wordlists/wordlist-owla.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_wordlist_owl();
     init_decode_owla();
     WordlistOwlA = class extends WordlistOwl {
@@ -28294,7 +28490,7 @@ var init_wordlist_owla = __esm({
 var wordlists;
 var init_wordlists_browser = __esm({
   "../node_modules/ethers/lib.esm/wordlists/wordlists-browser.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_lang_en();
     wordlists = {
       en: LangEn.wordlist()
@@ -28305,7 +28501,7 @@ var init_wordlists_browser = __esm({
 // ../node_modules/ethers/lib.esm/wordlists/index.js
 var init_wordlists = __esm({
   "../node_modules/ethers/lib.esm/wordlists/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_wordlist();
     init_lang_en();
     init_wordlist_owl();
@@ -28513,7 +28709,7 @@ __export(ethers_exports, {
 });
 var init_ethers = __esm({
   "../node_modules/ethers/lib.esm/ethers.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_version();
     init_abi();
     init_address2();
@@ -28729,7 +28925,7 @@ __export(lib_exports, {
 });
 var init_lib2 = __esm({
   "../node_modules/ethers/lib.esm/index.js"() {
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_ethers();
     init_ethers();
   }
@@ -29022,7 +29218,7 @@ var IRYS_NODE_URL, IRYS_TOKEN, IRYS_HTTP_TIMEOUT_MS, IRYS_ERROR_BODY_PREVIEW_MAX
 var init_transport = __esm({
   "irys/transport.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     IRYS_NODE_URL = "https://node1.irys.xyz";
     IRYS_TOKEN = "base-eth";
     IRYS_HTTP_TIMEOUT_MS = 15e3;
@@ -29257,7 +29453,7 @@ var RPC_URLS, RPC_TIMEOUT_MS2, EXECUTOR_MIN_BALANCE_WEI, EXECUTOR_BALANCE_CACHE_
 var init_executorHot = __esm({
   "lib/executorHot.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_transport();
     RPC_URLS = [
       "https://base-rpc.publicnode.com",
@@ -29301,7 +29497,7 @@ function isPlainObject4(value) {
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
-function baseHeaders15(origin) {
+function baseHeaders16(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, no-transform",
@@ -29318,10 +29514,10 @@ function baseHeaders15(origin) {
     "X-Aeterna-Publication-Authority": "executor-hot"
   };
 }
-function fail14(origin, status, error = "error") {
+function fail15(origin, status, error = "error") {
   return new Response(JSON.stringify({ ok: false, error }), {
     status,
-    headers: baseHeaders15(origin)
+    headers: baseHeaders16(origin)
   });
 }
 function decodeBase642(value) {
@@ -29336,11 +29532,11 @@ function decodeBase642(value) {
     return null;
   }
 }
-var ALLOWED_ORIGINS15, ALLOWED_BODY_FIELDS, UPLOAD_TOKEN_REGEX3, MIN_TIME4, MAX_TIME4, onRequestOptions15, onRequestPost13;
+var ALLOWED_ORIGINS16, ALLOWED_BODY_FIELDS, UPLOAD_TOKEN_REGEX3, MIN_TIME4, MAX_TIME4, onRequestOptions16, onRequestPost14;
 var init_upload = __esm({
   "api/upload.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_time();
     init_validators();
@@ -29349,7 +29545,7 @@ var init_upload = __esm({
     init_chunkPointerRegistryStore();
     init_storageAdapter();
     init_manifest();
-    ALLOWED_ORIGINS15 = [
+    ALLOWED_ORIGINS16 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
@@ -29367,141 +29563,141 @@ var init_upload = __esm({
     MIN_TIME4 = 15778368e5;
     MAX_TIME4 = 41024448e5;
     __name(isPlainObject4, "isPlainObject");
-    __name(baseHeaders15, "baseHeaders");
-    __name(fail14, "fail");
+    __name(baseHeaders16, "baseHeaders");
+    __name(fail15, "fail");
     __name(decodeBase642, "decodeBase64");
-    onRequestOptions15 = /* @__PURE__ */ __name(async (context) => {
+    onRequestOptions16 = /* @__PURE__ */ __name(async (context) => {
       const origin = context.request.headers.get("origin") ?? "";
-      if (!ALLOWED_ORIGINS15.includes(origin)) {
+      if (!ALLOWED_ORIGINS16.includes(origin)) {
         return new Response(null, { status: 403 });
       }
-      return new Response(null, { status: 204, headers: baseHeaders15(origin) });
+      return new Response(null, { status: 204, headers: baseHeaders16(origin) });
     }, "onRequestOptions");
-    onRequestPost13 = /* @__PURE__ */ __name(async (context) => {
+    onRequestPost14 = /* @__PURE__ */ __name(async (context) => {
       const { request, env } = context;
       const origin = request.headers.get("origin") ?? "";
-      if (!ALLOWED_ORIGINS15.includes(origin)) {
+      if (!ALLOWED_ORIGINS16.includes(origin)) {
         return new Response(JSON.stringify({ ok: false }), { status: 403 });
       }
       const contentType = request.headers.get("content-type") ?? "";
       if (!contentType.includes("application/json")) {
-        return fail14(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+        return fail15(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
       }
       const ip = getClientIp(request);
       if (!rateLimit(ip)) {
-        return fail14(origin, 429, "TOO_MANY_REQUESTS");
+        return fail15(origin, 429, "TOO_MANY_REQUESTS");
       }
       if (!env?.UPLOAD_TOKENS || !env?.VERIFIED_PAYMENTS) {
-        return fail14(origin, 503, "STORAGE_UNAVAILABLE");
+        return fail15(origin, 503, "STORAGE_UNAVAILABLE");
       }
       let body;
       try {
         body = await request.json();
       } catch {
-        return fail14(origin, 400, "INVALID_JSON");
+        return fail15(origin, 400, "INVALID_JSON");
       }
       if (!isPlainObject4(body)) {
-        return fail14(origin, 400, "INVALID_BODY");
+        return fail15(origin, 400, "INVALID_BODY");
       }
       if (!Object.keys(body).every((k) => ALLOWED_BODY_FIELDS.includes(k))) {
-        return fail14(origin, 400, "UNRECOGNIZED_FIELD");
+        return fail15(origin, 400, "UNRECOGNIZED_FIELD");
       }
       const { capsuleId, uploadToken, kind, chunkId, ciphertext, declaredSize, vaultSha256 } = body;
       if (capsuleId !== void 0) {
         if (typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
-          return fail14(origin, 400, "INVALID_CAPSULE_ID");
+          return fail15(origin, 400, "INVALID_CAPSULE_ID");
         }
       }
       if (typeof uploadToken !== "string" || !UPLOAD_TOKEN_REGEX3.test(uploadToken)) {
-        return fail14(origin, 400, "INVALID_UPLOAD_TOKEN");
+        return fail15(origin, 400, "INVALID_UPLOAD_TOKEN");
       }
       if (kind !== void 0 && kind !== "vault" && kind !== "chunk") {
-        return fail14(origin, 400, "INVALID_KIND");
+        return fail15(origin, 400, "INVALID_KIND");
       }
       if (chunkId !== void 0) {
         if (typeof chunkId !== "string" || chunkId.length === 0) {
-          return fail14(origin, 400, "INVALID_CHUNK_ID");
+          return fail15(origin, 400, "INVALID_CHUNK_ID");
         }
         if (!env?.CHUNK_POINTER_REGISTRY) {
-          return fail14(origin, 503, "STORAGE_UNAVAILABLE");
+          return fail15(origin, 503, "STORAGE_UNAVAILABLE");
         }
       }
       if (typeof ciphertext !== "string" || ciphertext.length === 0) {
-        return fail14(origin, 400, "INVALID_CIPHERTEXT");
+        return fail15(origin, 400, "INVALID_CIPHERTEXT");
       }
       if (!Number.isSafeInteger(declaredSize) || declaredSize <= 0) {
-        return fail14(origin, 400, "INVALID_DECLARED_SIZE");
+        return fail15(origin, 400, "INVALID_DECLARED_SIZE");
       }
       const maxAllowed = kind === "vault" ? MAX_ENCRYPTED_VAULT_SIZE : kind === "chunk" ? MAX_ENCRYPTED_CHUNK_SIZE : Math.max(MAX_ENCRYPTED_VAULT_SIZE, MAX_ENCRYPTED_CHUNK_SIZE);
       if (declaredSize > maxAllowed) {
-        return fail14(origin, 400, "SIZE_LIMIT_EXCEEDED");
+        return fail15(origin, 400, "SIZE_LIMIT_EXCEEDED");
       }
       if (vaultSha256 !== void 0) {
         if (typeof vaultSha256 !== "string" || !SHA256_REGEX.test(vaultSha256)) {
-          return fail14(origin, 400, "INVALID_VAULT_HASH");
+          return fail15(origin, 400, "INVALID_VAULT_HASH");
         }
       }
       const storedTokenRaw = await env.UPLOAD_TOKENS.get(uploadToken);
       if (!storedTokenRaw) {
-        return fail14(origin, 403, "INVALID_UPLOAD_TOKEN");
+        return fail15(origin, 403, "INVALID_UPLOAD_TOKEN");
       }
       let tokenData;
       try {
         tokenData = JSON.parse(storedTokenRaw);
       } catch {
-        return fail14(origin, 503, "TOKEN_STORAGE_CORRUPTED");
+        return fail15(origin, 503, "TOKEN_STORAGE_CORRUPTED");
       }
       let now;
       try {
         const { nowUtc } = await getTrustedTime();
         if (!Number.isSafeInteger(nowUtc) || nowUtc < MIN_TIME4 || nowUtc > MAX_TIME4) {
-          return fail14(origin, 503, "TIME_UNAVAILABLE");
+          return fail15(origin, 503, "TIME_UNAVAILABLE");
         }
         now = nowUtc;
       } catch {
-        return fail14(origin, 503, "TIME_UNAVAILABLE");
+        return fail15(origin, 503, "TIME_UNAVAILABLE");
       }
       if (!tokenData || typeof tokenData.expiresAt !== "number" || !Number.isSafeInteger(tokenData.expiresAt) || tokenData.expiresAt <= now) {
-        return fail14(origin, 403, "UPLOAD_TOKEN_EXPIRED");
+        return fail15(origin, 403, "UPLOAD_TOKEN_EXPIRED");
       }
       if (capsuleId !== void 0 && tokenData.capsuleId !== capsuleId) {
-        return fail14(origin, 403, "UPLOAD_TOKEN_CAPSULE_MISMATCH");
+        return fail15(origin, 403, "UPLOAD_TOKEN_CAPSULE_MISMATCH");
       }
       const resolvedCapsuleId = capsuleId ?? tokenData.capsuleId;
       if (!resolvedCapsuleId || !CAPSULE_ID_REGEX.test(resolvedCapsuleId)) {
-        return fail14(origin, 403, "UPLOAD_TOKEN_CAPSULE_UNRESOLVABLE");
+        return fail15(origin, 403, "UPLOAD_TOKEN_CAPSULE_UNRESOLVABLE");
       }
       if (kind === "vault" && tokenData.permissions?.uploadVault !== true) {
-        return fail14(origin, 403, "UPLOAD_TOKEN_PERMISSION_DENIED");
+        return fail15(origin, 403, "UPLOAD_TOKEN_PERMISSION_DENIED");
       }
       if (kind === "chunk" && tokenData.permissions?.uploadChunks !== true) {
-        return fail14(origin, 403, "UPLOAD_TOKEN_PERMISSION_DENIED");
+        return fail15(origin, 403, "UPLOAD_TOKEN_PERMISSION_DENIED");
       }
       if (kind === void 0 && tokenData.permissions?.uploadVault !== true && tokenData.permissions?.uploadChunks !== true) {
-        return fail14(origin, 403, "UPLOAD_TOKEN_PERMISSION_DENIED");
+        return fail15(origin, 403, "UPLOAD_TOKEN_PERMISSION_DENIED");
       }
       if (!tokenData.transactionId) {
-        return fail14(origin, 403, "UPLOAD_TOKEN_UNBOUND");
+        return fail15(origin, 403, "UPLOAD_TOKEN_UNBOUND");
       }
       const paymentRaw = await env.VERIFIED_PAYMENTS.get(tokenData.transactionId);
       if (!paymentRaw) {
-        return fail14(origin, 403, "UPLOAD_TOKEN_PAYMENT_UNRESOLVABLE");
+        return fail15(origin, 403, "UPLOAD_TOKEN_PAYMENT_UNRESOLVABLE");
       }
       const bytes2 = decodeBase642(ciphertext);
       if (!bytes2) {
-        return fail14(origin, 400, "INVALID_CIPHERTEXT_ENCODING");
+        return fail15(origin, 400, "INVALID_CIPHERTEXT_ENCODING");
       }
       if (bytes2.byteLength !== declaredSize) {
-        return fail14(origin, 400, "SIZE_MISMATCH");
+        return fail15(origin, 400, "SIZE_MISMATCH");
       }
       if (bytes2.byteLength > maxAllowed) {
-        return fail14(origin, 400, "SIZE_LIMIT_EXCEEDED");
+        return fail15(origin, 400, "SIZE_LIMIT_EXCEEDED");
       }
       if (vaultSha256 !== void 0) {
         const digest = await crypto.subtle.digest("SHA-256", bytes2.buffer);
         const computedHex = Array.from(new Uint8Array(digest)).map((b2) => b2.toString(16).padStart(2, "0")).join("");
         if (computedHex !== vaultSha256) {
-          return fail14(origin, 400, "VAULT_HASH_MISMATCH");
+          return fail15(origin, 400, "VAULT_HASH_MISMATCH");
         }
       }
       try {
@@ -29511,7 +29707,7 @@ var init_upload = __esm({
           assertCapsuleId(resolvedCapsuleId);
           const existing = await getChunkPointerMap(env, resolvedCapsuleId);
           if (existing[chunkId] !== void 0) {
-            return fail14(origin, 409, "DUPLICATE_CHUNK_ID");
+            return fail15(origin, 409, "DUPLICATE_CHUNK_ID");
           }
           await putChunkPointerEntries(env, resolvedCapsuleId, {
             [chunkId]: pointer
@@ -29519,11 +29715,11 @@ var init_upload = __esm({
         }
         return new Response(JSON.stringify({ ok: true, storagePointer }), {
           status: 200,
-          headers: baseHeaders15(origin)
+          headers: baseHeaders16(origin)
         });
       } catch (error) {
         if (error instanceof ExecutorUnavailableError) {
-          return fail14(origin, 503, "EXECUTOR_TEMPORARILY_UNAVAILABLE");
+          return fail15(origin, 503, "EXECUTOR_TEMPORARILY_UNAVAILABLE");
         }
         if (env.DEBUG === "true") {
           console.error(
@@ -29531,7 +29727,7 @@ var init_upload = __esm({
             error instanceof Error ? error.stack : String(error)
           );
         }
-        return fail14(origin, 502, "PUBLICATION_FAILED");
+        return fail15(origin, 502, "PUBLICATION_FAILED");
       } finally {
         bytes2.fill(0);
       }
@@ -29552,7 +29748,7 @@ function generateToken() {
   crypto.getRandomValues(bytes2);
   return toBase64Url(bytes2);
 }
-function baseHeaders16(origin) {
+function baseHeaders17(origin) {
   return {
     "Content-Type": "application/json",
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, no-transform",
@@ -29571,22 +29767,22 @@ function baseHeaders16(origin) {
     "X-Aeterna-Upload-Authority": "primary"
   };
 }
-function fail15(origin, status = 400) {
+function fail16(origin, status = 400) {
   return new Response(
     JSON.stringify({ ok: false }),
-    { status, headers: baseHeaders16(origin) }
+    { status, headers: baseHeaders17(origin) }
   );
 }
-var ALLOWED_ORIGINS16, ALLOWED_BODY_FIELDS2, MIN_TIME5, MAX_TIME5, TOKEN_TTL_MS, TOKEN_TTL_SEC, onRequestOptions16, onRequestPost14;
+var ALLOWED_ORIGINS17, ALLOWED_BODY_FIELDS2, MIN_TIME5, MAX_TIME5, TOKEN_TTL_MS, TOKEN_TTL_SEC, onRequestOptions17, onRequestPost15;
 var init_upload_token = __esm({
   "api/upload-token.ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_time();
     init_validators();
     init_executorHot();
-    ALLOWED_ORIGINS16 = [
+    ALLOWED_ORIGINS17 = [
       "https://aeternacapsule.com",
       "https://www.aeternacapsule.com",
       "https://aeterna-capsule.pages.dev"
@@ -29598,54 +29794,54 @@ var init_upload_token = __esm({
     TOKEN_TTL_SEC = TOKEN_TTL_MS / 1e3;
     __name(toBase64Url, "toBase64Url");
     __name(generateToken, "generateToken");
-    __name(baseHeaders16, "baseHeaders");
-    __name(fail15, "fail");
-    onRequestOptions16 = /* @__PURE__ */ __name(async (context) => {
+    __name(baseHeaders17, "baseHeaders");
+    __name(fail16, "fail");
+    onRequestOptions17 = /* @__PURE__ */ __name(async (context) => {
       const origin = context.request.headers.get("origin") ?? "";
-      if (!ALLOWED_ORIGINS16.includes(origin)) {
+      if (!ALLOWED_ORIGINS17.includes(origin)) {
         return new Response(null, { status: 403 });
       }
-      return new Response(null, { status: 204, headers: baseHeaders16(origin) });
+      return new Response(null, { status: 204, headers: baseHeaders17(origin) });
     }, "onRequestOptions");
-    onRequestPost14 = /* @__PURE__ */ __name(async (context) => {
+    onRequestPost15 = /* @__PURE__ */ __name(async (context) => {
       const { request, env } = context;
       const origin = request.headers.get("origin") ?? "";
-      if (!ALLOWED_ORIGINS16.includes(origin)) {
+      if (!ALLOWED_ORIGINS17.includes(origin)) {
         return new Response(JSON.stringify({ ok: false }), { status: 403 });
       }
       const contentType = request.headers.get("content-type") ?? "";
       if (!contentType.includes("application/json")) {
-        return fail15(origin, 415);
+        return fail16(origin, 415);
       }
       const ip = getClientIp(request);
       if (!rateLimit(ip)) {
-        return fail15(origin, 429);
+        return fail16(origin, 429);
       }
       let body;
       try {
         body = await request.json();
       } catch {
-        return fail15(origin, 400);
+        return fail16(origin, 400);
       }
       if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-        return fail15(origin, 400);
+        return fail16(origin, 400);
       }
       if (!Object.keys(body).every((k) => ALLOWED_BODY_FIELDS2.includes(k))) {
-        return fail15(origin, 400);
+        return fail16(origin, 400);
       }
       const { capsuleId, canonicalLifecycleId, correlationTransactionId } = body;
       if (!capsuleId || typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
-        return fail15(origin, 400);
+        return fail16(origin, 400);
       }
       if (!canonicalLifecycleId || typeof canonicalLifecycleId !== "string") {
-        return fail15(origin, 400);
+        return fail16(origin, 400);
       }
       if (!env?.UPLOAD_TOKENS || !env?.VERIFIED_PAYMENTS) {
         console.error("[AETERNA][upload-token] Missing KV bindings", {
           hasUploadTokens: !!env?.UPLOAD_TOKENS,
           hasVerifiedPayments: !!env?.VERIFIED_PAYMENTS
         });
-        return fail15(origin, 503);
+        return fail16(origin, 503);
       }
       let verifiedEntry = null;
       try {
@@ -29654,18 +29850,18 @@ var init_upload_token = __esm({
           verifiedEntry = JSON.parse(raw);
         }
       } catch {
-        return fail15(origin, 503);
+        return fail16(origin, 503);
       }
       const { nowUtc: now } = await getTrustedTime();
       if (!Number.isSafeInteger(now) || now < MIN_TIME5 || now > MAX_TIME5) {
-        return fail15(origin, 500);
+        return fail16(origin, 500);
       }
       if (!verifiedEntry || typeof verifiedEntry !== "object" || Object.getPrototypeOf(verifiedEntry) !== Object.prototype || verifiedEntry.ok !== true || verifiedEntry.capsuleId !== capsuleId || !Number.isSafeInteger(verifiedEntry.expiresAt) || verifiedEntry.expiresAt <= now) {
-        return fail15(origin, 403);
+        return fail16(origin, 403);
       }
       const creatorIdentityId = typeof verifiedEntry.creatorIdentityId === "string" ? verifiedEntry.creatorIdentityId : null;
       if (!creatorIdentityId) {
-        return fail15(origin, 403);
+        return fail16(origin, 403);
       }
       try {
         const executorAddress = await getExecutorAddress(env);
@@ -29674,14 +29870,14 @@ var init_upload_token = __esm({
         if (error instanceof ExecutorUnavailableError) {
           return new Response(
             JSON.stringify({ ok: false, error: "EXECUTOR_TEMPORARILY_UNAVAILABLE" }),
-            { status: 503, headers: baseHeaders16(origin) }
+            { status: 503, headers: baseHeaders17(origin) }
           );
         }
         console.error(
           "EXECUTOR_BALANCE_CHECK_FAILED",
           String(error)
         );
-        return fail15(origin, 503);
+        return fail16(origin, 503);
       }
       let uploadToken = null;
       for (let i = 0; i < 3; i++) {
@@ -29693,7 +29889,7 @@ var init_upload_token = __esm({
         }
       }
       if (!uploadToken) {
-        return fail15(origin, 500);
+        return fail16(origin, 500);
       }
       const expiresAt = now + TOKEN_TTL_MS;
       try {
@@ -29714,11 +29910,11 @@ var init_upload_token = __esm({
           { expirationTtl: TOKEN_TTL_SEC }
         );
       } catch {
-        return fail15(origin, 503);
+        return fail16(origin, 503);
       }
       return new Response(
         JSON.stringify({ ok: true, uploadToken }),
-        { status: 200, headers: baseHeaders16(origin) }
+        { status: 200, headers: baseHeaders17(origin) }
       );
     }, "onRequestPost");
   }
@@ -29797,7 +29993,7 @@ var SITE_URL, SITE_NAME, OG_IMAGE, CRAWLER_UA_PATTERNS, onRequestGet5;
 var init_capsuleId2 = __esm({
   "capsule/[capsuleId].ts"() {
     "use strict";
-    init_functionsRoutes_0_391389513282802();
+    init_functionsRoutes_0_4728697744581736();
     init_rateLimit();
     init_time();
     init_validators();
@@ -29910,15 +30106,17 @@ var init_capsuleId2 = __esm({
   }
 });
 
-// ../.wrangler/tmp/pages-tryCtE/functionsRoutes-0.391389513282802.mjs
+// ../.wrangler/tmp/pages-LTPUEI/functionsRoutes-0.4728697744581736.mjs
 var routes;
-var init_functionsRoutes_0_391389513282802 = __esm({
-  "../.wrangler/tmp/pages-tryCtE/functionsRoutes-0.391389513282802.mjs"() {
+var init_functionsRoutes_0_4728697744581736 = __esm({
+  "../.wrangler/tmp/pages-LTPUEI/functionsRoutes-0.4728697744581736.mjs"() {
     "use strict";
     init_chunk_pointers();
     init_chunk_pointers();
     init_seal();
     init_seal();
+    init_credit_status();
+    init_credit_status();
     init_finalize_credit();
     init_finalize_credit();
     init_grant_credit();
@@ -29980,144 +30178,158 @@ var init_functionsRoutes_0_391389513282802 = __esm({
         modules: [onRequestPost]
       },
       {
-        routePath: "/api/creator/finalize-credit",
+        routePath: "/api/creator/credit-status",
         mountPath: "/api/creator",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions4]
       },
       {
-        routePath: "/api/creator/finalize-credit",
+        routePath: "/api/creator/credit-status",
         mountPath: "/api/creator",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost2]
       },
       {
-        routePath: "/api/creator/grant-credit",
+        routePath: "/api/creator/finalize-credit",
         mountPath: "/api/creator",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions5]
       },
       {
-        routePath: "/api/creator/grant-credit",
+        routePath: "/api/creator/finalize-credit",
         mountPath: "/api/creator",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost3]
       },
       {
-        routePath: "/api/creator/issue-challenge",
+        routePath: "/api/creator/grant-credit",
         mountPath: "/api/creator",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions6]
       },
       {
-        routePath: "/api/creator/issue-challenge",
+        routePath: "/api/creator/grant-credit",
         mountPath: "/api/creator",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost4]
       },
       {
-        routePath: "/api/creator/recover-lifecycle",
+        routePath: "/api/creator/issue-challenge",
         mountPath: "/api/creator",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions7]
       },
       {
-        routePath: "/api/creator/recover-lifecycle",
+        routePath: "/api/creator/issue-challenge",
         mountPath: "/api/creator",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost5]
       },
       {
-        routePath: "/api/creator/reserve-lifecycle",
+        routePath: "/api/creator/recover-lifecycle",
         mountPath: "/api/creator",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions8]
       },
       {
-        routePath: "/api/creator/reserve-lifecycle",
+        routePath: "/api/creator/recover-lifecycle",
         mountPath: "/api/creator",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost6]
       },
       {
-        routePath: "/api/creator/verify-proof",
+        routePath: "/api/creator/reserve-lifecycle",
         mountPath: "/api/creator",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions9]
       },
       {
-        routePath: "/api/creator/verify-proof",
+        routePath: "/api/creator/reserve-lifecycle",
         mountPath: "/api/creator",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost7]
       },
       {
-        routePath: "/api/publication/verify",
-        mountPath: "/api/publication",
+        routePath: "/api/creator/verify-proof",
+        mountPath: "/api/creator",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions10]
       },
       {
-        routePath: "/api/publication/verify",
-        mountPath: "/api/publication",
+        routePath: "/api/creator/verify-proof",
+        mountPath: "/api/creator",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost8]
       },
       {
-        routePath: "/api/seal/verify",
-        mountPath: "/api/seal",
+        routePath: "/api/publication/verify",
+        mountPath: "/api/publication",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions11]
       },
       {
-        routePath: "/api/seal/verify",
-        mountPath: "/api/seal",
+        routePath: "/api/publication/verify",
+        mountPath: "/api/publication",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost9]
       },
       {
-        routePath: "/api/service-payment/create-quote",
-        mountPath: "/api/service-payment",
+        routePath: "/api/seal/verify",
+        mountPath: "/api/seal",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions12]
       },
       {
-        routePath: "/api/service-payment/create-quote",
-        mountPath: "/api/service-payment",
+        routePath: "/api/seal/verify",
+        mountPath: "/api/seal",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost10]
       },
       {
-        routePath: "/api/service-payment/verify",
+        routePath: "/api/service-payment/create-quote",
         mountPath: "/api/service-payment",
         method: "OPTIONS",
         middlewares: [],
         modules: [onRequestOptions13]
       },
       {
-        routePath: "/api/service-payment/verify",
+        routePath: "/api/service-payment/create-quote",
         mountPath: "/api/service-payment",
         method: "POST",
         middlewares: [],
         modules: [onRequestPost11]
+      },
+      {
+        routePath: "/api/service-payment/verify",
+        mountPath: "/api/service-payment",
+        method: "OPTIONS",
+        middlewares: [],
+        modules: [onRequestOptions14]
+      },
+      {
+        routePath: "/api/service-payment/verify",
+        mountPath: "/api/service-payment",
+        method: "POST",
+        middlewares: [],
+        modules: [onRequestPost12]
       },
       {
         routePath: "/api/capsule/:capsuleId",
@@ -30131,7 +30343,7 @@ var init_functionsRoutes_0_391389513282802 = __esm({
         mountPath: "/api/capsule",
         method: "OPTIONS",
         middlewares: [],
-        modules: [onRequestOptions14]
+        modules: [onRequestOptions15]
       },
       {
         routePath: "/api/heartbeat",
@@ -30145,7 +30357,7 @@ var init_functionsRoutes_0_391389513282802 = __esm({
         mountPath: "/api",
         method: "POST",
         middlewares: [],
-        modules: [onRequestPost12]
+        modules: [onRequestPost13]
       },
       {
         routePath: "/api/time",
@@ -30166,28 +30378,28 @@ var init_functionsRoutes_0_391389513282802 = __esm({
         mountPath: "/api",
         method: "OPTIONS",
         middlewares: [],
-        modules: [onRequestOptions15]
+        modules: [onRequestOptions16]
       },
       {
         routePath: "/api/upload",
         mountPath: "/api",
         method: "POST",
         middlewares: [],
-        modules: [onRequestPost13]
+        modules: [onRequestPost14]
       },
       {
         routePath: "/api/upload-token",
         mountPath: "/api",
         method: "OPTIONS",
         middlewares: [],
-        modules: [onRequestOptions16]
+        modules: [onRequestOptions17]
       },
       {
         routePath: "/api/upload-token",
         mountPath: "/api",
         method: "POST",
         middlewares: [],
-        modules: [onRequestPost14]
+        modules: [onRequestPost15]
       },
       {
         routePath: "/capsule/:capsuleId",
@@ -30201,10 +30413,10 @@ var init_functionsRoutes_0_391389513282802 = __esm({
 });
 
 // ../../../AppData/Local/npm-cache/_npx/32026684e21afda6/node_modules/wrangler/templates/pages-template-worker.ts
-init_functionsRoutes_0_391389513282802();
+init_functionsRoutes_0_4728697744581736();
 
 // ../../../AppData/Local/npm-cache/_npx/32026684e21afda6/node_modules/path-to-regexp/dist.es2015/index.js
-init_functionsRoutes_0_391389513282802();
+init_functionsRoutes_0_4728697744581736();
 function lexer(str) {
   var tokens = [];
   var i = 0;
@@ -30669,4 +30881,4 @@ aes-js/lib.esm/aes.js:
   (*! MIT License. Copyright 2015-2022 Richard Moore <me@ricmoo.com>. See LICENSE.txt. *)
 */
 
-------formdata-undici-014113992853--
+------formdata-undici-067223509379--

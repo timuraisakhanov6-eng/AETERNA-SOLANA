@@ -4,38 +4,50 @@ Status: Canonical
 Authority: Business Layer  
 Version: 1.0  
 Reference:
-- AETERNA_BASE_USDC_PAYMENT_PROVIDER_SELECTION_SPEC.md
-- AETERNA_HIGH_VOLUME_SERVICE_PAYMENT_VERIFICATION_SPEC.md
-- AETERNA_SERVICE_PAYMENT_NETWORK_ASSET_SELECTION_SPEC.md
+- AETERNA_MULTI_RAIL_SERVICE_PAYMENT_POLICY_SPEC.md
 - AETERNA_SERVICE_PAYMENT_PROVIDER_SELECTION_SPEC.md
-- AETERNA_MVP_SETTLEMENT_WALLET_SPEC.md
+- AETERNA_SERVICE_PAYMENT_NETWORK_ASSET_SELECTION_SPEC.md
+- AETERNA_SETTLEMENT_WALLET_AND_SERVICE_PAYMENT_SPEC.md
 - AETERNA_SERVICE_PAYMENT_ENDPOINT_ARCHITECTURE_SPEC.md
 - AETERNA_CREATOR_CREDIT_SPEC.md
 - AETERNA_CREATOR_IDENTITY_ARCHITECTURE_SPEC.md
-- AETERNA_SETTLEMENT_WALLET_AND_SERVICE_PAYMENT_SPEC.md
 
 ---
 
-## 1. NATIVE USDC IDENTITY
+## 1. BUSINESS AMOUNT
 
-Selected asset:
-- native USDC on Base Mainnet.
+Fixed commercial denomination:
+- USD 1.00.
 
-Authoritative identifier:
-- PENDING OFFICIAL SOURCE RETRIEVAL.
+Business rule:
+- exactly 1 USDC = one capsule creation entitlement.
 
-Current official source status:
-- attempt to retrieve authoritative contract address from current official
-  Circle/USDC documentation did not return usable content in this environment;
-- the authoritative token contract identifier MUST be obtained from official
-  Circle/USDC documentation and recorded here before production activation.
+Network does NOT change the business amount.
+Network is a payment-rail policy, not the business price.
+
+Supported rails:
+- Base Mainnet / native USDC;
+- Solana Mainnet / native USDC.
+
+Additional rails may be added only through explicit canonical selection.
+
+---
+
+## 2. NATIVE USDC IDENTITY
 
 Canonical rule:
-- AETERNA service payment MUST use the official native USDC token on Base
-  Mainnet as documented by Circle.
-- Bridged, wrapped, or non-canonical USDC identifiers MUST NOT be used for
-  the AETERNA service payment.
-- The exact contract identifier is a required canonical fact.
+- AETERNA service payment MUST use the official native USDC token on the selected supported rail.
+- Bridged, wrapped, or non-canonical USDC identifiers MUST NOT be used for the AETERNA service payment.
+
+Base rail:
+- asset: official native USDC on Base Mainnet.
+- authoritative identifier: PENDING OFFICIAL SOURCE RETRIEVAL.
+- exact Base Mainnet contract identifier MUST be obtained from official Circle/USDC documentation before production activation.
+
+Solana rail:
+- asset: official native USDC on Solana Mainnet.
+- authoritative mint identifier: PENDING OFFICIAL SOURCE RETRIEVAL.
+- exact Solana mint identifier MUST be obtained from official sources before production activation.
 
 Do NOT use:
 - memory-derived addresses;
@@ -44,48 +56,42 @@ Do NOT use:
 
 ---
 
-## 2. USDC DECIMALS
+## 3. USDC DECIMALS
 
-Standard USDC property on EVM networks:
-- 6 decimals.
-
-This is the standard decimal precision for native USDC on supported EVM chains.
+Standard USDC property:
+- 6 decimals on EVM networks.
+- Solana USDC uses 6 decimals as defined by the official mint.
 
 Implication for atomic amount:
 - 1 USDC = 1,000,000 atomic units.
 
 This document does not assume 1 USD = 1 USDC for conversion.
-See Section 5 for conversion policy.
+See Section 6 for conversion policy.
 
 ---
 
-## 3. EXACT ATOMIC AMOUNT
-
-Commercial denomination:
-- USD 1.00.
+## 4. EXACT ATOMIC AMOUNT
 
 Network payment amount:
-- exact atomic USDC amount = server-calculated value based on canonical price
-  source.
+- exact atomic USDC amount = server-calculated value based on canonical price source.
 
 Quote locking:
-- exactAtomicAmount is server-calculated and locked in the immutable quote.
-- exactAtomicAmount MUST be recorded in the immutable quote at quote creation
-  time.
-- The frontend MUST NOT choose exactAtomicAmount.
-- The frontend MAY display the converted amount for informational purposes.
+- exactAtomicAmount is server-calculated and locked in the immutable quote;
+- exactAtomicAmount MUST be recorded in the immutable quote at quote creation time;
+- the frontend MUST NOT choose exactAtomicAmount;
+- the frontend MAY display the converted amount for informational purposes.
 
 Quote fields locked:
 - creatorIdentityId;
 - serviceFeeUsd = 1.00;
 - selectedPaymentAsset = native USDC;
-- selectedNetwork = Base Mainnet;
+- selectedNetwork = chosen supported rail;
 - exactAtomicAmount = server-calculated;
-- recipient = canonical Settlement Wallet.
+- recipient = canonical Settlement Wallet for the selected rail.
 
 ---
 
-## 4. $1 COMMERCIAL MODEL
+## 5. $1 COMMERCIAL MODEL
 
 The AETERNA service fee is:
 - fixed commercial denomination: USD 1.00;
@@ -97,10 +103,10 @@ The USD 1.00 is:
 
 ---
 
-## 5. USD → USDC CONVERSION POLICY
+## 6. USD → USDC CONVERSION POLICY
 
 Required properties for the canonical price source:
-- provides USD/USDC exchange rate for Base Mainnet native USDC;
+- provides USD/USDC exchange rate for the selected rail;
 - snapshot timing is defined server-side;
 - quote locking occurs at quote creation;
 - rounding rules are defined server-side;
@@ -108,21 +114,20 @@ Required properties for the canonical price source:
 - fail-closed behavior when source is unavailable.
 
 Current status:
-- exact price source/oracle for USD 1.00 conversion is PENDING CANONICAL
-  DECISION.
+- exact price source/oracle for USD 1.00 conversion is PENDING CANONICAL DECISION.
 
 Canonical rule:
-- AETERNA does not currently treat 1 USDC as exactly 1 USD-equivalent by
-  default.
+- AETERNA does not currently treat 1 USDC as exactly 1 USD-equivalent by default.
 - The conversion requires an explicit canonical price source/oracle.
-- In the absence of an approved canonical price source, no production quote
-  may be issued.
+- In the absence of an approved canonical price source, no production quote may be issued.
 
 ---
 
-## 6. FINALITY POLICY
+## 7. FINALITY POLICY
 
-### 6.1 State Machine
+Finality policy is rail-specific.
+
+### 7.1 Base Mainnet
 
 Base Mainnet payment state machine:
 
@@ -133,8 +138,7 @@ CONFIRMING:
 - payment included in block with confirmations counted.
 
 FINAL:
-- payment has reached required confirmation/finality threshold for Base
-  Mainnet.
+- payment has reached required confirmation/finality threshold for Base Mainnet.
 
 REORGED:
 - payment was in a reorged block;
@@ -145,15 +149,8 @@ INVALIDATED:
 - verification MUST be reverted;
 - Credit MUST NOT be granted.
 
-### 6.2 Finality Threshold
-
 Required confirmation/finality threshold for Base Mainnet:
 - PENDING NETWORK POLICY.
-
-The server MUST enforce the configured threshold before granting Credit.
-The exact threshold MUST be defined per network before production use.
-
-### 6.3 Base Mainnet Considerations
 
 Base Mainnet characteristics to consider when setting finality:
 - OP Stack-based L2;
@@ -162,28 +159,47 @@ Base Mainnet characteristics to consider when setting finality:
 
 The exact numeric threshold is NOT invented in this document.
 
+### 7.2 Solana Mainnet
+
+Solana Mainnet payment state machine:
+
+OBSERVED:
+- payment signature/confirmation detected.
+
+CONFIRMING:
+- required Solana confirmation/finality status under evaluation.
+
+FINAL:
+- payment has reached required confirmation/finality threshold for Solana Mainnet.
+
+REORGED/INVALIDATED:
+- payment is no longer valid;
+- verification MUST be reverted;
+- Credit MUST NOT be granted.
+
+Required confirmation/finality threshold for Solana Mainnet:
+- PENDING IMPLEMENTATION POLICY.
+
+Solana finality considerations:
+- exact threshold MUST be defined per Solana network characteristics before production use.
+
+The exact numeric threshold is NOT invented in this document.
+
 ---
 
-## 7. PAYMENT VERIFICATION RULE
+## 8. PAYMENT VERIFICATION RULE
 
 VERIFIED payment requires ALL of the following:
 
-1. correct chain: payment is on Base Mainnet;
-2. correct USDC token: payment uses official native USDC on Base Mainnet;
-3. correct sender/Creator Identity binding: verified payment sender matches
-   server-verified account binding for the Creator Identity associated with
-   the quote;
-4. correct Settlement Wallet recipient: verified payment recipient matches
-   canonical Settlement Wallet recipient recorded in immutable quote;
-5. exact atomic amount: verified payment amount matches exactAtomicAmount
-   recorded in immutable quote;
+1. supported rail: payment is on a supported AETERNA payment rail;
+2. correct asset: payment uses official native USDC on the selected rail;
+3. correct sender/Creator Identity binding: verified payment sender matches server-verified account binding for the Creator Identity associated with the quote;
+4. correct Settlement Wallet recipient: verified payment recipient matches canonical Settlement Wallet recipient recorded in immutable quote;
+5. exact atomic amount: verified payment amount matches exactAtomicAmount recorded in immutable quote;
 6. successful transaction: transaction status is success;
-7. required finality: payment has reached required confirmation/finality
-   threshold for Base Mainnet;
-8. correct quote binding: payment is associated with exactly one immutable
-   quote;
-9. payment not previously consumed: payment evidence has not previously
-   granted a Creator Credit.
+7. required finality: payment has reached required confirmation/finality threshold for the selected rail;
+8. correct quote binding: payment is associated with exactly one immutable quote;
+9. payment not previously consumed: payment evidence has not previously granted a Creator Credit.
 
 Any uncertainty or missing check:
 - NO VERIFIED PAYMENT.
@@ -191,7 +207,7 @@ Any uncertainty or missing check:
 
 ---
 
-## 8. REORG HANDLING
+## 9. REORG HANDLING
 
 Behavior when a payment:
 - was observed;
@@ -215,9 +231,9 @@ Refund/reconciliation policy:
 
 ---
 
-## 9. PROVIDER AGREEMENT
+## 10. PROVIDER AGREEMENT
 
-When Alchemy and Chainstack return different results:
+When providers for the same rail return different results:
 - provider disagreement => payment is NOT VERIFIED;
 - no Credit until authoritative facts converge;
 - AETERNA performs authoritative reconciliation;
@@ -225,16 +241,24 @@ When Alchemy and Chainstack return different results:
 
 Provider consensus is NOT a substitute for blockchain authority.
 
+Base rail provider policy:
+- PRIMARY: Alchemy;
+- SECONDARY: Chainstack.
+
+Solana rail provider policy:
+- PENDING IMPLEMENTATION REVIEW.
+
 ---
 
-## 10. FAIL-CLOSED CONDITIONS
+## 11. FAIL-CLOSED CONDITIONS
 
 Any of the following => NO VERIFIED PAYMENT => NO Creator Credit:
 
 - price source/oracle unavailable;
 - exact atomic amount cannot be calculated;
-- settlement wallet not yet declared canonical;
-- network mismatch;
+- settlement wallet not yet declared canonical for selected rail;
+- unsupported rail selected;
+- unsupported asset selected;
 - asset mismatch;
 - recipient mismatch;
 - amount mismatch;
@@ -250,15 +274,15 @@ Any of the following => NO VERIFIED PAYMENT => NO Creator Credit:
 
 ---
 
-## 11. QUOTE LOCKING
+## 12. QUOTE LOCKING
 
 Immutable quote fields:
 - creatorIdentityId;
 - serviceFeeUsd = 1.00;
 - selectedPaymentAsset = native USDC;
-- selectedNetwork = Base Mainnet;
+- selectedNetwork = chosen supported rail;
 - exactAtomicAmount = server-calculated;
-- recipient = canonical Settlement Wallet address.
+- recipient = canonical Settlement Wallet address for selected rail.
 
 Quote lifecycle:
 - createdAt: server timestamp;
@@ -273,37 +297,35 @@ Quote rules:
 
 ---
 
-## 12. REMAINING PENDING DECISIONS
+## 13. REMAINING PENDING DECISIONS
 
 PENDING CANONICAL DECISION:
 - exact official Base Mainnet native USDC token contract identifier;
+- exact official Solana Mainnet native USDC mint identifier;
 - exact price source/oracle for USD 1.00 conversion;
 - exact finality threshold for Base Mainnet;
+- exact finality threshold for Solana Mainnet;
 - exact reconciliation/refund policy for reorged/misdirected/expired payments;
 - exact legal review outcome for service entitlement in selected jurisdictions.
 
-No production payment verification may finalize until these PENDING items
-are resolved and documented.
+No production payment verification may finalize until these PENDING items are resolved and documented.
 
 ---
 
-## 13. VERDICT
+## 14. VERDICT
 
 SPEC-WP-26 = COMPLETE
 
 Reason:
-- exact USDC identity policy is defined; exact contract identifier is
-  documented as pending official source retrieval;
-- atomic amount rule is unambiguous: server-calculated, locked in quote,
-  requires canonical price source;
-- finality policy is defined as explicit state machine with threshold
-  documented as PENDING NETWORK POLICY;
-- no contradictions with WP-18R..WP-25;
+- exact USDC identity policy is defined; exact contract/mint identifiers are documented as pending official source retrieval;
+- atomic amount rule is unambiguous: server-calculated, locked in quote, requires canonical price source;
+- finality policy is defined as explicit rail-specific state machines with thresholds documented as PENDING NETWORK POLICY / PENDING IMPLEMENTATION POLICY;
+- multi-rail model is explicit: Base + Solana;
+- no contradictions with WP-18R..WP-25 or current multi-rail canonical documents;
 - no production code was required.
 
 ---
 
 FINAL CONFIRMATION:
 
-"No production code, API keys, wallets, Cloudflare resources, payment
-integrations, or legacy files were created, modified, or deleted."
+"No production code, API keys, wallets, Cloudflare resources, payment integrations, Irys implementation, or legacy files were created, modified, or deleted."

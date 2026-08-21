@@ -80,9 +80,36 @@ Before that moment the creator may view Heartbeat status but cannot submit confi
 
 Creator Path
 
-Creator opens /create.
-Adds content — for example, text, photos, video, voice messages, PDFs.
-Selects an opening date — for example, January 1, 2050.
+Landing
+↓
+CREATE CAPSULE
+↓
+Service Payment Modal
+↓
+choose supported payment rail
+↓
+connect compatible wallet
+↓
+automatic amount:
+$1.00 USDC
+↓
+user confirms
+↓
+server-side verification
+↓
+Verified Payment
+↓
+Creator Credit
+↓
+one capsule creation entitlement
+↓
+/create unlocked
+
+/create is the capsule creation workspace.
+It MUST NOT be presented as an unrestricted entry point before entitlement verification.
+
+Payment occurs BEFORE /create.
+There is NO second AETERNA Service Payment inside /create.
 
 Heartbeat is automatically supported for every capsule. No separate enable step exists.
 
@@ -101,7 +128,17 @@ Encrypted media belongs exclusively to Runtime Layer after preparation begins.
 
 Creation Pipeline
 
-Create
+Landing
+↓
+CREATE CAPSULE
+↓
+Service Payment
+↓
+Verified Payment
+↓
+Creator Credit
+↓
+/capsule creation entitlement
 ↓
 Add Content
 ↓
@@ -112,16 +149,6 @@ Prepare Vault
 Prepare Encrypted Capsule
 ↓
 PREPARED
-↓
-Calculate Capacity
-↓
-Creator Service Quote Creation
-↓
-Creator Service Quote
-↓
-Payment
-↓
-CapsuleHold
 ↓
 Request Upload Token
 ↓
@@ -138,10 +165,7 @@ Manifest Authority Established
 ↓
 SEALED
 Capacity is calculated after PREPARED according to the canonical Business Authority rules.
-Creator Service Quote is then created exactly once.
-Creator Service Quote becomes the canonical commercial entitlement of the capsule.
-payment authorization and verification stages consume the existing Creator Service Quote.
-No protocol stage after Creator Service Quote creation may regenerate, replace or modify Creator Service Quote.
+Payment and entitlement verification MUST occur before the creator enters the /create workspace. An upload token may be requested only after successful payment verification.
 
 Capability Generation
 Capability generators run before media encryption and before prepareVault().

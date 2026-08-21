@@ -21,13 +21,18 @@ Reference:
 
 ## 1. PURPOSE
 
-This document provides a canonical comparison of production wallet/provider
-architecture candidates for AETERNA Web3 service payments.
+This document provides a canonical comparison of production wallet/provider architecture candidates for AETERNA Web3 service payments.
 
-This document selects a recommended initial architecture and initial asset
-strategy.
+This document selects a recommended initial architecture and initial asset strategy.
 
 This document does NOT implement the selected architecture.
+
+Business rule context:
+- AETERNA Service Payment = exactly 1 USDC;
+- one verified payment = one capsule creation entitlement;
+- supported payment rails: Base Mainnet + native USDC, Solana Mainnet + native USDC.
+
+Network is a payment-rail policy, not the business price.
 
 ## 2. CONFIRMED IRYS FACTS USED
 

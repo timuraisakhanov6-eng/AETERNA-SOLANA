@@ -3,6 +3,8 @@ import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
 import { CapsuleProvider } from "@/context/CapsuleContext";
+import { CreatorIdentityProvider, CreatorCreditProvider } from "@/context/CreatorRuntimeContext";
+import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
 
 import {
   registerRuntimeServiceWorker,
@@ -29,7 +31,6 @@ import "./index.css";
  * ✘ fetch manifest
  * ✘ know Browser Runtime implementation
  */
-
 
 /* =============================
    THEME INITIALIZATION
@@ -59,7 +60,6 @@ if (typeof window !== "undefined") {
 
 }
 
-
 /* =============================
    BROWSER RUNTIME BOOTSTRAP
    ============================= */
@@ -69,11 +69,10 @@ if (typeof window !== "undefined") {
  *
  * Registration failures are handled inside the
  * Browser Runtime adapter and MUST NOT prevent
- * application startup.
+ * the application from starting.
  */
 
 void registerRuntimeServiceWorker();
-
 
 /* =============================
    REACT ROOT MOUNT
@@ -91,19 +90,18 @@ if (!rootElement) {
 }
 
 createRoot(rootElement).render(
-
   <BrowserRouter>
-
     <CapsuleProvider>
-
-      <App />
-
+      <CreatorIdentityProvider>
+        <CreatorCreditProvider>
+          <LandingPaymentGateProvider>
+            <App />
+          </LandingPaymentGateProvider>
+        </CreatorCreditProvider>
+      </CreatorIdentityProvider>
     </CapsuleProvider>
-
-  </BrowserRouter>,
-
+  </BrowserRouter>
 );
-
 
 /* =============================
    WATCHDOG READY SIGNAL

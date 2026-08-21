@@ -15,11 +15,18 @@ export type CreatorIdentityStatus = "idle" | "authenticating" | "authenticated" 
 
 export type CreditStatus = "idle" | "pending" | "available" | "consuming" | "consumed" | "error";
 
+export type CreateAccessStatus =
+  | "loading"
+  | "available"
+  | "access-required"
+  | "unavailable";
+
 export interface CreatorIdentityContextValue {
   creatorIdentityId: string | null;
   status: CreatorIdentityStatus;
   error: string | null;
   authenticate: (network: string, account: string, signature: string, challengeId: string) => Promise<void>;
+  issueChallenge: (network: string) => Promise<{ challengeId: string; challenge: string }>;
   clear: () => void;
 }
 
@@ -29,7 +36,10 @@ export interface CreatorCreditContextValue {
   lifecycleId: string | null;
   error: string | null;
   refreshCredit: (capsuleId: string) => Promise<void>;
+  checkEntitlement: (challengeId: string, network: string, account: string, signature: string, capsuleId: string) => Promise<CreateAccessStatus>;
   reserveLifecycle: (capsuleId: string, lifecycleId: string) => Promise<{ ok: boolean; status?: string }>;
+  accessStatus: CreateAccessStatus;
+  setAccessStatus: (status: CreateAccessStatus) => void;
   clear: () => void;
 }
 
@@ -75,6 +85,20 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const issueChallenge = useCallback(async (network: string) => {
+    setError(null);
+    const res = await fetch("/api/creator/issue-challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ network }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data?.ok || !data?.challengeId || !data?.challenge) {
+      throw new Error(data?.error || "CHALLENGE_ISSUANCE_FAILED");
+    }
+    return { challengeId: data.challengeId, challenge: data.challenge };
+  }, []);
+
   const clear = useCallback(() => {
     setCreatorIdentityId(null);
     setStatus("idle");
@@ -82,7 +106,7 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <CreatorIdentityContext.Provider value={{ creatorIdentityId, status, error, authenticate, clear }}>
+    <CreatorIdentityContext.Provider value={{ creatorIdentityId, status, error, authenticate, issueChallenge, clear }}>
       {children}
     </CreatorIdentityContext.Provider>
   );
@@ -93,6 +117,7 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
   const [creditId, setCreditId] = useState<string | null>(null);
   const [lifecycleId, setLifecycleId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [accessStatus, setAccessStatus] = useState<CreateAccessStatus>("loading");
 
   const refreshCredit = useCallback(async (capsuleId: string) => {
     setCreditStatus("pending");
@@ -109,6 +134,42 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "CREDIT_ERROR");
       setCreditStatus("error");
+    }
+  }, []);
+
+  const checkEntitlement = useCallback(async (
+    challengeId: string,
+    network: string,
+    account: string,
+    signature: string,
+    capsuleId: string
+  ) => {
+    setAccessStatus("loading");
+    setError(null);
+    try {
+      const res = await fetch("/api/creator/credit-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challengeId, network, account, signature, capsuleId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok || typeof data?.status !== "string") {
+        throw new Error(data?.error || "ENTITLEMENT_CHECK_FAILED");
+      }
+      const status = data.status;
+      if (status === "available" || status === "consumed") {
+        setAccessStatus("available");
+        return "available";
+      } else if (status === "none") {
+        setAccessStatus("access-required");
+        return "access-required";
+      }
+      setAccessStatus("unavailable");
+      return "unavailable";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ENTITLEMENT_ERROR");
+      setAccessStatus("unavailable");
+      return "unavailable";
     }
   }, []);
 
@@ -141,11 +202,13 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
     setCreditId(null);
     setLifecycleId(null);
     setError(null);
+    setAccessStatus("loading");
   }, []);
 
   return (
-    <CreatorCreditContext.Provider value={{ creditStatus, creditId, lifecycleId, error, refreshCredit, reserveLifecycle, clear }}>
+    <CreatorCreditContext.Provider value={{ creditStatus, creditId, lifecycleId, error, refreshCredit, checkEntitlement, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
       {children}
     </CreatorCreditContext.Provider>
   );
 }
+

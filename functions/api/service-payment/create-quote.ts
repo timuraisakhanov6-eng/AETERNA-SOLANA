@@ -35,9 +35,11 @@ const ALLOWED_ORIGINS = [
 ];
 
 const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+const LOCALHOST_REGEX = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
 
 function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
+  if (LOCALHOST_REGEX.test(origin)) return true;
   try {
     const url = new URL(origin);
     if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname)) return true;

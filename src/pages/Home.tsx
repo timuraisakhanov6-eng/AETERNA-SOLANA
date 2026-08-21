@@ -1,8 +1,11 @@
-import { motion } from "framer-motion";
-import { Link } from "react-router-dom";
-import { Button } from "@/components/ui/button";
+import { motion } from "framer-motion"
+import { Button } from "@/components/ui/button"
+import { Link } from "react-router-dom"
+import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext"
 
 const Home = () => {
+  const { openLandingPaymentModal } = useLandingPaymentGate()
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 pb-28 sm:pb-24 md:pb-20 relative overflow-hidden">
 
@@ -160,7 +163,7 @@ const Home = () => {
               className="w-full max-w-[220px] sm:max-w-[240px] xl:max-w-[260px]"
             >
               <Button
-                asChild
+                type="button"
                 className="
                   w-full
                   h-11
@@ -185,8 +188,9 @@ const Home = () => {
                   hover:scale-x-[1.04]
                   hover:shadow-[0_0_32px_rgba(255,180,90,0.45),inset_0_0_16px_rgba(255,180,90,0.1)]
                 "
+                onClick={openLandingPaymentModal}
               >
-                <Link to="/create">CREATE CAPSULE</Link>
+                CREATE CAPSULE
               </Button>
             </motion.div>
 

@@ -1,14 +1,13 @@
 import { useState, useRef } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronLeft, Lock, Loader2, CreditCard } from "lucide-react";
+import { ChevronLeft, Lock, Loader2 } from "lucide-react";
 import { useCapsule } from "../../context/CapsuleContext";
 import ActionMenu from "./ActionMenu";
 import MediaCapture from "./MediaCapture";
 import CapsuleInput from "./CapsuleInput";
 import HorizontalCapsule from "./HorizontalCapsule";
 import { DateTimePicker, normalizeOpenAt } from "./DateTimePicker";
-import { PaymentModal } from "./PaymentModal";
 import { Button } from "@/components/ui/button";
 import { CapsuleItem } from "@/types/capsule";
 import { preparePreparedCapsule } from "@/lib/capsule/preparePreparedCapsule";
@@ -27,7 +26,7 @@ import type { ChunkMetadata } from "@/types/vault";
 
 /* 🚨 КРИТИЧЕСКОЕ ПРАВИЛО:
   Импорты streamEncryptUpload и encryptChunk УДАЛЕНЫ.
-  CapsuleBuilder ТОЛЬКО готовит метаданные и инициирует оплату.
+  CapsuleBuilder готовит метаданные и резервирует lifecycle.
 */
 
 const HEADER_HEIGHT = 64;
@@ -333,7 +332,6 @@ export default function CapsuleBuilder() {
     useState<"photo" | "video" | null>(null);
 
   const [isConfirmed, setIsConfirmed] = useState(false);
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [sealPhase, setSealPhase] = useState<SealPhase>("idle");
   const [sealError, setSealError] = useState<string | null>(null);
 
@@ -454,8 +452,6 @@ export default function CapsuleBuilder() {
 
   // AETERNA service entitlement is fixed at 1.00 USDC
   // and MUST NOT be derived from capsule size or block pricing.
-  const currentPrice = 1.0;
-
   const canSeal =
     items.length > 0 &&
     typeof unlockAt === "number" &&
@@ -465,7 +461,7 @@ export default function CapsuleBuilder() {
   const handleSealClick = async () => {
     if (!canSeal || !unlockAt) return;
 
-    // 🚨 StrictMode / double-click guard
+    // 🛡️ StrictMode / double-click guard
     if (sealingRef.current) return;
     sealingRef.current = true;
 
@@ -473,24 +469,8 @@ export default function CapsuleBuilder() {
     setSealPhase("preparing");
 
     try {
-      // rev6: capability generation, vault assembly, capsuleId validation,
-      // and the max-size check all live inside preparePreparedCapsule()
-      // now. description is a checkout-time field, not part of the vault
-      // envelope, so it isn't passed in here.
       const snapshotItems = [...items];
 
-      // ── SINGLE-SHOT PREPARED GUARD ──
-      //
-      // Canonical lifecycle (AETERNA_COMPLETE_SYSTEM_LOGIC.md, Ciphertext
-      // Authority Law): capabilities are generated exactly once per capsule
-      // identity, and the cryptographic part is immutable after PREPARED.
-      // A second preparation must never silently replace the existing
-      // PreparedCapsule under the same capsuleId:
-      //
-      //   unchanged inputs → reuse the existing PREPARED identity
-      //   changed inputs   → NEW capsule identity (resetCapsule rotates
-      //                      capsuleId) — never regenerate under the old id
-      //   no PREPARED yet  → fresh preparation
       const fingerprint =
         buildPreparationFingerprint(
           snapshotItems,
@@ -504,8 +484,6 @@ export default function CapsuleBuilder() {
           fingerprint
         ) {
 
-          // Inputs unchanged — reuse the existing PREPARED identity.
-          // No capability/key/ciphertext regeneration happens here.
           preparedRef.current = {
             ...preparedRef.current,
             description:
@@ -513,14 +491,13 @@ export default function CapsuleBuilder() {
           };
 
           setSealPhase("idle");
-          setShowPaymentModal(true);
+
+          void handleReserveReady({ creatorCreditId: preparedRef.current.creatorAuthority });
 
           return;
 
         }
 
-        // Inputs changed after PREPARED — the capsule's cryptographic part
-        // is immutable. Canonical behavior: a NEW capsule identity.
         resetCapsule();
 
         preparedRef.current =
@@ -553,9 +530,6 @@ export default function CapsuleBuilder() {
 
       }
 
-      // No in-memory prepared state (e.g. after navigating away and back):
-      // consult the sessionStorage recovery record so an existing PREPARED
-      // identity for this capsuleId is never regenerated.
       const restored =
         restorePreparedFromSession(
           capsuleId,
@@ -568,8 +542,6 @@ export default function CapsuleBuilder() {
 
         if (restored === "stale") {
 
-          // Session record exists for this capsuleId but the inputs no
-          // longer match — inputs changed after PREPARED → new capsule.
           resetCapsule();
 
           try {
@@ -596,8 +568,6 @@ export default function CapsuleBuilder() {
 
         }
 
-        // Session record matches the current inputs — reuse the existing
-        // PREPARED identity (no regeneration).
         preparedRef.current =
           restored;
 
@@ -605,7 +575,8 @@ export default function CapsuleBuilder() {
           fingerprint;
 
         setSealPhase("idle");
-        setShowPaymentModal(true);
+
+        void handleReserveReady({ creatorCreditId: restored.creatorAuthority });
 
         return;
 
@@ -639,6 +610,8 @@ export default function CapsuleBuilder() {
           snapshotItems.map(
             (i) => i.id
           ),
+
+        creatorAuthority: preparedCapsule.creatorAuthority,
 
       };
 
@@ -716,7 +689,8 @@ export default function CapsuleBuilder() {
       }
 
       setSealPhase("idle");
-      setShowPaymentModal(true);
+
+      void handleReserveReady({ creatorCreditId: preparedCapsule.creatorAuthority });
 
     } catch (err) {
       preparedRef.current = null;
@@ -730,7 +704,7 @@ export default function CapsuleBuilder() {
     }
   };
 
-  /* ================= PAYMENT ================= */
+  /* ================= LIFECYCLE ================= */
 
   const reserveLifecycle = async (prepared: CapsuleHoldState, creatorCreditId: string) => {
     const candidateLifecycleId = `lifecycle-${prepared.prepared.capsuleId}-${Date.now()}`
@@ -765,7 +739,6 @@ export default function CapsuleBuilder() {
 
     try {
       const reserved = await reserveLifecycle(prepared, result.creatorCreditId)
-
       const sessionData = {
         ...prepared,
         billableSizeBytes: prepared.billableSizeBytes,
@@ -795,7 +768,6 @@ export default function CapsuleBuilder() {
         // sessionStorage write failure is non-fatal
       }
 
-      setShowPaymentModal(false)
       setSealPhase("idle")
 
       navigate("/create/hold", {
@@ -809,28 +781,40 @@ export default function CapsuleBuilder() {
       setSealError(
         err instanceof Error ? err.message : "Lifecycle reservation failed"
       )
-      setShowPaymentModal(false)
       setSealPhase("idle")
     }
-  }
-
-  const handleCreditReady = (result: { status: string; creatorCreditId?: string }) => {
-    if (result.status === "available" && result.creatorCreditId) {
-      void handleReserveReady({ creatorCreditId: result.creatorCreditId })
-    } else {
-      setShowPaymentModal(false)
-      setSealPhase("idle")
-    }
-  }
-
-  const handleCancelPayment = () => {
-    setShowPaymentModal(false)
-    setSealPhase("idle")
   }
 
   const remainingChars = MAX_DESCRIPTION - (description?.length ?? 0);
   const isPreparing = sealPhase === "preparing";
   const isBusy = isPreparing;
+
+  const totalBytes = items.reduce((acc, item) => {
+    if (
+      item.type === "media" &&
+      typeof item.size === "number" &&
+      Number.isFinite(item.size) &&
+      Number.isInteger(item.size) &&
+      item.size >= 0
+    ) {
+      return acc + item.size;
+    }
+
+    if (item.type === "text" && typeof item.text === "string") {
+      return acc + encoder.encode(item.text).byteLength;
+    }
+
+    return acc;
+  }, 0);
+
+  const formatBytes = (value: number) => {
+    if (value <= 0) return "0 B";
+    const mb = value / (1024 * 1024);
+    if (mb >= 1) return `${mb.toFixed(2)} MB`;
+    const kb = value / 1024;
+    if (kb >= 1) return `${kb.toFixed(2)} KB`;
+    return `${value} B`;
+  };
 
   return (
     <div className="min-h-screen bg-background relative">
@@ -893,6 +877,15 @@ export default function CapsuleBuilder() {
             }
           />
 
+          <section className="text-center">
+            <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+              TOTAL CONTENT
+            </p>
+            <p className="font-display text-2xl sm:text-3xl tracking-wide">
+              {formatBytes(totalBytes)}
+            </p>
+          </section>
+
           <DateTimePicker
             date={unlockAt ? new Date(unlockAt) : null}
             disabled={isBusy}
@@ -950,15 +943,10 @@ export default function CapsuleBuilder() {
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <CreditCard size={20} />
-                    CONTINUE
+                    CREATE CAPSULE
                   </div>
                 )}
               </Button>
-
-              <p className="text-[10px] text-muted-foreground uppercase tracking-[0.2em]">
-                AETERNA Service Payment · $1.00 USDC · Base Mainnet
-              </p>
             </div>
           </section>
         </div>
@@ -994,18 +982,6 @@ export default function CapsuleBuilder() {
           />
         </>
       )}
-
-      <PaymentModal
-        open={showPaymentModal}
-        onClose={handleCancelPayment}
-        description={description}
-        billableSizeBytes={preparedRef.current?.billableSizeBytes ?? 0}
-        expectedAmount={preparedRef.current?.expectedAmount ?? 0}
-        unlockAt={preparedRef.current?.openAt ?? 0}
-        capsuleId={preparedRef.current?.prepared.capsuleId ?? ""}
-        onConfirmPayment={handleConfirmPayment}
-        protocolAccepted={isConfirmed}
-      />
     </div>
   );
 }

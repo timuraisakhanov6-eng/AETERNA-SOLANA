@@ -10,6 +10,7 @@ The protocol provides:
 - immutable Manifest architecture
 - hostile-storage resilience
 - Emergency Runtime continuity
+- fixed service payment model: one verified 1 USDC payment grants one capsule creation entitlement
 
 AETERNA is designed around deterministic protocol invariants rather than infrastructure trust.
 

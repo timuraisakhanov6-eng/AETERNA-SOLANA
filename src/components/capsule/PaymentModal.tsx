@@ -3,9 +3,9 @@
  *
  * Canonical service-payment modal.
  *
- * Active path:
- *   Creator Service Quote → AETERNA service payment → server verification
- *   → Creator Credit AVAILABLE
+ * Active flow:
+ *   canonical service quote -> Base USDC payment -> server verification
+ *   -> Creator Credit -> entitlement -> /create
  *
  * This modal MUST NOT:
  * - calculate authoritative price
@@ -13,9 +13,6 @@
  * - write Credit state
  * - use Paddle as authority
  * - treat frontend state as authority
- *
- * Legacy Paddle/web3 code is intentionally removed from the active path
- * but may be preserved elsewhere for historical reference.
  */
 
 import { useState, useEffect, useRef } from "react"
@@ -28,8 +25,9 @@ import {
 } from "@/components/ui/dialog"
 
 import { Button } from "@/components/ui/button"
-
 import { Loader2 } from "lucide-react"
+
+import { connectBaseWallet, sendBaseUSDCPayment } from "@/lib/wallet/baseWallet"
 
 /* ───────────────── TYPES ───────────────── */
 
@@ -42,12 +40,12 @@ interface PaymentModalProps {
   unlockAt: number | null
   capsuleId: string
   protocolAccepted: boolean
-  creatorIdentityId: string | null
-  onCreditReady: (result: {
+  creatorIdentityId?: string | null
+  onCreditReady?: (result: {
     status: string
     creatorCreditId?: string
   }) => void
-  onReserveReady: (result: {
+  onReserveReady?: (result: {
     creatorCreditId: string
     lifecycleId: string
   }) => void
@@ -73,10 +71,14 @@ type PaymentPhase =
   | "idle"
   | "quoting"
   | "quote_ready"
+  | "connecting_wallet"
+  | "confirming"
   | "verifying"
   | "available"
   | "reserving"
   | "error"
+
+type Rail = "Base" | "Solana"
 
 /* ───────────────── COMPONENT ───────────────── */
 
@@ -94,6 +96,7 @@ export function PaymentModal({
   onReserveReady,
 }: PaymentModalProps) {
   const [phase, setPhase] = useState<PaymentPhase>("idle")
+  const [rail, setRail] = useState<Rail>("Base")
   const [quote, setQuote] = useState<{
     expectedAmount: number
     currency: string
@@ -117,6 +120,7 @@ export function PaymentModal({
       setQuote(null)
       setError(null)
       setIsProcessing(false)
+      setRail("Base")
     }
   }, [open])
 
@@ -162,7 +166,30 @@ export function PaymentModal({
     }
   }
 
-  const confirmPayment = async () => {
+  const connectWallet = async () => {
+    if (rail !== "Base") {
+      setError("Solana payment rail is not yet implemented.")
+      setPhase("error")
+      setIsProcessing(false)
+      return
+    }
+
+    setPhase("connecting_wallet")
+    setError(null)
+
+    try {
+      await connectBaseWallet()
+      setPhase("confirming")
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "WALLET_CONNECT_FAILED"
+      setError(message)
+      setPhase("error")
+      setIsProcessing(false)
+    }
+  }
+
+  const confirmAndVerify = async () => {
     if (!protocolAccepted || !creatorIdentityId) {
       setError(
         !creatorIdentityId
@@ -176,9 +203,21 @@ export function PaymentModal({
 
     setPhase("verifying")
     setError(null)
+    setIsProcessing(true)
 
     try {
-      /* ── Canonical payment evidence submission ── */
+      let txHash = ""
+
+      if (rail === "Base") {
+        txHash = await sendBaseUSDCPayment()
+      } else {
+        throw new Error("Solana payment rail is not yet implemented.")
+      }
+
+      if (!txHash) {
+        throw new Error("No transaction hash from wallet.")
+      }
+
       const verifyRes = await fetch("/api/service-payment/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -186,7 +225,7 @@ export function PaymentModal({
           capsuleId,
           creatorIdentityId,
           evidenceId: `payment-modal-${capsuleId}-${Date.now()}`,
-          transactionId: "",
+          transactionId: txHash,
         }),
       })
 
@@ -199,7 +238,6 @@ export function PaymentModal({
         throw new Error("PAYMENT_NOT_VERIFIED")
       }
 
-      /* ── Authoritative Credit grant after verified payment ── */
       const res = await fetch("/api/creator/grant-credit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -207,7 +245,7 @@ export function PaymentModal({
           capsuleId,
           creatorIdentityId,
           verifiedPaymentId: `payment-modal-${capsuleId}-${Date.now()}`,
-          transactionId: "",
+          transactionId: txHash,
         }),
       })
 
@@ -219,7 +257,7 @@ export function PaymentModal({
       const status = data.status ?? "available"
       setPhase(status === "available" ? "available" : "verifying")
       setIsProcessing(false)
-      onCreditReady({
+      onCreditReady?.({
         status,
         creatorCreditId: data.creatorCreditId,
       })
@@ -245,7 +283,7 @@ export function PaymentModal({
         throw new Error(lifecycleData?.error || "LIFECYCLE_RESERVATION_FAILED")
       }
 
-      onReserveReady({
+      onReserveReady?.({
         creatorCreditId: data.creatorCreditId,
         lifecycleId: lifecycleData.lifecycleId ?? `lifecycle-${capsuleId}-${Date.now()}`,
       })
@@ -261,10 +299,10 @@ export function PaymentModal({
   /* ───────────────── EFFECTS ───────────────── */
 
   useEffect(() => {
-    if (open && phase === "idle" && creatorIdentityId) {
+    if (open && phase === "idle") {
       void requestQuote()
     }
-  }, [open, phase, creatorIdentityId])
+  }, [open, phase])
 
   /* ───────────────── RENDER ───────────────── */
 
@@ -275,7 +313,7 @@ export function PaymentModal({
         showClose={false}
       >
         <div className="flex items-center justify-between">
-          <DialogTitle>Review & Seal</DialogTitle>
+          <DialogTitle>AETERNA Service Payment</DialogTitle>
           <button
             type="button"
             onClick={onClose}
@@ -296,56 +334,84 @@ export function PaymentModal({
           </button>
         </div>
 
-        <div className="space-y-3 min-w-0">
-          {unlockDate && (
-            <div>
-              <div className="text-xs text-muted-foreground">
-                Release Date (UTC)
-              </div>
-              <div>{unlockDate}</div>
+        <div className="space-y-4 min-w-0">
+          <div className="space-y-1">
+            <div className="text-xs text-muted-foreground">Amount</div>
+            <div className="text-base font-medium">$1.00 USDC</div>
+            <div className="text-xs text-muted-foreground">
+              One verified payment unlocks one capsule creation entitlement.
             </div>
-          )}
-
-          {description && (
-            <div>
-              <div className="text-xs text-muted-foreground">Label</div>
-              <div className="min-w-0 break-words">"{description}"</div>
-            </div>
-          )}
-
-          <div className="flex justify-between">
-            <span>Service Fee</span>
-            <span className="text-emerald-500">
-              ${expectedAmount.toFixed(2)}
-            </span>
           </div>
 
-          {quote && (
-            <div className="flex justify-between">
-              <span>Quote Status</span>
-              <span className="text-emerald-500">Authoritative</span>
+          <div className="space-y-1">
+            <div className="text-xs text-muted-foreground">Payment Rail</div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant={rail === "Base" ? "default" : "secondary"}
+                disabled={isProcessing}
+                onClick={() => setRail("Base")}
+                className="px-3 py-1 text-xs"
+              >
+                Base
+              </Button>
+              <Button
+                type="button"
+                variant={rail === "Solana" ? "default" : "secondary"}
+                disabled={isProcessing}
+                onClick={() => setRail("Solana")}
+                className="px-3 py-1 text-xs"
+              >
+                Solana
+              </Button>
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {rail === "Base"
+                ? "Base Mainnet / native USDC"
+                : "Canonical target rail. Implementation pending."}
+            </div>
+          </div>
+
+          {rail === "Solana" && (
+            <div className="text-xs text-amber-500">
+              Solana service payment is not yet available.
             </div>
           )}
 
-          <div className="flex justify-between">
-            <span>Status</span>
-            <span
+          {quote && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Quote</div>
+              <div className="text-xs">
+                ${quote.expectedAmount.toFixed(2)} {quote.currency}
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-1">
+            <div className="text-xs text-muted-foreground">Status</div>
+            <div
               className={
                 phase === "available"
-                  ? "text-emerald-500"
+                  ? "text-emerald-500 text-xs"
                   : phase === "error"
-                  ? "text-red-500"
-                  : "text-muted-foreground"
+                  ? "text-red-500 text-xs"
+                  : "text-muted-foreground text-xs"
               }
             >
               {phase === "idle" && "Initializing..."}
               {phase === "quoting" && "Requesting service quote..."}
               {phase === "quote_ready" && "Quote ready"}
+              {phase === "connecting_wallet" && "Connecting wallet..."}
+              {phase === "confirming" && "Awaiting wallet confirmation..."}
               {phase === "verifying" && "Verifying payment..."}
               {phase === "available" && "Creator Credit AVAILABLE"}
               {phase === "reserving" && "Reserving lifecycle..."}
               {phase === "error" && "Payment failed"}
-            </span>
+            </div>
+          </div>
+
+          <div className="text-[11px] text-muted-foreground">
+            Storage and publication costs are separate.
           </div>
         </div>
 
@@ -356,21 +422,31 @@ export function PaymentModal({
               !creatorIdentityId ||
               isProcessing ||
               phase === "quoting" ||
-              phase === "available"
+              phase === "available" ||
+              phase === "connecting_wallet" ||
+              phase === "verifying" ||
+              phase === "reserving" ||
+              rail !== "Base"
             }
-            onClick={confirmPayment}
+            onClick={
+              phase === "quote_ready" || phase === "error"
+                ? connectWallet
+                : confirmAndVerify
+            }
             className="w-full"
           >
             {isProcessing && (
               <Loader2 className="mr-2 animate-spin" />
             )}
-            {phase === "quoting"
-              ? "Requesting quote..."
-              : phase === "verifying"
-              ? "Verifying..."
-              : phase === "available"
-              ? "Credit granted"
-              : "Pay $1 to continue"}
+            {phase === "quoting" && "Requesting quote..."}
+            {phase === "quote_ready" && "Connect Wallet"}
+            {phase === "connecting_wallet" && "Connecting..."}
+            {phase === "confirming" && "Confirm $1.00 USDC"}
+            {phase === "verifying" && "Verifying..."}
+            {phase === "available" && "Credit granted"}
+            {phase === "reserving" && "Reserving..."}
+            {phase === "error" && "Retry"}
+            {phase === "idle" && "Pay $1 to continue"}
           </Button>
 
           {error && (
