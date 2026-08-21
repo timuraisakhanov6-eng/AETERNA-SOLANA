@@ -1,4 +1,4 @@
-name = "aeterna-capsule"
+name = "aeterna-solana"
 
 compatibility_date = "2026-03-13"
 
@@ -8,45 +8,39 @@ pages_build_output_dir = "dist"
 
 [[kv_namespaces]]
 binding = "CREATOR_IDENTITIES"
-id = "24b0aa9fc8a24a79bb8a95270cb73344"
-preview_id = "PLACEHOLDER_CREATOR_IDENTITIES"
+id = "c4a3d81d345847cba09676727aecf003"
 
 [[kv_namespaces]]
 binding = "CREATOR_CREDITS"
-id = "8761646f92cd4fe7bd3b04d21fe10ad8"
-preview_id = "PLACEHOLDER_CREATOR_CREDITS"
+id = "f29a1eb7845e4ca890d050ef381d8354"
 
 [[kv_namespaces]]
 binding = "CAPSULE_MANIFESTS"
-id = "1603d7be3d224d35b04c73656e01bc66"
-preview_id = "f331c07b1aa345d78e71b82f26dc9b95"
+id = "9c193419de704e769d0002f89ebe2044"
 
 [[kv_namespaces]]
 binding = "VERIFIED_PAYMENTS"
-id = "21ea91626d6b4884ad8d59e9d5a935e7"
-preview_id = "d762bfed6f10460aa23e9c700d47aa22"
+id = "c159390f0ded41b2aa6d085ea8aa271d"
 
 [[kv_namespaces]]
 binding = "UPLOAD_TOKENS"
-id = "86798e1c12364e97a1c8ea01bc53a501"
-preview_id = "a6c85d62ac0b4de398deee743a470e43"
+id = "a7e702e6e0ed4a49b2381bbcff6f945c"
 
 [[kv_namespaces]]
 binding = "AUTHORITY_TOKENS"
-id = "09e18e45e6744b99aaacae6070550402"
+id = "293d219be56c49d9b34d6b687c196b74"
 
 [[kv_namespaces]]
 binding = "HEARTBEAT_CONFIRMATIONS"
-id = "8782cb242ed54581a5417895109ebb42"
+id = "5afdf31a37d643cfb05755005a73d44d"
 
 [[kv_namespaces]]
 binding = "BUSINESS_QUOTES"
-id = "6fd58c3c3f2246c0829d769b53988c52"
-preview_id = "78d666bb284648d991712c20a11f6ba2"
+id = "1a5ad159b85b4497bc93c1c54e7d697b"
 
 [[kv_namespaces]]
 binding = "CHUNK_POINTER_REGISTRY"
-id = "29a72382d6274a30abba7a2a28f3f34d"
+id = "36ff68968c164b2aa0929a87779e5199"
 
 # ─────────────────────────────────────────────
 # Credit Operation Coordinator (Durable Object)
@@ -91,8 +85,7 @@ script_name = "aeterna-credit-coordinator"
 
 [[env.production.kv_namespaces]]
 binding = "CAPSULE_MANIFESTS"
-id = "1603d7be3d224d35b04c73656e01bc66"
-preview_id = "f331c07b1aa345d78e71b82f26dc9b95"
+id = "9c193419de704e769d0002f89ebe2044"
 
 # ─────────────────────────────────────────────
 # Payment Verification Cache
@@ -100,8 +93,7 @@ preview_id = "f331c07b1aa345d78e71b82f26dc9b95"
 
 [[env.production.kv_namespaces]]
 binding = "VERIFIED_PAYMENTS"
-id = "21ea91626d6b4884ad8d59e9d5a935e7"
-preview_id = "d762bfed6f10460aa23e9c700d47aa22"
+id = "c159390f0ded41b2aa6d085ea8aa271d"
 
 # ─────────────────────────────────────────────
 # Upload Token Gating Layer
@@ -109,8 +101,7 @@ preview_id = "d762bfed6f10460aa23e9c700d47aa22"
 
 [[env.production.kv_namespaces]]
 binding = "UPLOAD_TOKENS"
-id = "86798e1c12364e97a1c8ea01bc53a501"
-preview_id = "a6c85d62ac0b4de398deee743a470e43"
+id = "a7e702e6e0ed4a49b2381bbcff6f945c"
 
 # ─────────────────────────────────────────────
 # Creator Authority Capability Storage
@@ -118,7 +109,7 @@ preview_id = "a6c85d62ac0b4de398deee743a470e43"
 
 [[env.production.kv_namespaces]]
 binding = "AUTHORITY_TOKENS"
-id = "09e18e45e6744b99aaacae6070550402"
+id = "293d219be56c49d9b34d6b687c196b74"
 
 # ─────────────────────────────────────────────
 # Heartbeat Rolling Release Model (v1.3)
@@ -126,7 +117,7 @@ id = "09e18e45e6744b99aaacae6070550402"
 
 [[env.production.kv_namespaces]]
 binding = "HEARTBEAT_CONFIRMATIONS"
-id = "8782cb242ed54581a5417895109ebb42"
+id = "5afdf31a37d643cfb05755005a73d44d"
 
 # ─────────────────────────────────────────────
 # Canonical Business Authority
@@ -134,12 +125,23 @@ id = "8782cb242ed54581a5417895109ebb42"
 
 [[env.production.kv_namespaces]]
 binding = "BUSINESS_QUOTES"
-id = "6fd58c3c3f2246c0829d769b53988c52"
-preview_id = "78d666bb284648d991712c20a11f6ba2"
+id = "1a5ad159b85b4497bc93c1c54e7d697b"
 
 [[env.production.kv_namespaces]]
 binding = "CHUNK_POINTER_REGISTRY"
-id = "29a72382d6274a30abba7a2a28f3f34d"
+id = "36ff68968c164b2aa0929a87779e5199"
+
+# ─────────────────────────────────────────────
+# Creator Identity / Credit Authority
+# ─────────────────────────────────────────────
+
+[[env.production.kv_namespaces]]
+binding = "CREATOR_IDENTITIES"
+id = "c4a3d81d345847cba09676727aecf003"
+
+[[env.production.kv_namespaces]]
+binding = "CREATOR_CREDITS"
+id = "f29a1eb7845e4ca890d050ef381d8354"
 
 # ─────────────────────────────────────────────
 # Executor Hot (Publication Authority)
