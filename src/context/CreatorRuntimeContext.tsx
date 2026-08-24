@@ -33,6 +33,7 @@ export interface CreatorIdentityContextValue {
 export interface CreatorCreditContextValue {
   creditStatus: CreditStatus;
   creditId: string | null;
+  creatorCreditId: string | null;
   lifecycleId: string | null;
   paymentIntentId: string | null;
   error: string | null;
@@ -117,6 +118,7 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
   const { creatorIdentityId } = useCreatorIdentity();
   const [creditStatus, setCreditStatus] = useState<CreditStatus>("idle");
   const [creditId, setCreditId] = useState<string | null>(null);
+  const [creatorCreditId, setCreatorCreditId] = useState<string | null>(null);
   const [lifecycleId, setLifecycleId] = useState<string | null>(null);
   const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -138,7 +140,8 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
       const status = data.status;
       const mapped: CreditStatus = status === "available" || status === "consuming" || status === "consumed" ? status : "idle";
       setCreditStatus(mapped);
-      setCreditId(data.creatorCreditId ?? creatorCreditId);
+      setCreditId(data.creatorCreditId ?? creditId);
+      setCreatorCreditId(data.creatorCreditId ?? creatorCreditId);
       setLifecycleId(data.lifecycleId ?? lifecycleId ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "CREDIT_ERROR");
@@ -169,7 +172,8 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
       const status = data.status;
       if (status === "available" || status === "consuming") {
         setAccessStatus("available");
-        setCreditId(data.creatorCreditId ?? creatorCreditId);
+        setCreditId(data.creatorCreditId ?? creditId);
+        setCreatorCreditId(data.creatorCreditId ?? creatorCreditId);
         setLifecycleId(data.lifecycleId ?? lifecycleId ?? null);
         return "available";
       } else if (status === "consumed") {
@@ -217,6 +221,7 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
   const clear = useCallback(() => {
     setCreditStatus("idle");
     setCreditId(null);
+    setCreatorCreditId(null);
     setLifecycleId(null);
     setPaymentIntentId(null);
     setError(null);
@@ -224,7 +229,7 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <CreatorCreditContext.Provider value={{ creditStatus, creditId, lifecycleId, paymentIntentId, error, refreshCredit, checkEntitlement, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
+    <CreatorCreditContext.Provider value={{ creditStatus, creditId, creatorCreditId, lifecycleId, paymentIntentId, error, refreshCredit, checkEntitlement, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
       {children}
     </CreatorCreditContext.Provider>
   );

@@ -81,4 +81,7 @@ export interface CapsuleHoldState {
   readonly itemIds:
     readonly string[];
 
+  readonly creatorAuthority:
+    string;
+
 }

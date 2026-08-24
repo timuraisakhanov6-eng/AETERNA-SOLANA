@@ -12,6 +12,7 @@
 export interface CreatorCreditRecord {
   id: string;
   creatorIdentityId: string;
+  lifecycleId: string;
   status: "AVAILABLE" | "CONSUMING" | "CONSUMED";
   quoteId: string;
   createdAt: number;
