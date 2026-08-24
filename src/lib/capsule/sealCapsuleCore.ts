@@ -19,7 +19,6 @@ import type {
   CapsuleId,
   SaltBaseHex,
   Sha256Hex,
-  ArweaveTxId,
   HeartbeatInterval
 } from "@/types/manifest";
 
@@ -458,7 +457,6 @@ export async function sealCapsuleCore(
     capsuleId,
     saltBase,
     openAt,
-    description,
     uploadToken,
     encryptedVaultPointer,
     encryptedSizeBytes,
@@ -709,7 +707,7 @@ export async function sealCapsuleCore(
 
     const sealedAt =
       asSealedAtUtc(
-        nowUtc
+        nowUtc.nowUtc
       );
 
     const heartbeatInterval =
@@ -734,7 +732,7 @@ export async function sealCapsuleCore(
 
     const refinedTxId =
       asArweaveTxId(
-        vaultTxId
+        vaultTxId.txId
       );
 
     const manifest: ManifestV1 =
@@ -759,14 +757,14 @@ export async function sealCapsuleCore(
         vaultTxId:
           refinedTxId,
 
+        encryptedSizeBytes,
+
         heartbeatInterval,
 
         ext: {
 
           vaultSha256:
             refinedVaultSha256,
-
-          encryptedSizeBytes,
 
         },
 
@@ -860,6 +858,8 @@ export async function sealCapsuleCore(
   catch {
 
     sealedError();
+
+    throw sealedError();
 
   }
 
