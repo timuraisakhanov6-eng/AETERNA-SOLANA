@@ -60,6 +60,15 @@ class_name = "CreditOperationCoordinator"
 script_name = "aeterna-credit-coordinator"
 
 # ─────────────────────────────────────────────
+# Production Durable Object binding
+# ─────────────────────────────────────────────
+
+[[env.production.durable_objects.bindings]]
+name = "CREDIT_OP_COORDINATOR"
+class_name = "CreditOperationCoordinator"
+script_name = "aeterna-credit-coordinator"
+
+# ─────────────────────────────────────────────
 # Trusted Time Authority
 #
 # Endpoint: /api/time

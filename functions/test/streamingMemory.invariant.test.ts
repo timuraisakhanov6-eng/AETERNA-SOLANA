@@ -350,41 +350,34 @@ describe(
             "blob:file",
           );
 
-        try {
+        const runtime =
+          createRuntimeStub();
 
-          const { sessionToObjectUrl } =
-            await import(
-              "@/pages/capsule/VaultRenderer"
-            );
-
-          const runtime =
-            createRuntimeStub();
-
-          const session =
-            await downloadFile(
-              runtime,
-              {} as OpenMediaRequest,
-            );
-
-          const objectUrl =
-            await sessionToObjectUrl(
-              session,
-              100,
-              "application/octet-stream",
-            );
-
-          expect(objectUrl).toBe("blob:file");
-          expect(runtime.getBytes).toHaveBeenCalledTimes(1);
-          expect(runtime.getBytes).toHaveBeenCalledWith(
-            0,
-            100,
+        const session =
+          await downloadFile(
+            runtime,
+            {} as OpenMediaRequest,
           );
 
-        } finally {
+        const { sessionToDownloadStream } =
+          await import(
+            "@/pages/capsule/VaultRenderer"
+          );
 
-          createObjectUrlSpy.mockRestore();
+        await expect(
+          sessionToDownloadStream(
+            session,
+            100,
+            "application/octet-stream",
+            "file.bin",
+          ),
+        ).rejects.toThrow(
+          "[AETERNA] Streaming download unavailable for 100 bytes.",
+        );
 
-        }
+        expect(runtime.getBytes).toHaveBeenCalledTimes(0);
+
+        createObjectUrlSpy.mockRestore();
       });
     });
   },

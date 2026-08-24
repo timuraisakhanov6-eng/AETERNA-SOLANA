@@ -40,6 +40,19 @@ const ALLOWED_ORIGINS = [
   "https://aeterna-capsule.pages.dev",
 ];
 
+const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+
+function isAllowedOrigin(origin: string): boolean {
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname)) return true;
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 function baseHeaders(origin: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
@@ -56,7 +69,7 @@ function fail(origin: string, status = 400, error = "error"): Response {
 
 export async function onRequestOptions(context: EventContext<Record<string, unknown>, string, GrantCreditEnv>): Promise<Response> {
   const origin = context.request.headers.get("origin") ?? "";
-  if (!ALLOWED_ORIGINS.includes(origin)) {
+  if (!isAllowedOrigin(origin)) {
     return new Response(null, { status: 403 });
   }
   return new Response(null, { status: 204, headers: baseHeaders(origin) });
@@ -65,7 +78,7 @@ export async function onRequestOptions(context: EventContext<Record<string, unkn
 export async function onRequestPost(context: EventContext<Record<string, unknown>, string, GrantCreditEnv>): Promise<Response> {
   const { request, env } = context;
   const origin = request.headers.get("origin") ?? "";
-  if (!ALLOWED_ORIGINS.includes(origin)) {
+  if (!isAllowedOrigin(origin)) {
     return fail(origin, 403, "INVALID_ORIGIN");
   }
 
@@ -89,13 +102,17 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 400, "INVALID_BODY");
   }
 
-  const capsuleId = body.capsuleId;
-  const creatorIdentityId = body.creatorIdentityId;
-  const verifiedPaymentId = body.verifiedPaymentId;
-  const transactionId = body.transactionId;
+  const paymentIntentId =
+    typeof body.paymentIntentId === "string" ? body.paymentIntentId.trim() : "";
+  const creatorIdentityId =
+    typeof body.creatorIdentityId === "string" ? body.creatorIdentityId.trim() : "";
+  const verifiedPaymentId =
+    typeof body.verifiedPaymentId === "string" ? body.verifiedPaymentId.trim() : "";
+  const transactionId =
+    typeof body.transactionId === "string" ? body.transactionId.trim() : "";
 
   if (
-    typeof capsuleId !== "string" ||
+    typeof paymentIntentId !== "string" ||
     typeof creatorIdentityId !== "string" ||
     typeof verifiedPaymentId !== "string" ||
     typeof transactionId !== "string"
@@ -105,7 +122,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   /* ================= QUOTE ================= */
 
-  const quote = await getBusinessQuote(env as { BUSINESS_QUOTES: { get(key: string): Promise<string | null> } }, capsuleId);
+  const quote = await getBusinessQuote(env as { BUSINESS_QUOTES: { get(key: string): Promise<string | null> } }, paymentIntentId);
   if (!quote) {
     return fail(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
   }
@@ -116,7 +133,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   /* ================= VERIFIED PAYMENT ================= */
 
   const verifiedPaymentRaw =
-    await env.VERIFIED_PAYMENTS.get(`verified-payment:${capsuleId}:${verifiedPaymentId}`);
+    await env.VERIFIED_PAYMENTS.get(`verified-payment:${paymentIntentId}:${verifiedPaymentId}`);
 
   if (!verifiedPaymentRaw) {
     return fail(origin, 402, "VERIFIED_PAYMENT_NOT_FOUND");
@@ -124,7 +141,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   let verifiedPayment: {
     ok: true;
-    capsuleId: string;
+    paymentIntentId: string;
     quoteId: string;
     creatorIdentityId: string;
     evidenceId: string;
@@ -134,7 +151,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   try {
     verifiedPayment = JSON.parse(verifiedPaymentRaw) as {
       ok: true;
-      capsuleId: string;
+      paymentIntentId: string;
       quoteId: string;
       creatorIdentityId: string;
       evidenceId: string;
@@ -148,15 +165,15 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 409, "VERIFIED_PAYMENT_ALREADY_CONSUMED");
   }
 
-  if (verifiedPayment.capsuleId !== capsuleId) {
-    return fail(origin, 409, "VERIFIED_PAYMENT_CAPSULE_MISMATCH");
+  if (verifiedPayment.paymentIntentId !== paymentIntentId) {
+    return fail(origin, 409, "VERIFIED_PAYMENT_INTENT_MISMATCH");
   }
 
   if (verifiedPayment.creatorIdentityId !== creatorIdentityId) {
     return fail(origin, 403, "CREATOR_IDENTITY_MISMATCH");
   }
 
-  if (verifiedPayment.quoteId !== quote.capsuleId) {
+  if (verifiedPayment.quoteId !== quote.paymentIntentId) {
     return fail(origin, 409, "QUOTE_MISMATCH");
   }
 
@@ -165,7 +182,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   const existing = await getCreatorCreditByIndex(
     env as { CREATOR_CREDITS: { get(key: string): Promise<string | null> } },
     creatorIdentityId,
-    quote.capsuleId
+    quote.paymentIntentId
   );
 
   if (existing) {
@@ -182,7 +199,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     id,
     creatorIdentityId,
     status: "AVAILABLE" as const,
-    quoteId: quote.capsuleId,
+    quoteId: quote.paymentIntentId,
     createdAt: now,
     updatedAt: now,
   };

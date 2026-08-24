@@ -40,6 +40,7 @@ type Operation =
   | { op: "reserve"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string }
   | { op: "finalize"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationVerified: boolean; sealVerified: boolean }
   | { op: "recover"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationState: string; sealState: string }
+  | { op: "vault-publication-claim"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string }
   | { op: "read"; creatorCreditId: string };
 
 interface CoordinatorEnv {
@@ -245,6 +246,95 @@ async function handleReserve(state: DurableObjectState, env: CoordinatorEnv, req
   });
 }
 
+async function handleVaultPublicationClaim(state: DurableObjectState, env: CoordinatorEnv, request: Operation & { op: "vault-publication-claim" }): Promise<Response> {
+  const { creatorCreditId, creatorIdentityId, lifecycleId, capsuleId } = request;
+
+  const idempotencyKey = opKey(creatorCreditId, "vault-publication-claim", lifecycleId);
+  const existing = await getOpResult(state, idempotencyKey);
+
+  if (existing && existing.creatorCreditId === creatorCreditId && existing.lifecycleId === lifecycleId) {
+    if (existing.outcome === "VAULT_PUBLICATION_EXPLICIT_FAILURE") {
+      return failureResponse(
+        existing.outcome,
+        409,
+        creatorCreditId,
+        lifecycleId,
+        existing.status,
+        existing.revision
+      );
+    }
+
+    return successResponse({
+      ok: true,
+      outcome: existing.outcome,
+      status: existing.status,
+      creatorCreditId,
+      lifecycleId,
+      revision: existing.revision,
+    });
+  }
+
+  const credit = await getCreditRecord(state, creatorCreditId);
+  if (!credit) {
+    return failureResponse("LIFECYCLE_NOT_FOUND", 409, creatorCreditId, lifecycleId, "AVAILABLE", 0);
+  }
+
+  if (credit.status !== "CONSUMING") {
+    await setOpResult(state, idempotencyKey, {
+      ok: false,
+      outcome: "CREDIT_NOT_CONSUMING",
+      status: credit.status,
+      creatorCreditId,
+      lifecycleId: credit.lifecycleId,
+      revision: credit.revision,
+    });
+    return failureResponse("CREDIT_NOT_CONSUMING", 409, creatorCreditId, credit.lifecycleId, credit.status, credit.revision);
+  }
+
+  if (credit.creatorIdentityId !== creatorIdentityId || credit.lifecycleId !== lifecycleId) {
+    await setOpResult(state, idempotencyKey, {
+      ok: false,
+      outcome: "LIFECYCLE_NOT_FOUND",
+      status: credit.status,
+      creatorCreditId,
+      lifecycleId,
+      revision: credit.revision,
+    });
+    return failureResponse("LIFECYCLE_NOT_FOUND", 409, creatorCreditId, lifecycleId, credit.status, credit.revision);
+  }
+
+  if (credit.capsuleId !== capsuleId) {
+    await setOpResult(state, idempotencyKey, {
+      ok: false,
+      outcome: "CAPSULE_MISMATCH",
+      status: credit.status,
+      creatorCreditId,
+      lifecycleId: null,
+      revision: credit.revision,
+    });
+    return failureResponse("CAPSULE_MISMATCH", 409, creatorCreditId, null, credit.status, credit.revision);
+  }
+
+  const claim: OpResult = {
+    ok: true,
+    outcome: "VAULT_PUBLICATION_CLAIMED",
+    status: "CONSUMING",
+    creatorCreditId,
+    lifecycleId,
+    revision: credit.revision,
+  };
+  await setOpResult(state, idempotencyKey, claim);
+
+  return successResponse({
+    ok: true,
+    outcome: claim.outcome,
+    status: claim.status,
+    creatorCreditId,
+    lifecycleId,
+    revision: claim.revision,
+  });
+}
+
 async function handleFinalize(state: DurableObjectState, env: CoordinatorEnv, request: Operation & { op: "finalize" }): Promise<Response> {
   const { creatorCreditId, creatorIdentityId, lifecycleId, capsuleId, publicationVerified, sealVerified } = request;
 
@@ -442,6 +532,22 @@ async function handleRecover(state: DurableObjectState, env: CoordinatorEnv, req
     });
   }
 
+  const claimKey = opKey(creatorCreditId, "vault-publication-claim", lifecycleId);
+  const claim = await getOpResult(state, claimKey);
+  const hasExplicitPublicationFailure = !!claim && claim.outcome === "VAULT_PUBLICATION_EXPLICIT_FAILURE";
+
+  if (!hasExplicitPublicationFailure && !!claim) {
+    await setOpResult(state, idempotencyKey, {
+      ok: false,
+      outcome: "PUBLICATION_CLAIM_IN_FLIGHT",
+      status: credit.status,
+      creatorCreditId,
+      lifecycleId,
+      revision: credit.revision,
+    });
+    return failureResponse("PUBLICATION_CLAIM_IN_FLIGHT", 409, creatorCreditId, lifecycleId, credit.status, credit.revision);
+  }
+
   if (credit.status === "CONSUMING") {
     const updated: CreditRecord = {
       ...credit,
@@ -514,6 +620,8 @@ export class CreditOperationCoordinator {
         return handleFinalize(this.state, this.env, body);
       case "recover":
         return handleRecover(this.state, this.env, body);
+      case "vault-publication-claim":
+        return handleVaultPublicationClaim(this.state, this.env, body);
       case "read": {
         const credit = await getCreditRecord(this.state, body.creatorCreditId);
         if (!credit) {

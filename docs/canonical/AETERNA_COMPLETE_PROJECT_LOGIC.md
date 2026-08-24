@@ -263,7 +263,15 @@ After successful publication, Runtime ends the temporary session and completely 
 
 Executor
 
-The Executor is a trusted publication service.
+Current implementation residue:
+- current runtime may use Executor Hot for publication;
+- this is CURRENT IMPLEMENTATION RESIDUE, not canonical target.
+
+Executor Hot:
+- is NOT canonical target architecture;
+- is NOT AETERNA payment authority;
+- is NOT canonical publication authority;
+- is NOT canonical verifier.
 
 The Executor only:
 
@@ -271,7 +279,7 @@ verifies the Upload Token;
 accepts already-encrypted data;
 publishes it through the Storage Layer into permanent, immutable storage;
 confirms successful publication.
-The Executor never decrypts data and cannot alter its contents. It performs exclusively the function of a trusted publication service.
+The Executor never decrypts data and cannot alter its contents. It performs publication operations only as implementation residue.
 
 At the same time, the Executor never receives:
 
@@ -440,15 +448,16 @@ Project economics
 
 The user never sees the project's internal economics.
 They only know the cost of their capsule.
-Internally, AETERNA pays for:
 
-permanent storage;
-network fees;
-infrastructure maintenance;
-redundancy;
-project development.
+Canonical economics:
+- Creator pays AETERNA exactly $1.00 USDC for one Creator Credit / one capsule entitlement.
+- Creator pays Irys separately for publication/storage.
+- AETERNA $1 does NOT include Irys storage/publication/network fees.
+- Irys economics are separate from AETERNA service economics.
 
-If storage optimization allows the project to reduce its own costs, that difference remains AETERNA's internal margin. If costs rise, that likewise remains the project's concern, not the user's.
+Current implementation disclosure:
+- current runtime may use Executor Hot for publication;
+- this is CURRENT IMPLEMENTATION RESIDUE, not canonical target.
 
 AETERNA's core promise
 

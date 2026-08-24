@@ -232,6 +232,14 @@ export class IndexedDbRuntimeStorage
 
   }
 
+  private vaultKey(
+    capsuleId: string,
+  ): string {
+
+    return `${capsuleId}:__vault__`;
+
+  }
+
   async store(
     record: RuntimeChunkRecord,
   ): Promise<void> {
@@ -534,6 +542,206 @@ export class IndexedDbRuntimeStorage
 
           new Error(
             "[AETERNA] Failed to open cursor for Runtime clear.",
+          ),
+
+        );
+
+    });
+
+  }
+
+
+  async storeVault(
+    capsuleId: string,
+    ciphertext: Uint8Array,
+  ): Promise<void> {
+
+    const dbRecord = {
+
+      key:
+        this.vaultKey(
+          capsuleId,
+        ),
+
+      capsuleId,
+
+      ciphertext:
+        ciphertext.buffer.slice(
+          0,
+        ),
+
+    };
+
+    await new Promise<void>((
+
+      resolve,
+      reject,
+
+    ) => {
+
+      const request =
+        this
+          .transaction(
+            "readwrite",
+          )
+          .put(
+            dbRecord,
+          );
+
+      request.onsuccess =
+        () => resolve();
+
+      request.onerror =
+        () => reject(
+
+          request.error ??
+
+          new Error(
+            "[AETERNA] Failed to store Runtime vault.",
+          ),
+
+        );
+
+    });
+
+  }
+
+  async readVault(
+    capsuleId: string,
+  ): Promise<Uint8Array> {
+
+    const record =
+      await new Promise<
+        {
+          ciphertext: ArrayBuffer;
+        } | undefined
+      >((
+
+        resolve,
+        reject,
+
+      ) => {
+
+        const request =
+          this
+            .transaction(
+              "readonly",
+            )
+            .get(
+              this.vaultKey(
+                capsuleId,
+              ),
+            );
+
+        request.onsuccess =
+          () => {
+
+            resolve(
+              request.result as
+                {
+                  ciphertext: ArrayBuffer;
+                } |
+                undefined,
+            );
+
+          };
+
+        request.onerror =
+          () => reject(
+
+            request.error ??
+
+            new Error(
+              "[AETERNA] Failed to read Runtime vault.",
+            ),
+
+          );
+
+      });
+
+    if (!record) {
+
+      throw new Error(
+        "[AETERNA] Runtime vault not found.",
+      );
+
+    }
+
+    return new Uint8Array(
+      record.ciphertext.slice(
+        0,
+      ),
+    );
+
+  }
+
+  async removeVault(
+    capsuleId: string,
+  ): Promise<void> {
+
+    await new Promise<void>((
+
+      resolve,
+      reject,
+
+    ) => {
+
+      const store =
+        this.transaction(
+          "readwrite",
+        );
+
+      const getRequest =
+        store.getKey(
+          this.vaultKey(
+            capsuleId,
+          ),
+        );
+
+      getRequest.onsuccess =
+        () => {
+
+          if (
+            getRequest.result ===
+            undefined
+          ) {
+
+            resolve();
+
+            return;
+
+          }
+
+          const delRequest =
+            store.delete(
+              this.vaultKey(
+                capsuleId,
+              ),
+            );
+
+          delRequest.onsuccess =
+            () => resolve();
+
+          delRequest.onerror =
+            () => reject(
+
+              delRequest.error ??
+
+              new Error(
+                "[AETERNA] Failed to remove Runtime vault.",
+              ),
+
+            );
+
+        };
+
+      getRequest.onerror =
+        () => reject(
+
+          getRequest.error ??
+
+          new Error(
+            "[AETERNA] Failed to remove Runtime vault.",
           ),
 
         );

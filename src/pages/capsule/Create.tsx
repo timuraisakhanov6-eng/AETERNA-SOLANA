@@ -27,7 +27,7 @@ export default function Create() {
   const navigate = useNavigate();
   const { creatorIdentityId, status: identityStatus, issueChallenge } =
     useCreatorIdentity();
-  const { accessStatus, checkEntitlement, clear: clearCredit } =
+  const { accessStatus, creatorCreditId, lifecycleId, checkEntitlement, clear: clearCredit } =
     useCreatorCredit();
   const { openLandingPaymentModal } = useLandingPaymentGate();
 
@@ -36,8 +36,10 @@ export default function Create() {
   );
 
   useEffect(() => {
-    if (!creatorIdentityId) {
-      setView("access-required");
+    if (!creatorIdentityId || !creatorCreditId) {
+      if (creatorIdentityId) {
+        setView("access-required");
+      }
       return;
     }
 
@@ -75,21 +77,10 @@ export default function Create() {
           return;
         }
 
-        const encoder = new TextEncoder();
-        const msgBytes = encoder.encode(
-          `AETERNA identity challenge:${challenge}`
-        );
-        const msgHash = Array.from(
-          new Uint8Array(
-            await crypto.subtle.digest("SHA-256", msgBytes)
-          )
-        )
-          .map((b) => b.toString(16).padStart(2, "0"))
-          .join("");
-
+        const message = `AETERNA identity challenge:${challenge}`;
         const signature = (await provider.request<string>({
           method: "personal_sign",
-          params: [msgHash, account],
+          params: [message, account],
         })) as string;
 
         const result = await checkEntitlement(
@@ -97,7 +88,8 @@ export default function Create() {
           "eip155:8453",
           account,
           signature,
-          "create"
+          creatorCreditId,
+          lifecycleId
         );
 
         if (!cancelled) {
@@ -121,7 +113,7 @@ export default function Create() {
     return () => {
       cancelled = true;
     };
-  }, [creatorIdentityId, identityStatus, issueChallenge, checkEntitlement]);
+  }, [creatorIdentityId, identityStatus, issueChallenge, checkEntitlement, creatorCreditId, lifecycleId]);
 
   if (view === "loading" || accessStatus === "loading") {
     return (

@@ -1,4 +1,4 @@
-/*/*
+/*
   Cache-Control: no-store
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
@@ -8,19 +8,15 @@
   Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; frame-src 'self'; connect-src 'self' https://node1.irys.xyz https://node2.irys.xyz https://gateway.irys.xyz https://arweave.net https://permaweb.eu https://arweave.live; img-src 'self' data: blob: https://api.qrserver.com; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-ancestors 'none';
 
-
 /index.html
   Cache-Control: no-cache, no-store, must-revalidate
-
 
 /emergency.html
   Cache-Control: no-cache, no-store, must-revalidate
 
-
 /api/*
   Cache-Control: no-store
   X-Content-Type-Options: nosniff
-
 
 /capsule/*
   Cache-Control: no-store

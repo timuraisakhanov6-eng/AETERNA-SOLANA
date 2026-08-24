@@ -54,6 +54,7 @@ const ALLOWED_ORIGINS = [
 ];
 
 const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+const NEW_PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-solana-btt\.pages\.dev$/;
 
 const QUOTE_TTL_MS = 30 * 60 * 1000;
 
@@ -85,7 +86,7 @@ function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname))
+    if (url.protocol === "https:" && (PAGES_PREVIEW_REGEX.test(url.hostname) || NEW_PAGES_PREVIEW_REGEX.test(url.hostname)))
       return true;
   } catch {
     // ignore
@@ -115,20 +116,20 @@ function fail(
   );
 }
 
-function quoteKey(capsuleId: string): string {
-  return `${QUOTE_PREFIX}${capsuleId}`;
+function quoteKey(paymentIntentId: string): string {
+  return `${QUOTE_PREFIX}${paymentIntentId}`;
 }
 
 function verifiedPaymentKey(
-  capsuleId: string,
+  paymentIntentId: string,
   evidenceId: string
 ): string {
-  return `${VERIFIED_PAYMENT_PREFIX}${capsuleId}:${evidenceId}`;
+  return `${VERIFIED_PAYMENT_PREFIX}${paymentIntentId}:${evidenceId}`;
 }
 
 interface VerifiedPaymentRecord {
   ok: true;
-  capsuleId: string;
+  paymentIntentId: string;
   quoteId: string;
   creatorIdentityId: string;
   evidenceId: string;
@@ -382,17 +383,19 @@ export async function onRequestPost(
     return fail(origin, 400, "INVALID_BODY");
   }
 
-  const capsuleId = body.capsuleId;
-  const creatorIdentityId = body.creatorIdentityId;
+  const paymentIntentId =
+    typeof body.paymentIntentId === "string" ? body.paymentIntentId.trim() : "";
+  const creatorIdentityId =
+    typeof body.creatorIdentityId === "string" ? body.creatorIdentityId.trim() : "";
   const evidenceId =
     typeof body.evidenceId === "string" ? body.evidenceId.trim() : "";
   const transactionId =
     typeof body.transactionId === "string" ? body.transactionId.trim() : "";
 
   if (
-    typeof capsuleId !== "string" ||
+    typeof paymentIntentId !== "string" ||
     typeof creatorIdentityId !== "string" ||
-    !capsuleId ||
+    !paymentIntentId ||
     !creatorIdentityId ||
     !evidenceId
   ) {
@@ -405,20 +408,20 @@ export async function onRequestPost(
 
   /* ================= QUOTE ================= */
 
-  const quoteRaw = await env.BUSINESS_QUOTES.get(quoteKey(capsuleId));
+  const quoteRaw = await env.BUSINESS_QUOTES.get(quoteKey(paymentIntentId));
   if (!quoteRaw) {
     return fail(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
   }
 
   let quote: {
-    capsuleId: string;
+    paymentIntentId: string;
     expectedAmount: number;
     currency: string;
     expiresAt: number;
   };
   try {
     quote = JSON.parse(quoteRaw) as {
-      capsuleId: string;
+      paymentIntentId: string;
       expectedAmount: number;
       currency: string;
       expiresAt: number;
@@ -427,7 +430,7 @@ export async function onRequestPost(
     return fail(origin, 500, "QUOTE_CORRUPT");
   }
 
-  if (quote.capsuleId !== capsuleId) {
+  if (quote.paymentIntentId !== paymentIntentId) {
     return fail(origin, 400, "QUOTE_MISMATCH");
   }
 
@@ -465,7 +468,7 @@ export async function onRequestPost(
 
   /* ================= IDEMPOTENCY / REPLAY ================= */
 
-  const evidenceKey = verifiedPaymentKey(capsuleId, evidenceId);
+  const evidenceKey = verifiedPaymentKey(paymentIntentId, evidenceId);
   const existingRaw = await env.VERIFIED_PAYMENTS.get(evidenceKey);
   if (existingRaw) {
     let existing: VerifiedPaymentRecord;
@@ -489,6 +492,7 @@ export async function onRequestPost(
         status: "VERIFIED",
         verifiedAt: existing.verifiedAt,
         creatorIdentityId: existing.creatorIdentityId,
+        paymentIntentId: existing.paymentIntentId,
       }),
       { status: 200, headers: baseHeaders(origin) }
     );
@@ -585,8 +589,8 @@ export async function onRequestPost(
 
   const record: VerifiedPaymentRecord = {
     ok: true,
-    capsuleId,
-    quoteId: quote.capsuleId,
+    paymentIntentId,
+    quoteId: quote.paymentIntentId,
     creatorIdentityId,
     evidenceId,
     transactionId: txHash,
@@ -602,9 +606,9 @@ export async function onRequestPost(
     );
 
     await env.VERIFIED_PAYMENTS.put(
-      `capsule:${capsuleId}`,
+      `payment-intent:${paymentIntentId}`,
       JSON.stringify({
-        capsuleId,
+        paymentIntentId,
         transactionId: txHash,
         ok: true,
         creatorIdentityId,
@@ -622,6 +626,7 @@ export async function onRequestPost(
       status: "VERIFIED",
       verifiedAt,
       creatorIdentityId,
+      paymentIntentId,
     }),
     { status: 200, headers: baseHeaders(origin) }
   );

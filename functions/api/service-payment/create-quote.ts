@@ -8,7 +8,7 @@
  * Security invariant:
  * - server-side expectedAmount is authoritative
  * - client-provided expectedAmount is only a display hint
- * - quote is bound to a single capsule lifecycle
+ * - quote is bound to a single payment intent lifecycle
  */
 
 import type { EventContext } from "@cloudflare/workers-types";
@@ -18,8 +18,6 @@ import {
   createBusinessQuote,
   getBusinessQuote,
 } from "../../lib/business/businessQuoteStore";
-
-const CAPSULE_ID_REGEX = /^[a-f0-9]{64}$/;
 
 interface ServicePaymentCreateQuoteEnv {
   BUSINESS_QUOTES: {
@@ -35,11 +33,11 @@ const ALLOWED_ORIGINS = [
 ];
 
 const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+const NEW_PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-solana-btt\.pages\.dev$/;
 const LOCALHOST_REGEX = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
 
 function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
-  if (LOCALHOST_REGEX.test(origin)) return true;
   try {
     const url = new URL(origin);
     if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname)) return true;
@@ -89,13 +87,13 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   const origin = request.headers.get("origin") ?? "";
 
   if (!isAllowedOrigin(origin)) {
-    console.error("[service-payment/create-quote] INVALID_ORIGIN", { origin });
+    console.error("[service-payment/create-quote] INVALID_ORIGIN");
     return fail(origin, 403, "INVALID_ORIGIN");
   }
 
   const ip = getClientIp(request);
   if (!rateLimit(ip)) {
-    console.error("[service-payment/create-quote] RATE_LIMIT", { ip });
+    console.error("[service-payment/create-quote] RATE_LIMIT");
     return fail(origin, 429, "TOO_MANY_REQUESTS");
   }
 
@@ -121,19 +119,20 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 400, "INVALID_BODY");
   }
 
-  const capsuleId = body.capsuleId;
-  if (typeof capsuleId !== "string" || !CAPSULE_ID_REGEX.test(capsuleId)) {
-    return fail(origin, 400, "INVALID_CAPSULE_ID");
-  }
+  const paymentIntentId =
+    typeof body.paymentIntentId === "string" && body.paymentIntentId.trim().length > 0
+      ? body.paymentIntentId.trim()
+      : crypto.randomUUID();
 
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
 
-  const existing = await getBusinessQuote(bindings, capsuleId);
+  const existing = await getBusinessQuote(bindings, paymentIntentId);
   if (existing) {
     return new Response(
       JSON.stringify({
         ok: true,
+        paymentIntentId: existing.paymentIntentId,
         expectedAmount: existing.expectedAmount,
         currency: existing.currency,
         expiresAt: existing.expiresAt,
@@ -143,8 +142,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   }
 
   const quote = {
-    capsuleId,
-    billableSizeBytes: 0,
+    paymentIntentId,
     expectedAmount: SERVICE_FEE_USD,
     currency: "USD" as const,
     createdAt: now,
@@ -161,6 +159,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   return new Response(
     JSON.stringify({
       ok: true,
+      paymentIntentId: quote.paymentIntentId,
       expectedAmount: quote.expectedAmount,
       currency: quote.currency,
       expiresAt: quote.expiresAt,

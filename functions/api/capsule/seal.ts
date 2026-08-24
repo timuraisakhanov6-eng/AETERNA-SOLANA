@@ -29,6 +29,7 @@ interface SealEnv {
   UPLOAD_TOKENS: KVNamespace;
   AUTHORITY_TOKENS: KVNamespace;
   BUSINESS_QUOTES: KVNamespace;
+  PUBLICATION_VERIFICATIONS?: KVNamespace;
 
   DEBUG?: "true" | "false";
 }
@@ -36,7 +37,9 @@ interface SealEnv {
 /* ================= RECORD SHAPES ================= */
 
 type UploadTokenRecord = {
-  capsuleId: string;
+  canonicalLifecycleId: string;
+  creatorIdentityId: string;
+  paymentIntentId: string | null;
   permissions: {
     uploadVault: boolean;
   };
@@ -44,10 +47,9 @@ type UploadTokenRecord = {
 
 type VerifiedPaymentRecord = {
   ok: boolean;
-  capsuleId: string;
+  paymentIntentId: string;
   transactionId: string;
   expiresAt: number;
-  billableSizeBytes: number;
 };
 
 /* ================= REGEX ================= */
@@ -60,27 +62,17 @@ const UPLOAD_TOKEN_REGEX =
 
 /* ================= MANIFEST WHITELIST ================= */
 
-// Canonical Manifest fields per Complete System Logic (v4.3.1):
-// capsuleId, sealedAt, openAt, vaultTxId, encryptedSizeBytes, saltBase,
-// heartbeatInterval, ext.vaultSha256. Heartbeat is a canonical,
-// always-active capability (v4.3) — there is no heartbeatEnabled flag.
-// "version" and "description" are NOT canonical Manifest fields — they
-// are implementation-level extensions kept for forward-compat / UX and
-// carry no protocol authority (they never participate in Ciphertext,
-// Open, Business, or Storage Authority).
 const ALLOWED_MANIFEST_FIELDS =
   Object.freeze(new Set([
-    "version",           // implementation extension, not canonical
+    "version",
     "capsuleId",
     "sealedAt",
     "openAt",
     "saltBase",
     "vaultTxId",
     "encryptedSizeBytes",
-    "description",        // implementation extension, not canonical
-
+    "description",
     "heartbeatInterval",
-
     "ext",
   ]));
 
@@ -92,46 +84,7 @@ const ALLOWED_EXT_FIELDS =
     "chunkPointers",
   ]));
 
-/**
- * RFC-001 §4, §7 — structural validation of chunkPointers on ingest.
- *
- * Mirrors the client-side check in src/lib/capsule/loadManifest.ts
- * (validateChunkPointers): a plain object, not an array, every value
- * a well-formed StoragePointer. chunkPointers is optional on input —
- * capsules with no media chunks omit it or send {}. When present it
- * must be structurally valid; malformed content is rejected here so
- * a corrupt manifest can never reach CAPSULE_MANIFESTS.
- */
-function isValidChunkPointers(
-  value: unknown
-): boolean {
-
-  if (value === undefined) return true;
-
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) {
-    return false;
-  }
-
-  for (const pointer of Object.values(value)) {
-    if (
-      typeof pointer !== "string" ||
-      !STORAGE_POINTER_REGEX.test(pointer)
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-
-}
-
 /* ================= SIZE LIMITS ================= */
-
 
 /* ================= TIME LIMITS ================= */
 
@@ -171,20 +124,6 @@ function isPlainObject(
   return proto === Object.prototype || proto === null;
 }
 
-/**
- * Deterministic (key-order independent) serialization.
- *
- * Manifest sealing must be idempotent: a creator retrying the same
- * seal request after a network interruption must never be rejected
- * as MANIFEST_ALREADY_EXISTS_DIFFERENT just because JSON.stringify()
- * happened to serialize object keys in a different order on the
- * client. This recursively sorts object keys before stringifying, so
- * two logically identical manifests always canonicalize to the same
- * string, regardless of client-side key ordering.
- *
- * This does not change Manifest content or authority — it only fixes
- * the storage/comparison representation.
- */
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(canonicalize);
@@ -203,12 +142,34 @@ function canonicalStringify(value: unknown): string {
   return JSON.stringify(canonicalize(value));
 }
 
-/**
- * Dev-only diagnostics — gated by the Worker's DEBUG env var, not
- * import.meta.env.DEV (a Vite-only construct that does not exist in
- * the Cloudflare Pages Functions / Workers runtime). Silent unless
- * env.DEBUG === "true".
- */
+function isValidChunkPointers(
+  value: unknown
+): boolean {
+
+  if (value === undefined) return true;
+
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    return false;
+  }
+
+  for (const pointer of Object.values(value)) {
+    if (
+      typeof pointer !== "string" ||
+      !STORAGE_POINTER_REGEX.test(pointer)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+
+}
+
 function debugLog(
   env: SealEnv,
   ...args: unknown[]
@@ -277,11 +238,9 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
 
   if (!ALLOWED_ORIGINS.includes(origin))
     return fail(403, "INVALID_ORIGIN", origin);
-
   const ip = getClientIp(request);
   if (!rateLimit(ip))
     return fail(429, "TOO_MANY_REQUESTS", origin);
-
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json"))
     return fail(415, "UNSUPPORTED_MEDIA_TYPE", origin);
@@ -424,15 +383,15 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
     return fail(400, "INVALID_MANIFEST_EXT", origin);
   }
 
-  /* ── Retry-safe idempotency check (Finding 2) ──
+  /* ── Retry-safe idempotency check ──
    *
    * Executed BEFORE upload-token / payment / time enforcement so a
-   * retry of an already-sealed capsule (e.g. after a lost network
-   * response) is accepted idempotently even though the original seal
-   * consumed the Upload Token and payment authority. The manifest is
-   * public and immutable: a byte-identical canonical manifest returns
-   * the existing sealed result, while a different manifest for the
-   * same capsuleId stays fail-closed (409 — seal-once).
+   * retry of an already-sealed capsule is accepted idempotently even
+   * though the original seal consumed the Upload Token and payment
+   * authority. The manifest is public and immutable: a byte-identical
+   * canonical manifest returns the existing sealed result, while a
+   * different manifest for the same capsuleId stays fail-closed
+   * (409 — seal-once).
    */
 
   const existing = await env.CAPSULE_MANIFESTS.get(capsuleId);
@@ -442,9 +401,6 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
 
     let existingCanonical: string;
     try {
-      // Stored manifests were themselves written via canonicalStringify()
-      // going forward, but guard against any pre-migration records that
-      // were stored via plain JSON.stringify() with a different key order.
       existingCanonical = canonicalStringify(JSON.parse(existing));
     } catch {
       return fail(503, "MANIFEST_STORAGE_CORRUPTED", origin);
@@ -473,8 +429,7 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
   }
 
   if (
-    !tokenData                                ||
-    tokenData.capsuleId !== capsuleId         ||
+    !tokenData ||
     tokenData?.permissions?.uploadVault !== true
   ) {
     return fail(403, "UPLOAD_TOKEN_MISMATCH", origin);
@@ -492,151 +447,118 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
     return fail(503, "TIME_UNAVAILABLE", origin);
   }
 
-  /* ── Payment authority enforcement ──
+  /* ── Entitlement/lifecycle authority enforcement ──
    *
-   * Dual-key topology written by webhook.ts / verify.ts:
-   *   "capsule:{id}" → transactionId   (capsuleId → payment binding)
-   *   transactionId  → full record     (payment record with metadata)
-   *
-   * Seal reads via the capsule key, then loads the full record via the
-   * bound transactionId.
+   * Seal authorization no longer depends on pre-capsule capsuleId-bound
+   * payment keys. It depends on:
+   *   - valid upload token issued after entitlement verification
+   *   - optional payment linkage metadata for audit/reconciliation
    */
 
-  const capsulePaymentKey = "capsule:" + capsuleId;
+  const paymentIntentId =
+    typeof tokenData.paymentIntentId === "string"
+      ? tokenData.paymentIntentId.trim()
+      : null;
 
-  const boundTxHash =
-    await env.VERIFIED_PAYMENTS.get(capsulePaymentKey);
+  let verifiedPayment: VerifiedPaymentRecord | null = null;
+  let boundEvidenceId: string | null = null;
 
-  if (!boundTxHash || typeof boundTxHash !== "string")
-    return fail(402, "PAYMENT_REQUIRED", origin);
-
-  const paymentRecord =
-    await env.VERIFIED_PAYMENTS.get(boundTxHash);
-
-  if (!paymentRecord)
-    return fail(402, "PAYMENT_RECORD_MISSING", origin);
-
-  let payment: VerifiedPaymentRecord;
-  try {
-    payment = JSON.parse(paymentRecord);
-  } catch {
-    return fail(503, "PAYMENT_RECORD_CORRUPTED", origin);
+  if (paymentIntentId) {
+    boundEvidenceId = await env.VERIFIED_PAYMENTS.get(
+      `payment-intent:${paymentIntentId}:latest`
+    );
+    if (typeof boundEvidenceId === "string") {
+      const paymentRaw = await env.VERIFIED_PAYMENTS.get(
+        `verified-payment:${paymentIntentId}:${boundEvidenceId}`
+      );
+      if (paymentRaw) {
+        try {
+          verifiedPayment = JSON.parse(paymentRaw) as VerifiedPaymentRecord;
+        } catch {
+          verifiedPayment = null;
+        }
+      }
+    }
   }
 
   if (
-    !payment                              ||
-    payment.ok !== true                   ||
-    payment.capsuleId !== capsuleId       ||
-    payment.transactionId !== boundTxHash
+    !verifiedPayment ||
+    !boundEvidenceId ||
+    verifiedPayment.ok !== true ||
+    !Number.isSafeInteger(verifiedPayment.expiresAt) ||
+    verifiedPayment.expiresAt <= trustedNow
+  ) {
+    return fail(402, "PAYMENT_REQUIRED", origin);
+  }
+
+  if (
+    verifiedPayment.paymentIntentId !== paymentIntentId
   ) {
     return fail(402, "PAYMENT_INVALID", origin);
   }
 
-  if (
-    !Number.isSafeInteger(payment.expiresAt) ||
-    payment.expiresAt <= trustedNow
-  ) {
-    return fail(402, "PAYMENT_EXPIRED", origin);
+  /* ── Publication verification gate ──
+   *
+   * Seal authorization now requires server-authoritative publication
+   * verification. Client manifest values are consistency assertions
+   * only; the authoritative source is PUBLICATION_VERIFICATIONS.
+   */
+
+  const lifecycleId =
+    typeof tokenData.canonicalLifecycleId === "string"
+      ? tokenData.canonicalLifecycleId.trim()
+      : "";
+
+  if (!lifecycleId) {
+    return fail(403, "LIFECYCLE_MISSING", origin);
+  }
+
+  const publicationRecordRaw = env.PUBLICATION_VERIFICATIONS
+    ? await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${lifecycleId}`)
+    : null;
+
+  if (!publicationRecordRaw) {
+    return fail(403, "PUBLICATION_NOT_VERIFIED", origin);
+  }
+
+  let publicationRecord: {
+    state?: string;
+    expectedTxId?: string;
+    expectedVaultSha256?: string | null;
+  };
+
+  try {
+    publicationRecord = JSON.parse(publicationRecordRaw);
+  } catch {
+    return fail(503, "PUBLICATION_STORAGE_CORRUPTED", origin);
   }
 
   if (
-    !Number.isSafeInteger(payment.billableSizeBytes) ||
-    payment.billableSizeBytes < encryptedSizeBytes
+    !publicationRecord ||
+    publicationRecord.state !== "VERIFIED" ||
+    typeof publicationRecord.expectedTxId !== "string" ||
+    publicationRecord.expectedTxId.trim().length === 0 ||
+    typeof publicationRecord.expectedVaultSha256 !== "string" ||
+    publicationRecord.expectedVaultSha256.trim().length === 0
   ) {
-    return fail(402, "PAYMENT_SIZE_MISMATCH", origin);
+    return fail(403, "PUBLICATION_NOT_VERIFIED", origin);
   }
 
-  if (Math.abs(trustedNow - sealedAt) > SEALED_AT_TOLERANCE)
-    return fail(400, "INVALID_SEALED_AT", origin);
-
-  if (openAt <= trustedNow)
-    return fail(400, "INVALID_OPEN_AT", origin);
-
-  /* ── Vault pointer verification ── */
-
-  let verified = false;
-
-  for (let attempt = 0; attempt < 10; attempt++) {
-
-    try {
-
-      const verify = await fetch(
-        `https://gateway.irys.xyz/${vaultTxId}`,
-        {
-          method: "GET",
-          redirect: "follow",
-
-          cf: {
-            cacheTtl: 0,
-            cacheEverything: false,
-          },
-
-        }
-      );
-
-      debugLog(
-        env,
-        "[AETERNA] Seal verify",
-        attempt,
-        verify.status,
-        verify.url
-      );
-
-      if (verify.ok) {
-
-        const contentLength =
-          verify.headers.get("content-length");
-
-        if (
-          contentLength !== null &&
-          Number(contentLength) !==
-            encryptedSizeBytes
-        ) {
-
-          return fail(
-            400,
-            "VAULT_SIZE_MISMATCH",
-            origin
-          );
-
-        }
-
-        verified = true;
-        break;
-
-      }
-
-    }
-
-    catch (error) {
-      debugLog(
-        env,
-        "[AETERNA] Seal verify error",
-        attempt,
-        error
-      );
-    }
-
-    await new Promise(resolve =>
-      setTimeout(
-        resolve,
-        1500 * (attempt + 1)
-      )
-    );
-
+  if (
+    typeof vaultTxId !== "string" ||
+    vaultTxId.trim().length === 0 ||
+    vaultTxId !== publicationRecord.expectedTxId
+  ) {
+    return fail(409, "PUBLICATION_ID_MISMATCH", origin);
   }
 
-  if (!verified) {
-
-    return fail(
-      400,
-      "VAULT_NOT_AVAILABLE",
-      origin
-    );
-
+  if (
+    typeof ext.vaultSha256 !== "string" ||
+    ext.vaultSha256.trim().length === 0 ||
+    ext.vaultSha256 !== publicationRecord.expectedVaultSha256
+  ) {
+    return fail(409, "PUBLICATION_HASH_MISMATCH", origin);
   }
-
-
 
   /* ── Commit ──
    *
@@ -644,72 +566,46 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
    *   1. CAPSULE_MANIFESTS.put   — manifest persisted (irreversible event)
    *   2. VERIFIED_PAYMENTS.delete x2 — payment authority consumed
    *   3. BUSINESS_QUOTES.delete  — commercial authority consumed
-   *   4. UPLOAD_TOKENS.delete    — token revoked
+   *   4. UPLOAD_TOKENS.delete     — token revoked
    *
    * Payment authority is consumed HERE, not at upload-token issuance.
-   *
-   * Lifecycle reasoning:
-   * The irreversible event in AETERNA is manifest issuance, not
-   * upload-token issuance. Deleting payment authority before seal
-   * creates a real failure window (browser crash, Arweave failure,
-   * network interruption) where the creator has no token, no payment
-   * record, and no recovery path. By keeping both payment keys alive
-   * until this point, any failure before manifest.put() leaves the
-   * creator able to retry the full upload → seal flow.
-   *
-   * The Business Quote follows the same reasoning: it exists only for
-   * the duration of the payment lifecycle (Create → Immutable →
-   * Payment → Verification → Consumed). That lifecycle only truly ends
-   * once the manifest is durably committed. Deleting the Quote earlier
-   * — e.g. right after Verification or after Upload — would strand a
-   * creator who crashes mid-flow with no Quote to recover against, for
-   * the same reason payment keys are kept alive until this point.
-   *
-   * Dual-key deletion:
-   * Both keys of the converged topology must be deleted together.
-   * Leaving capsule:{id} alive after transactionId is gone would
-   * produce a dangling pointer — a future seal attempt would resolve
-   * the capsule key, find the transactionId, then fail with
-   * PAYMENT_RECORD_MISSING on a legitimately paid capsule.
-   *
-   * If payment/quote deletes fail after manifest.put() succeeds: the
-   * keys will be evicted by KV TTL. The idempotency check above
-   * prevents any manifest overwrite on a retry — so payment/quote
-   * authority expiry is the only consequence, not data loss.
    */
 
-   /* ───────────────────────────────────────────────
-    STEP — Manifest Authority Established
+  /* ───────────────────────────────────────────────
+   STEP — Manifest Authority Established
 
-    Storage Authority has already been verified.
+   Storage Authority has already been verified.
 
-    The immutable Manifest is now being committed.
+   The immutable Manifest is now being committed.
 
-    This is the irreversible protocol event.
+   This is the irreversible protocol event.
 
-    After this point the capsule is considered SEALED.
-    ─────────────────────────────────────────────── */
+   After this point the capsule is considered SEALED.
+   ─────────────────────────────────────────────── */
 
   await env.CAPSULE_MANIFESTS.put(capsuleId, normalized);
 
   await env.AUTHORITY_TOKENS.put(
-
     capsuleId,
-
     JSON.stringify({
       fragment: creatorAuthorityFragment
     })
-
   );
 
   // Best-effort: failures here are non-fatal. The manifest is already
   // committed. Keys expire via TTL if these deletes don't execute.
-  await env.VERIFIED_PAYMENTS.delete(boundTxHash).catch(() => {});
-  await env.VERIFIED_PAYMENTS.delete(capsulePaymentKey).catch(() => {});
+  if (boundEvidenceId && paymentIntentId) {
+    await env.VERIFIED_PAYMENTS.delete(
+      `verified-payment:${paymentIntentId}:${boundEvidenceId}`
+    ).catch(() => {});
+    await env.VERIFIED_PAYMENTS.delete(
+      `payment-intent:${paymentIntentId}:latest`
+    ).catch(() => {});
+  }
 
   // Business Quote lifecycle ends here — the commercial authority has
   // been fully consumed by a committed manifest.
-  await deleteBusinessQuote(env, capsuleId).catch(() => {});
+  await deleteBusinessQuote(env, paymentIntentId ?? "").catch(() => {});
 
   await env.UPLOAD_TOKENS.delete(uploadToken).catch(() => {});
 

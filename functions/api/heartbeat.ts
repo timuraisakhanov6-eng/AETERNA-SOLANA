@@ -23,6 +23,8 @@ import {
   SHA256_REGEX,
 } from "../../src/lib/crypto/validators";
 
+import { rateLimit, getClientIp } from "../lib/rateLimit";
+
 
 type HeartbeatRecord = {
 

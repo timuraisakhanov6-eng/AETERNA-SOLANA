@@ -61,9 +61,14 @@ export type EmergencyRuntimeInit = {
 };
 
 let runtimeDisposed = false;
+let waiting = false;
+let heartbeatPollHandle: ReturnType<typeof setInterval> | null = null;
+let lastConfirmedAt: number | null = null;
+let effectiveOpenAt = 0;
 
 export function disposeEmergencyRuntime(): void {
   runtimeDisposed = true;
+  stopHeartbeatRefresh();
 }
 
 export async function initEmergencyRuntime({
@@ -121,13 +126,16 @@ export async function initEmergencyRuntime({
 
   const heartbeatInterval = manifest.heartbeatInterval ?? 0;
   const heartbeatRecord = await loadHeartbeatSource(manifest.capsuleId);
-  const lastConfirmedAt = heartbeatRecord?.lastConfirmedAt;
 
-  const effectiveOpenAt = resolveOpenAtSource({
+  lastConfirmedAt = heartbeatRecord?.lastConfirmedAt ?? null;
+  effectiveOpenAt = resolveOpenAtSource({
     manifestOpenAt: manifest.openAt,
     lastConfirmedAt,
     heartbeatInterval,
   });
+
+  updateWaitingDisplay(effectiveOpenAt);
+  waiting = true;
 
   if (parsed.creatorAuthorityFragment) {
     wireConfirmPresence({
@@ -167,6 +175,146 @@ export async function initEmergencyRuntime({
 /* =========================================================
    CAPABILITY / PATH HELPERS
    ========================================================= */
+
+function updateWaitingDisplay(effectiveOpenAtValue: number): void {
+  const dateMain = document.getElementById("dateMain");
+  const dateDays = document.getElementById("dateDays");
+
+  if (dateMain instanceof HTMLElement) {
+    dateMain.textContent = new Date(effectiveOpenAtValue).toUTCString();
+  }
+
+  if (dateDays instanceof HTMLElement) {
+    dateDays.textContent = "Waiting";
+  }
+}
+
+function stopHeartbeatRefresh(): void {
+  if (heartbeatPollHandle !== null) {
+    clearInterval(heartbeatPollHandle);
+    heartbeatPollHandle = null;
+  }
+}
+
+async function attemptOpen(args: {
+  root: HTMLElement;
+  status: HTMLElement;
+  recipientSecret: string;
+  manifest: ManifestV1;
+  effectiveOpenAtValue: number;
+  getTrustedTime: typeof getTrustedTime;
+  openCapsule: typeof openCapsule;
+}): Promise<void> {
+  stopHeartbeatRefresh();
+  waiting = false;
+
+  let nowUtc: number;
+  try {
+    nowUtc = (await args.getTrustedTime()).nowUtc;
+  } catch {
+    args.status.textContent = "Trusted time unavailable.";
+    return;
+  }
+
+  if (nowUtc < args.effectiveOpenAtValue || args.manifest.sealedAt > nowUtc) {
+    args.status.textContent = "Capsule is not yet open.";
+    return;
+  }
+
+  args.status.textContent = "Opening capsule…";
+
+  try {
+    const { vault } = await args.openCapsule({
+      capsuleId: args.manifest.capsuleId,
+      secret: args.recipientSecret,
+      manifest: args.manifest,
+    });
+
+    renderEmergencyVault(args.root, vault, args.status);
+    args.status.textContent = "Capsule opened.";
+  } catch {
+    args.status.textContent = "Capsule unavailable.";
+  }
+}
+
+function startHeartbeatRefresh(args: {
+  capsuleId: string;
+  manifest: ManifestV1;
+  status: HTMLElement;
+  root: HTMLElement;
+  recipientSecret: string;
+  getTrustedTime: typeof getTrustedTime;
+  loadHeartbeat: typeof loadHeartbeatRecord;
+  resolveOpenAt: typeof resolveEffectiveOpenAt;
+  openCapsule: typeof openCapsule;
+}): void {
+  if (heartbeatPollHandle !== null || !waiting) {
+    return;
+  }
+
+  heartbeatPollHandle = setInterval(async () => {
+    if (runtimeDisposed || !waiting) {
+      stopHeartbeatRefresh();
+      return;
+    }
+
+    let heartbeatRecord: Awaited<
+      ReturnType<typeof loadHeartbeatRecord>
+    > | null = null;
+
+    try {
+      heartbeatRecord = await args.loadHeartbeat(args.capsuleId);
+    } catch {
+      // preserve authoritative state; retry on next tick
+      return;
+    }
+
+    if (runtimeDisposed || !waiting) {
+      return;
+    }
+
+    const newLastConfirmedAt = heartbeatRecord?.lastConfirmedAt ?? null;
+
+    if (newLastConfirmedAt === lastConfirmedAt) {
+      return;
+    }
+
+    lastConfirmedAt = newLastConfirmedAt;
+    effectiveOpenAt = args.resolveOpenAt({
+      manifestOpenAt: args.manifest.openAt,
+      lastConfirmedAt,
+      heartbeatInterval: args.manifest.heartbeatInterval ?? 0,
+    });
+
+    updateWaitingDisplay(effectiveOpenAt);
+
+    let nowUtc: number;
+    try {
+      nowUtc = (await args.getTrustedTime()).nowUtc;
+    } catch {
+      return;
+    }
+
+    if (
+      runtimeDisposed ||
+      !waiting ||
+      nowUtc < effectiveOpenAt ||
+      args.manifest.sealedAt > nowUtc
+    ) {
+      return;
+    }
+
+    await attemptOpen({
+      root: args.root,
+      status: args.status,
+      recipientSecret: args.recipientSecret,
+      manifest: args.manifest,
+      effectiveOpenAtValue: effectiveOpenAt,
+      getTrustedTime: args.getTrustedTime,
+      openCapsule: args.openCapsule,
+    });
+  }, 30_000);
+}
 
 function getCapsuleIdFromPath(): string {
   if (
@@ -231,6 +379,26 @@ function wireConfirmPresence(args: {
             confirmBtn.classList.remove("cooldown");
           }, 15 * 60 * 1000);
         }, 3000);
+
+        try {
+          const refreshed = await loadHeartbeatSource(
+            args.manifest.capsuleId,
+          );
+
+          if (!runtimeDisposed && waiting) {
+            lastConfirmedAt = refreshed?.lastConfirmedAt ?? lastConfirmedAt;
+            effectiveOpenAt = resolveOpenAtSource({
+              manifestOpenAt: args.manifest.openAt,
+              lastConfirmedAt,
+              heartbeatInterval: args.manifest.heartbeatInterval ?? 0,
+            });
+
+            updateWaitingDisplay(effectiveOpenAt);
+          }
+        } catch {
+          // retain authoritative state; polling can retry
+        }
+
         return;
       }
 

@@ -69,9 +69,9 @@ const QUOTE_PREFIX = "quote:";
  * Canonical KV key.
  */
 function quoteKey(
-  capsuleId: string
+  paymentIntentId: string
 ): string {
-  return `${QUOTE_PREFIX}${capsuleId}`;
+  return `${QUOTE_PREFIX}${paymentIntentId}`;
 }
 
 /**
@@ -79,12 +79,12 @@ function quoteKey(
  */
 export async function getBusinessQuote(
   env: BusinessQuoteKV,
-  capsuleId: string
+  paymentIntentId: string
 ): Promise<BusinessQuote | null> {
 
   const raw =
     await env.BUSINESS_QUOTES.get(
-      quoteKey(capsuleId)
+      quoteKey(paymentIntentId)
     );
 
   if (!raw) {
@@ -110,7 +110,7 @@ export async function createBusinessQuote(
   const existing =
     await getBusinessQuote(
       env,
-      quote.capsuleId
+      quote.paymentIntentId
     );
 
   if (existing) {
@@ -125,12 +125,12 @@ export async function createBusinessQuote(
   // Business Authority established.
   //
   // Once written, the commercial terms of this
-  // capsule become immutable.
+  // payment intent become immutable.
   //
   // Subsequent requests must reuse the existing
   // Business Quote rather than overwrite it.
   await env.BUSINESS_QUOTES.put(
-    quoteKey(quote.capsuleId),
+    quoteKey(quote.paymentIntentId),
     JSON.stringify(quote),
     {
       expirationTtl: Math.max(
@@ -158,11 +158,11 @@ export async function createBusinessQuote(
  */
 export async function deleteBusinessQuote(
   env: BusinessQuoteKV,
-  capsuleId: string
+  paymentIntentId: string
 ): Promise<void> {
 
   await env.BUSINESS_QUOTES.delete(
-    quoteKey(capsuleId)
+    quoteKey(paymentIntentId)
   );
 
 }

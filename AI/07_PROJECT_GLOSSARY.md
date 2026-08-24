@@ -271,7 +271,13 @@ Storage Layer never performs encryption or decryption.
 
 ## Executor
 
-Executor is the trusted publication service.
+Executor Hot = current implementation residue for publication;
+NOT canonical target;
+NOT AETERNA payment authority;
+NOT business authority;
+NOT canonical publication authority;
+NOT verifier;
+target publication economics = creator-paid Irys.
 
 Executor accepts only already encrypted data.
 

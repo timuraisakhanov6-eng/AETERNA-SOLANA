@@ -43,6 +43,10 @@ import {
   createRuntime,
 } from "@/lib/runtime/runtimeRegistry";
 
+import {
+  createLocalVaultPointer,
+} from "@/lib/runtime/localVaultPointer";
+
 const PREPARE_ERROR =
   new Error(
     "[AETERNA] Prepared capsule creation failed"
@@ -78,7 +82,6 @@ export async function preparePreparedCapsule(
     ) => File | undefined;
 
   }
-
 ): Promise<PreparedCapsule> {
 
   try {
@@ -210,6 +213,25 @@ export async function preparePreparedCapsule(
       });
 
     /*
+     * Persist temporary encrypted Vault inside the local Runtime.
+     *
+     * After this point, the canonical PREPARED state carries a
+     * LocalVaultPointer, not a full encrypted payload.
+     */
+
+    const encryptedVaultPointer =
+      createLocalVaultPointer(
+        capsuleId
+      );
+
+    await runtime.storeVault(
+      capsuleId,
+      encrypted.encryptedPayload
+    );
+
+    encrypted.encryptedPayload.fill(0);
+
+    /*
      * PREPARED boundary
      */
 
@@ -222,8 +244,7 @@ export async function preparePreparedCapsule(
       chunkMetadata:
         mediaResult.chunkMetadata,
 
-      encryptedPayload:
-        encrypted.encryptedPayload,
+      encryptedVaultPointer,
 
       encryptedSizeBytes:
         encrypted.encryptedSizeBytes,

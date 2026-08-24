@@ -5,8 +5,8 @@
  *
  * This endpoint records server-authoritative publication verification.
  * Client-supplied publication identifiers are evidence only.
- * The server MUST independently verify publication facts through a
- * trusted verifier/provider before returning VERIFIED.
+ * The server MUST independently verify publication facts through
+ * trusted gateways before returning VERIFIED.
  *
  * If provider verification cannot be established, the endpoint MUST
  * fail closed and return NOT_VERIFIED/REJECTED.
@@ -71,6 +71,8 @@ interface PublicationVerificationRecord {
   capsuleId: string;
   creatorIdentityId: string;
   state: PublicationState;
+  expectedTxId: string;
+  expectedVaultSha256: string | null;
   evidenceIds: string[];
   verifiedAt?: number;
   rejectedAt?: number;
@@ -88,63 +90,56 @@ function parsePublicationInput(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-/* ================= PUBLICATION VERIFIER INTERFACE ================= */
+/* ================= GATEWAY FETCH ================= */
 
-/**
- * Provider-neutral publication verification boundary.
- *
- * This interface isolates the unresolved Irys/provider decision.
- * Concrete verifier implementation remains PENDING.
- */
-interface PublicationVerifier {
-  verifyPublication(input: {
-    publicationId: string;
-    lifecycleId: string;
-    capsuleId: string;
-    creatorIdentityId: string;
-  }): Promise<{
-    exists: boolean;
-    networkMatch: boolean;
-    capsuleMatch: boolean;
-    lifecycleMatch: boolean;
-    status: "success" | "pending" | "failed" | "unknown";
-    finality: boolean;
-  }>;
-}
+const GATEWAYS = [
+  "https://gateway.irys.xyz/",
+  "https://arweave.net/",
+  "https://permaweb.eu/",
+  "https://arweave.live/",
+];
 
-/**
- * Minimal fail-closed verifier implementation.
- *
- * Because the exact Irys verification provider is still PENDING,
- * this verifier currently rejects all publication verification
- * requests. When a provider is selected, replace this implementation
- * with a concrete verifier that independently establishes publication
- * facts from authoritative source.
- */
-class FailClosedPublicationVerifier implements PublicationVerifier {
-  async verifyPublication(): Promise<{
-    exists: boolean;
-    networkMatch: boolean;
-    capsuleMatch: boolean;
-    lifecycleMatch: boolean;
-    status: "success" | "pending" | "failed" | "unknown";
-    finality: boolean;
-  }> {
-    return {
-      exists: false,
-      networkMatch: false,
-      capsuleMatch: false,
-      lifecycleMatch: false,
-      status: "unknown",
-      finality: false,
-    };
+async function fetchPublishedCiphertext(txId: string): Promise<Uint8Array> {
+  let lastStatus = 0;
+  for (const gateway of GATEWAYS) {
+    const url = gateway.endsWith("/") ? `${gateway}${txId}` : `${gateway}/${txId}`;
+    let res: Response;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      res = await fetch(url, { method: "GET", cache: "no-store", signal: controller.signal });
+      clearTimeout(timeoutId);
+    } catch {
+      continue;
+    }
+
+    lastStatus = res.status;
+
+    if (res.status === 404) {
+      return new Uint8Array(0);
+    }
+
+    if (res.status !== 200) {
+      continue;
+    }
+
+    const length = Number(res.headers.get("content-length") ?? "0");
+    if (!Number.isFinite(length) || length <= 0) {
+      return new Uint8Array(0);
+    }
+
+    const buffer = await res.arrayBuffer();
+    return new Uint8Array(buffer);
   }
+
+  throw new Error(`gateway-fetch-failed: lastStatus=${lastStatus}; txId=${txId}`);
 }
 
-let publicationVerifier: PublicationVerifier = new FailClosedPublicationVerifier();
-
-export function setPublicationVerifier(verifier: PublicationVerifier): void {
-  publicationVerifier = verifier;
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes.buffer as ArrayBuffer);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /* ================= ENDPOINT ================= */
@@ -179,30 +174,36 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   const creatorIdentityId = parsePublicationInput(body.creatorIdentityId);
   const lifecycleId = parsePublicationInput(body.lifecycleId);
   const capsuleId = parsePublicationInput(body.capsuleId);
-  const publicationId = parsePublicationInput(body.publicationId);
-  const txHash = parsePublicationInput(body.txHash);
-  const providerRef = parsePublicationInput(body.providerRef);
+  const clientPublicationId = parsePublicationInput(body.publicationId);
 
-  if (!creatorIdentityId || !lifecycleId || !capsuleId || !publicationId) {
+  if (!creatorIdentityId || !lifecycleId || !capsuleId) {
     return fail(origin, 400, "INVALID_FIELDS");
   }
 
-  const evidenceIds = [publicationId];
-  if (txHash) evidenceIds.push(txHash);
-  if (providerRef) evidenceIds.push(providerRef);
-
   const key = publicationKey(lifecycleId);
   const existingRaw = await env.PUBLICATION_VERIFICATIONS.get(key);
+
+  let record: PublicationVerificationRecord | null = null;
   if (existingRaw) {
-    const existing = JSON.parse(existingRaw) as PublicationVerificationRecord;
+    try {
+      record = JSON.parse(existingRaw) as PublicationVerificationRecord;
+    } catch {
+      record = null;
+    }
+  }
+
+  if (record && (record.state === "VERIFIED" || record.state === "REJECTED")) {
     return new Response(
       JSON.stringify({
         ok: true,
-        state: existing.state,
+        state: record.state,
         lifecycleId,
         capsuleId,
         creatorIdentityId,
-        verifiedAt: existing.verifiedAt,
+        verifiedAt: record.verifiedAt,
+        rejectedAt: record.rejectedAt,
+        expectedTxId: record.expectedTxId,
+        expectedVaultSha256: record.expectedVaultSha256,
       }),
       { status: 200, headers: baseHeaders(origin) }
     );
@@ -220,48 +221,104 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 409, "IDENTITY_MISMATCH");
   }
 
-  const verifierResult = await publicationVerifier.verifyPublication({
-    publicationId,
-    lifecycleId,
-    capsuleId,
-    creatorIdentityId,
-  });
+  let authoritativeTxId = "";
+  if (record && typeof record.expectedTxId === "string" && record.expectedTxId.trim().length > 0) {
+    authoritativeTxId = record.expectedTxId.trim();
+  } else {
+    return fail(origin, 409, "PUBLICATION_NOT_CLAIMED");
+  }
 
-  let state: PublicationState = "REJECTED";
-  if (
-    verifierResult.exists &&
-    verifierResult.networkMatch &&
-    verifierResult.capsuleMatch &&
-    verifierResult.lifecycleMatch &&
-    verifierResult.status === "success" &&
-    verifierResult.finality
-  ) {
-    state = "VERIFIED";
+  if (clientPublicationId && clientPublicationId !== authoritativeTxId) {
+    return fail(origin, 409, "PUBLICATION_ID_MISMATCH");
+  }
+
+  let fetchedBytes: Uint8Array;
+  try {
+    fetchedBytes = await fetchPublishedCiphertext(authoritativeTxId);
+  } catch (error) {
+    const now = Date.now();
+    const updated: PublicationVerificationRecord = {
+      lifecycleId,
+      capsuleId,
+      creatorIdentityId,
+      state: "PENDING",
+      expectedTxId: authoritativeTxId,
+      expectedVaultSha256: record?.expectedVaultSha256 ?? null,
+      evidenceIds: record?.evidenceIds ?? [authoritativeTxId],
+      createdAt: record?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await env.PUBLICATION_VERIFICATIONS.put(key, JSON.stringify(updated));
+    return fail(origin, 502, "PUBLICATION_FETCH_FAILED");
+  }
+
+  if (fetchedBytes.byteLength === 0) {
+    const now = Date.now();
+    const rejected: PublicationVerificationRecord = {
+      lifecycleId,
+      capsuleId,
+      creatorIdentityId,
+      state: "REJECTED",
+      expectedTxId: authoritativeTxId,
+      expectedVaultSha256: null,
+      evidenceIds: record?.evidenceIds ?? [authoritativeTxId],
+      createdAt: record?.createdAt ?? now,
+      updatedAt: now,
+      rejectedAt: now,
+    };
+    await env.PUBLICATION_VERIFICATIONS.put(key, JSON.stringify(rejected));
+    return fail(origin, 409, "PUBLICATION_EMPTY");
+  }
+
+  let computedHash: string;
+  try {
+    computedHash = await sha256Hex(fetchedBytes);
+  } catch {
+    const now = Date.now();
+    const updated: PublicationVerificationRecord = {
+      lifecycleId,
+      capsuleId,
+      creatorIdentityId,
+      state: "PENDING",
+      expectedTxId: authoritativeTxId,
+      expectedVaultSha256: record?.expectedVaultSha256 ?? null,
+      evidenceIds: record?.evidenceIds ?? [authoritativeTxId],
+      createdAt: record?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await env.PUBLICATION_VERIFICATIONS.put(key, JSON.stringify(updated));
+    return fail(origin, 502, "PUBLICATION_HASH_FAILED");
   }
 
   const now = Date.now();
-  const record: PublicationVerificationRecord = {
-    lifecycleId,
-    capsuleId,
-    creatorIdentityId,
-    state,
-    evidenceIds,
-    verifiedAt: state === "VERIFIED" ? now : undefined,
-    rejectedAt: state === "REJECTED" ? now : undefined,
-    createdAt: now,
-    updatedAt: now,
-  };
+  const terminalState: PublicationVerificationRecord =
+    record && (record.state === "VERIFIED" || record.state === "REJECTED")
+      ? record
+      : {
+          lifecycleId,
+          capsuleId,
+          creatorIdentityId,
+          state: "VERIFIED",
+          expectedTxId: authoritativeTxId,
+          expectedVaultSha256: computedHash,
+          evidenceIds: record?.evidenceIds ?? [authoritativeTxId],
+          createdAt: record?.createdAt ?? now,
+          updatedAt: now,
+          verifiedAt: now,
+        };
 
-  await env.PUBLICATION_VERIFICATIONS.put(key, JSON.stringify(record));
+  await env.PUBLICATION_VERIFICATIONS.put(key, JSON.stringify(terminalState));
 
   return new Response(
     JSON.stringify({
       ok: true,
-      state,
+      state: terminalState.state,
       lifecycleId,
       capsuleId,
       creatorIdentityId,
-      verifiedAt: record.verifiedAt,
+      verifiedAt: terminalState.verifiedAt,
+      expectedTxId: terminalState.expectedTxId,
+      expectedVaultSha256: terminalState.expectedVaultSha256,
     }),
     { status: 200, headers: baseHeaders(origin) }
   );

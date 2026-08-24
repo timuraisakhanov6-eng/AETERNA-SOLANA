@@ -17,26 +17,24 @@ import type {
 export class MemoryRuntimeStorage
   implements RuntimeStorage {
 
-  /**
-   * Temporary encrypted chunk ciphertexts.
-   *
-   * Key:
-   *   chunkId
-   */
+  /** Temporary encrypted chunk ciphertexts. Key: chunkId */
   private readonly chunks =
     new Map<
       string,
       RuntimeChunkRecord
     >();
 
+  /** Temporary encrypted Vault ciphertext. */
+  private vault:
+    | Uint8Array
+    | null = null;
+
   async open(
     _capsuleId: string,
   ): Promise<void> {
 
     // Intentionally no-op.
-    //
     // RuntimeStorage.open() must never clear Runtime state.
-    // Cleanup is performed only via clear() or destroyRuntime().
 
   }
 
@@ -68,9 +66,11 @@ export class MemoryRuntimeStorage
       );
 
     if (!record) {
+
       throw new Error(
         "[AETERNA] Runtime chunk not found."
       );
+
     }
 
     return Object.freeze({
@@ -94,9 +94,11 @@ export class MemoryRuntimeStorage
       );
 
     if (!record) {
+
       throw new Error(
         "[AETERNA] Runtime chunk not found."
       );
+
     }
 
     // Securely erase ciphertext before removal.
@@ -105,6 +107,46 @@ export class MemoryRuntimeStorage
     this.chunks.delete(
       chunkId,
     );
+
+  }
+
+  async storeVault(
+    _capsuleId: string,
+    ciphertext: Uint8Array,
+  ): Promise<void> {
+
+    this.vault =
+      ciphertext.slice();
+
+  }
+
+  async readVault(
+    _capsuleId: string,
+  ): Promise<Uint8Array> {
+
+    if (!this.vault) {
+
+      throw new Error(
+        "[AETERNA] Runtime vault not found."
+      );
+
+    }
+
+    return this.vault.slice();
+
+  }
+
+  async removeVault(
+    _capsuleId: string,
+  ): Promise<void> {
+
+    if (this.vault) {
+
+      this.vault.fill(0);
+
+    }
+
+    this.vault = null;
 
   }
 
@@ -117,6 +159,14 @@ export class MemoryRuntimeStorage
     }
 
     this.chunks.clear();
+
+    if (this.vault) {
+
+      this.vault.fill(0);
+
+    }
+
+    this.vault = null;
 
   }
 

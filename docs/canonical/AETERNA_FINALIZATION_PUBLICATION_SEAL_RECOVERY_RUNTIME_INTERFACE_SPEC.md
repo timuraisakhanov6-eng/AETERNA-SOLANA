@@ -34,9 +34,13 @@ Client may submit evidence identifiers only:
 Client evidence is NOT authority.
 
 Authoritative publication facts MUST be established by the server from:
-- authoritative Irys/network source;
+- authoritative Irys Node/API;
 OR
 - an explicitly trusted verification provider.
+
+Gateway propagation/availability:
+- MAY be used as an additional availability signal;
+- is NOT standalone finality authority.
 
 ### 2.2 Interface Contract
 
@@ -80,13 +84,50 @@ Valid transitions:
 - PENDING -> VERIFIED
 - PENDING -> NOT_VERIFIED
 
-### 2.5 Provider-Neutrality Rule
+### 2.5 Finality Rule
 
-Exact Irys/network verification provider is implementation-selection PENDING.
-The interface MUST remain provider-neutral:
-- server enforces publication facts through an internal adapter/provider boundary;
-- provider-specific behavior is isolated behind a verifier interface;
-- this document does NOT invent a provider.
+Canonical finality rule:
+- FINALITY THRESHOLD = provider-defined authoritative signal.
+- Do NOT introduce artificial numeric confirmation counts.
+- Do NOT introduce arbitrary timeouts.
+
+VERIFIED requires:
+- exact publication/data-item identifier confirmed by authoritative Irys source;
+- correct Irys network confirmed;
+- artifact existence confirmed;
+- required availability signal successful;
+- AETERNA binding matches:
+  - creatorIdentityId
+  - lifecycleId
+  - capsuleId
+- no unresolved/unknown conditions.
+
+UNKNOWN / PENDING / provider unavailable:
+- MUST NOT become VERIFIED;
+- fail-closed.
+
+If provider does not provide sufficient authoritative signal:
+→ PENDING/UNKNOWN
+→ NOT VERIFIED.
+
+Provider-specific:
+- exact confirmation count/finality threshold per network/provider;
+- exact availability check mechanism.
+
+### 2.6 Provider Selection
+
+Primary authoritative source:
+- Irys Node/API.
+
+Secondary signal:
+- Gateway propagation/availability may be used as an additional availability signal.
+- Gateway is NOT standalone finality authority.
+
+Client-supplied publicationId / txHash / providerRef:
+- evidence references only;
+- MUST NOT be treated as authority.
+
+The exact Irys Node/API endpoint/response fields remain implementation-selection PENDING.
 
 ---
 
@@ -137,6 +178,27 @@ Conceptual states:
 Valid transitions:
 - NOT_VERIFIED -> PENDING
 - PENDING -> VERIFIED
+
+### 3.5 Seal commit and authoritative Seal verification
+
+Seal commit is the irreversible manifest boundary.
+Seal commit alone is NOT automatically authoritative Seal verification.
+
+Separate seal/verify remains required to establish authoritative Seal evidence.
+
+### 3.6 Publication / Seal / Finalize order
+
+Canonical target order:
+- upload;
+- publication verification;
+- seal;
+- seal/verify;
+- finalize-credit;
+- Creator Credit CONSUMED.
+
+Reason:
+seal is irreversible manifest boundary;
+publication must be independently verified before irreversible seal commit.
 
 ---
 
@@ -391,8 +453,16 @@ Future contract:
 Current responsibility:
 - upload-token validation;
 - ciphertext/chunk ingestion;
-- publication via Executor Hot;
 - storage pointer registry.
+
+CURRENT IMPLEMENTATION RESIDUE:
+- current code may still reference Executor Hot for publication;
+- this is CURRENT IMPLEMENTATION RESIDUE, not canonical target.
+
+CANONICAL TARGET:
+- Creator-paid Irys publication;
+- server-side authoritative publication verification;
+- Executor Hot is not canonical publication authority.
 
 Missing responsibility:
 - no authoritative publication verification record;

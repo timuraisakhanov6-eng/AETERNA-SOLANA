@@ -37,7 +37,7 @@ export function LandingPaymentGateProvider({
   onEntitlementReady,
 }: {
   children: ReactNode
-  onEntitlementReady?: () => void
+  onEntitlementReady?: (paymentIntentId: string) => void
 }) {
   const [open, setOpen] = useState(false)
 
@@ -56,16 +56,15 @@ export function LandingPaymentGateProvider({
         open={open}
         onClose={handleClose}
         description="AETERNA Service Payment"
-        billableSizeBytes={0}
-        expectedAmount={1.0}
         unlockAt={null}
-        capsuleId="landing"
         protocolAccepted={true}
         creatorIdentityId={null}
-        onCreditReady={() => {}}
+        onCreditReady={({ paymentIntentId }) => {
+          onEntitlementReady?.(paymentIntentId)
+        }}
         onReserveReady={(result) => {
           setOpen(false)
-          onEntitlementReady?.()
+          onEntitlementReady?.(result.paymentIntentId)
         }}
       />
     </LandingPaymentGateContext.Provider>

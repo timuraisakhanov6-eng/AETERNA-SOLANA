@@ -9,7 +9,6 @@ import { onRequestPost as reserveLifecyclePost } from "./../api/creator/reserve-
 const ALLOWED_ORIGIN = "https://aeternacapsule.com";
 
 interface ReserveEnv {
-  BUSINESS_QUOTES: ReturnType<typeof createFakeKV>;
   CREATOR_CREDITS: ReturnType<typeof createFakeKV>;
   CREDIT_OP_COORDINATOR: {
     idFromName(name: string): { id: string };
@@ -66,7 +65,6 @@ function createFakeCoordinator() {
 
 function buildEnv(overrides?: Partial<ReserveEnv>): ReserveEnv {
   return {
-    BUSINESS_QUOTES: createFakeKV(),
     CREATOR_CREDITS: createFakeKV(),
     CREDIT_OP_COORDINATOR: createFakeCoordinator(),
     ...overrides,
@@ -85,38 +83,27 @@ function buildContext(env: ReserveEnv, body: unknown) {
   return makeEventContext({ request, env });
 }
 
+const CREATOR_IDENTITY_ID = "creator-1";
+const CREATOR_CREDIT_ID = "credit-1";
 const CAPSULE_ID = "a".repeat(64);
-const CREATOR_IDENTITY_ID = "a".repeat(32);
 const LIFE_CYCLE_ID = "lifecycle-1";
-
-function seedQuote(env: ReserveEnv, capsuleId: string) {
-  env.BUSINESS_QUOTES.put(
-    capsuleId,
-    JSON.stringify({
-      capsuleId,
-      expectedAmount: 1,
-      currency: "USD",
-      expiresAt: Date.now() + 60_000,
-    })
-  );
-}
 
 function seedCredit(env: ReserveEnv, status: string) {
   env.CREATOR_CREDITS.put(
-    `creator:credit:index:${CREATOR_IDENTITY_ID}:${CAPSULE_ID}`,
-    "credit-1"
-  );
-  env.CREATOR_CREDITS.put(
-    "creator:credit:credit-1",
+    `creator:credit:${CREATOR_CREDIT_ID}`,
     JSON.stringify({
-      id: "credit-1",
+      id: CREATOR_CREDIT_ID,
       creatorIdentityId: CREATOR_IDENTITY_ID,
       status,
-      capsuleId: CAPSULE_ID,
-      lifecycleId: status === "CONSUMING" ? LIFE_CYCLE_ID : null,
-      revision: 1,
+      quoteId: "quote-1",
+      createdAt: Date.now(),
       updatedAt: Date.now(),
+      lifecycleId: status === "CONSUMING" ? LIFE_CYCLE_ID : null,
     })
+  );
+  env.CREATOR_CREDITS.put(
+    `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:${LIFE_CYCLE_ID}`,
+    CREATOR_CREDIT_ID
   );
 }
 
@@ -133,13 +120,13 @@ describe("Reserve lifecycle boundary", () => {
 
   it("RESERVES an AVAILABLE credit and transitions to CONSUMING", async () => {
     const env = buildEnv();
-    seedQuote(env, CAPSULE_ID);
     seedCredit(env, "AVAILABLE");
     env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: true, outcome: "RESERVED", httpStatus: 200 });
 
     const res = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: CREATOR_CREDIT_ID,
         capsuleId: CAPSULE_ID,
         lifecycleId: LIFE_CYCLE_ID,
       })
@@ -153,11 +140,11 @@ describe("Reserve lifecycle boundary", () => {
 
   it("REJECTS when Creator Credit is not found", async () => {
     const env = buildEnv();
-    seedQuote(env, CAPSULE_ID);
 
     const res = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: "missing-credit",
         capsuleId: CAPSULE_ID,
         lifecycleId: LIFE_CYCLE_ID,
       })
@@ -169,15 +156,19 @@ describe("Reserve lifecycle boundary", () => {
 
   it("REJECTS duplicate reservation for a different lifecycle", async () => {
     const env = buildEnv();
-    seedQuote(env, CAPSULE_ID);
     seedCredit(env, "CONSUMING");
+    env.CREATOR_CREDITS.put(
+      `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:other-lifecycle`,
+      CREATOR_CREDIT_ID
+    );
     env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: false, outcome: "ALREADY_CONSUMING", httpStatus: 409 });
 
     const res = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: CREATOR_CREDIT_ID,
         capsuleId: CAPSULE_ID,
-        lifecycleId: `${LIFE_CYCLE_ID}-2`,
+        lifecycleId: "other-lifecycle",
       })
     );
 
@@ -187,13 +178,13 @@ describe("Reserve lifecycle boundary", () => {
 
   it("RETURNS existing reservation for the same lifecycle", async () => {
     const env = buildEnv();
-    seedQuote(env, CAPSULE_ID);
     seedCredit(env, "CONSUMING");
     env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: true, outcome: "ALREADY_RESERVED_FOR_SAME_LIFECYCLE", httpStatus: 200 });
 
     const res = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: CREATOR_CREDIT_ID,
         capsuleId: CAPSULE_ID,
         lifecycleId: LIFE_CYCLE_ID,
       })
@@ -207,49 +198,47 @@ describe("Reserve lifecycle boundary", () => {
 
   it("REJECTS wrong Creator Identity", async () => {
     const env = buildEnv();
-    seedQuote(env, CAPSULE_ID);
     seedCredit(env, "AVAILABLE");
-    env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: false, outcome: "IDENTITY_MISMATCH", httpStatus: 409 });
 
     const res = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: `${CREATOR_IDENTITY_ID}-other`,
+        creatorCreditId: CREATOR_CREDIT_ID,
         capsuleId: CAPSULE_ID,
         lifecycleId: LIFE_CYCLE_ID,
       })
     );
 
-    expect(res.status).toBe(402);
-    expect((await res.json()).error).toBe("CREATOR_CREDIT_NOT_FOUND");
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("CREATOR_MISMATCH");
   });
 
   it("REJECTS forged lifecycleId without binding", async () => {
     const env = buildEnv();
-    seedQuote(env, CAPSULE_ID);
     seedCredit(env, "AVAILABLE");
-    env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: false, outcome: "LIFECYCLE_NOT_FOUND", httpStatus: 409 });
 
     const res = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: CREATOR_CREDIT_ID,
         capsuleId: CAPSULE_ID,
         lifecycleId: "forged-lifecycle",
       })
     );
 
     expect(res.status).toBe(409);
-    expect((await res.json()).outcome).toBe("LIFECYCLE_NOT_FOUND");
+    expect((await res.json()).error).toBe("LIFECYCLE_MISMATCH");
   });
 
   it("RETURNS existing result on retry after lost response", async () => {
     const env = buildEnv();
-    seedQuote(env, CAPSULE_ID);
     seedCredit(env, "CONSUMING");
     env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: true, outcome: "ALREADY_RESERVED_FOR_SAME_LIFECYCLE", httpStatus: 200 });
 
     const first = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: CREATOR_CREDIT_ID,
         capsuleId: CAPSULE_ID,
         lifecycleId: LIFE_CYCLE_ID,
       })
@@ -258,6 +247,7 @@ describe("Reserve lifecycle boundary", () => {
     const second = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: CREATOR_CREDIT_ID,
         capsuleId: CAPSULE_ID,
         lifecycleId: LIFE_CYCLE_ID,
       })
@@ -270,18 +260,22 @@ describe("Reserve lifecycle boundary", () => {
     expect(secondPayload.lifecycleId).toBe(LIFE_CYCLE_ID);
   });
 
-  it("REJECTS reserve when Business Quote is missing", async () => {
+  it("SUCCEEDS reserve when Business Quote is missing", async () => {
     const env = buildEnv();
+    seedCredit(env, "AVAILABLE");
+    env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: true, outcome: "RESERVED", httpStatus: 200 });
 
     const res = await reserveLifecyclePost(
       buildContext(env, {
         creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: CREATOR_CREDIT_ID,
         capsuleId: CAPSULE_ID,
         lifecycleId: LIFE_CYCLE_ID,
       })
     );
 
-    expect(res.status).toBe(402);
-    expect((await res.json()).error).toBe("BUSINESS_QUOTE_NOT_FOUND");
+    expect(res.status).toBe(200);
+    const payload = await res.json();
+    expect(payload.ok).toBe(true);
   });
 });

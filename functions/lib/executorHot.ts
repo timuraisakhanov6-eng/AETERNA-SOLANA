@@ -37,8 +37,6 @@ export interface ExecutorEnv {
 
 /* ================= CONSTANTS ================= */
 
-const IRYS_NODE_URL = "https://node1.irys.xyz";
-
 // Irys uploads for AETERNA are funded via Base Mainnet ETH.
 const BASE_MAINNET_CHAIN_ID = 8453;
 
@@ -437,7 +435,10 @@ async function confirmPropagation(pointer: string): Promise<boolean> {
     for (const gateway of GATEWAYS) {
       try {
         const url = gateway.endsWith("/") ? gateway + pointer : gateway + "/" + pointer;
-        const res = await fetch(url, { method: "HEAD", cache: "no-store" });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const res = await fetch(url, { method: "HEAD", cache: "no-store", signal: controller.signal });
+        clearTimeout(timeoutId);
         if (res.ok && res.status === 200) {
           const contentLength = res.headers.get("content-length");
           // A 200 with an empty or missing body is not a confirmed

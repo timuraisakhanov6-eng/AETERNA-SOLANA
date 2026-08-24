@@ -16,6 +16,7 @@ interface SealEnv {
   UPLOAD_TOKENS: ReturnType<typeof createFakeKV>;
   AUTHORITY_TOKENS: ReturnType<typeof createFakeKV>;
   BUSINESS_QUOTES: ReturnType<typeof createFakeKV>;
+  PUBLICATION_VERIFICATIONS?: ReturnType<typeof createFakeKV>;
   DEBUG?: "true" | "false";
 }
 
@@ -76,37 +77,42 @@ function validManifest(
 
 function seedVerifiedPayment(
   kv: ReturnType<typeof createFakeKV>,
-  capsuleId: string,
-  txHash: string,
-  encryptedSizeBytes: number
+  paymentIntentId: string,
+  evidenceId: string,
+  expiresAt: number
 ) {
-  kv.put("capsule:" + capsuleId, txHash);
   kv.put(
-    txHash,
+    `verified-payment:${paymentIntentId}:${evidenceId}`,
     JSON.stringify({
       ok: true,
-      capsuleId,
-      transactionId: txHash,
-      expiresAt: Date.now() + 60_000,
-      billableSizeBytes: encryptedSizeBytes,
+      paymentIntentId,
+      transactionId: evidenceId,
+      expiresAt,
     })
+  );
+  kv.put(
+    `payment-intent:${paymentIntentId}:latest`,
+    evidenceId
   );
 }
 
 function seedUploadToken(
   kv: ReturnType<typeof createFakeKV>,
-  capsuleId: string,
-  token?: string
+  paymentIntentId: string,
+  lifecycleId: string,
+  creatorIdentityId: string,
+  token = "a".repeat(32)
 ) {
-  const uploadToken = token ?? "a".repeat(32);
   kv.put(
-    uploadToken,
+    token,
     JSON.stringify({
-      capsuleId,
+      canonicalLifecycleId: lifecycleId,
+      creatorIdentityId,
+      paymentIntentId,
       permissions: { uploadVault: true },
     })
   );
-  return uploadToken;
+  return token;
 }
 
 describe("Seal-Once invariants", () => {
@@ -131,7 +137,7 @@ describe("Seal-Once invariants", () => {
     return mock;
   }
 
-  it("FIRST SEAL SUCCEEDS: persists manifest and consumes authorities", async () => {
+  it("FIRST SEAL SUCCEEDS: persists manifest and consumes payment authority", async () => {
     stubVaultFetch();
 
     const capsuleId = "a".repeat(64);
@@ -139,7 +145,6 @@ describe("Seal-Once invariants", () => {
     const sealedAt = Date.now();
     const openAt = sealedAt + 1000;
     const encryptedSizeBytes = 1024;
-    const txHash = "0x" + "b".repeat(64);
     const manifest = validManifest(
       capsuleId,
       vaultTxId,
@@ -148,10 +153,41 @@ describe("Seal-Once invariants", () => {
       encryptedSizeBytes
     );
     const creatorAuthorityFragment = "a".repeat(64);
+    const paymentIntentId = "intent-1";
+    const evidenceId = "evidence-1";
 
-    const env = buildSealEnv();
-    seedVerifiedPayment(env.VERIFIED_PAYMENTS, capsuleId, txHash, encryptedSizeBytes);
-    const uploadToken = seedUploadToken(env.UPLOAD_TOKENS, capsuleId);
+    const env = buildSealEnv({
+      PUBLICATION_VERIFICATIONS: createFakeKV(),
+    });
+    env.PUBLICATION_VERIFICATIONS!.put(
+      `creator:publication:lifecycle-1`,
+      JSON.stringify({
+        lifecycleId: "lifecycle-1",
+        capsuleId,
+        creatorIdentityId: "creator-1",
+        state: "VERIFIED",
+        expectedTxId: vaultTxId,
+        expectedVaultSha256: manifest.ext.vaultSha256,
+        evidenceIds: [vaultTxId],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        verifiedAt: Date.now(),
+      })
+    );
+
+    seedVerifiedPayment(
+      env.VERIFIED_PAYMENTS,
+      paymentIntentId,
+      evidenceId,
+      Date.now() + 60_000
+    );
+    const uploadToken = seedUploadToken(
+      env.UPLOAD_TOKENS,
+      paymentIntentId,
+      "lifecycle-1",
+      "creator-1",
+      "a".repeat(32)
+    );
 
     const body = {
       uploadToken,
@@ -172,8 +208,8 @@ describe("Seal-Once invariants", () => {
       JSON.stringify({ fragment: creatorAuthorityFragment })
     );
 
-    expect(await env.VERIFIED_PAYMENTS.get(txHash)).toBeNull();
-    expect(await env.VERIFIED_PAYMENTS.get("capsule:" + capsuleId)).toBeNull();
+    expect(await env.VERIFIED_PAYMENTS.get(`verified-payment:${paymentIntentId}:${evidenceId}`)).toBeNull();
+    expect(await env.VERIFIED_PAYMENTS.get(`payment-intent:${paymentIntentId}:latest`)).toBeNull();
     expect(await env.UPLOAD_TOKENS.get(uploadToken)).toBeNull();
   });
 
@@ -192,7 +228,24 @@ describe("Seal-Once invariants", () => {
     );
     const normalized = JSON.stringify(manifest);
 
-    const env = buildSealEnv();
+    const env = buildSealEnv({
+      PUBLICATION_VERIFICATIONS: createFakeKV(),
+    });
+    env.PUBLICATION_VERIFICATIONS!.put(
+      `creator:publication:lifecycle-1`,
+      JSON.stringify({
+        lifecycleId: "lifecycle-1",
+        capsuleId,
+        creatorIdentityId: "creator-1",
+        state: "VERIFIED",
+        expectedTxId: vaultTxId,
+        expectedVaultSha256: manifest.ext.vaultSha256,
+        evidenceIds: [vaultTxId],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        verifiedAt: Date.now(),
+      })
+    );
     await env.CAPSULE_MANIFESTS.put(capsuleId, normalized);
 
     const body = {
@@ -320,7 +373,7 @@ describe("Seal-Once invariants", () => {
     );
   });
 
-  it("UPLOAD AUTHORIZATION: rejects invalid upload token", async () => {
+  it("UPLOAD AUTHORIZATION: rejects empty upload token", async () => {
     const body = {
       uploadToken: "",
       manifest: validManifest("a".repeat(64), "a".repeat(43), Date.now(), Date.now() + 1000, 1024),
@@ -332,27 +385,12 @@ describe("Seal-Once invariants", () => {
     expect(res.status).toBe(400);
   });
 
-  it("UPLOAD AUTHORIZATION: rejects upload token with mismatched capsuleId", async () => {
-    const env = buildSealEnv();
-    seedUploadToken(env.UPLOAD_TOKENS, "b".repeat(64), "a".repeat(32));
-
-    const body = {
-      uploadToken: "a".repeat(32),
-      manifest: validManifest("a".repeat(64), "a".repeat(43), Date.now(), Date.now() + 1000, 1024),
-      creatorAuthorityFragment: "a".repeat(64),
-    };
-
-    const context = buildSealContext(env, body);
-    const res = await sealPost(context);
-    expect(res.status).toBe(403);
-  });
-
-  it("UPLOAD AUTHORIZATION: rejects upload token without uploadVault permission", async () => {
+  it("UPLOAD AUTHORIZATION: rejects token with mismatched permissions", async () => {
     const env = buildSealEnv();
     const token = "a".repeat(32);
     env.UPLOAD_TOKENS.put(
       token,
-      JSON.stringify({ capsuleId: "a".repeat(64), permissions: { uploadVault: false } })
+      JSON.stringify({ canonicalLifecycleId: "lifecycle-1", creatorIdentityId: "creator-1", permissions: { uploadVault: false } })
     );
 
     const body = {
@@ -366,12 +404,20 @@ describe("Seal-Once invariants", () => {
     expect(res.status).toBe(403);
   });
 
-  it("PAYMENT AUTHORIZATION: rejects missing capsule payment binding", async () => {
+  it("PAYMENT AUTHORIZATION: rejects when verified payment is missing", async () => {
     const env = buildSealEnv();
-    seedUploadToken(env.UPLOAD_TOKENS, "a".repeat(64));
+    const uploadToken = "a".repeat(32);
+    env.UPLOAD_TOKENS.put(
+      uploadToken,
+      JSON.stringify({
+        canonicalLifecycleId: "lifecycle-1",
+        creatorIdentityId: "creator-1",
+        permissions: { uploadVault: true },
+      })
+    );
 
     const body = {
-      uploadToken: "a".repeat(32),
+      uploadToken,
       manifest: validManifest("a".repeat(64), "a".repeat(43), Date.now(), Date.now() + 1000, 1024),
       creatorAuthorityFragment: "a".repeat(64),
     };
@@ -383,14 +429,26 @@ describe("Seal-Once invariants", () => {
 
   it("PAYMENT AUTHORIZATION: rejects invalid payment record", async () => {
     const env = buildSealEnv();
-    const txHash = "0x" + "b".repeat(64);
-    env.VERIFIED_PAYMENTS.put("capsule:" + "a".repeat(64), txHash);
-    env.VERIFIED_PAYMENTS.put(txHash, JSON.stringify({ ok: false }));
+    const evidenceId = "evidence-1";
+    env.VERIFIED_PAYMENTS.put(`payment-intent:intent-1:latest`, evidenceId);
+    env.VERIFIED_PAYMENTS.put(
+      `verified-payment:intent-1:${evidenceId}`,
+      JSON.stringify({ ok: false })
+    );
 
-    seedUploadToken(env.UPLOAD_TOKENS, "a".repeat(64));
+    const uploadToken = "a".repeat(32);
+    env.UPLOAD_TOKENS.put(
+      uploadToken,
+      JSON.stringify({
+        canonicalLifecycleId: "lifecycle-1",
+        creatorIdentityId: "creator-1",
+        paymentIntentId: "intent-1",
+        permissions: { uploadVault: true },
+      })
+    );
 
     const body = {
-      uploadToken: "a".repeat(32),
+      uploadToken,
       manifest: validManifest("a".repeat(64), "a".repeat(43), Date.now(), Date.now() + 1000, 1024),
       creatorAuthorityFragment: "a".repeat(64),
     };
@@ -402,23 +460,19 @@ describe("Seal-Once invariants", () => {
 
   it("PAYMENT AUTHORIZATION: rejects expired payment", async () => {
     const env = buildSealEnv();
-    const txHash = "0x" + "b".repeat(64);
-    env.VERIFIED_PAYMENTS.put("capsule:" + "a".repeat(64), txHash);
-    env.VERIFIED_PAYMENTS.put(
-      txHash,
-      JSON.stringify({
-        ok: true,
-        capsuleId: "a".repeat(64),
-        transactionId: txHash,
-        expiresAt: Date.now() - 1000,
-        billableSizeBytes: 1024,
-      })
+    const evidenceId = "evidence-1";
+    seedVerifiedPayment(env.VERIFIED_PAYMENTS, "intent-1", evidenceId, Date.now() - 1000);
+
+    const uploadToken = seedUploadToken(
+      env.UPLOAD_TOKENS,
+      "intent-1",
+      "lifecycle-1",
+      "creator-1",
+      "a".repeat(32)
     );
 
-    seedUploadToken(env.UPLOAD_TOKENS, "a".repeat(64));
-
     const body = {
-      uploadToken: "a".repeat(32),
+      uploadToken,
       manifest: validManifest("a".repeat(64), "a".repeat(43), Date.now(), Date.now() + 1000, 1024),
       creatorAuthorityFragment: "a".repeat(64),
     };
@@ -518,11 +572,34 @@ describe("Seal-Once invariants", () => {
         return acc;
       }, {} as typeof manifest)
     );
-    const txHash = "0x" + "b".repeat(64);
+    const evidenceId = "evidence-1";
 
-    const env = buildSealEnv();
-    seedVerifiedPayment(env.VERIFIED_PAYMENTS, capsuleId, txHash, encryptedSizeBytes);
-    const uploadToken = seedUploadToken(env.UPLOAD_TOKENS, capsuleId);
+    const env = buildSealEnv({
+      PUBLICATION_VERIFICATIONS: createFakeKV(),
+    });
+    env.PUBLICATION_VERIFICATIONS!.put(
+      `creator:publication:lifecycle-1`,
+      JSON.stringify({
+        lifecycleId: "lifecycle-1",
+        capsuleId,
+        creatorIdentityId: "creator-1",
+        state: "VERIFIED",
+        expectedTxId: vaultTxId,
+        expectedVaultSha256: manifest.ext.vaultSha256,
+        evidenceIds: [vaultTxId],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        verifiedAt: Date.now(),
+      })
+    );
+    seedVerifiedPayment(env.VERIFIED_PAYMENTS, "intent-1", evidenceId, Date.now() + 60_000);
+    const uploadToken = seedUploadToken(
+      env.UPLOAD_TOKENS,
+      "intent-1",
+      "lifecycle-1",
+      "creator-1",
+      "a".repeat(32)
+    );
 
     const body = {
       uploadToken,

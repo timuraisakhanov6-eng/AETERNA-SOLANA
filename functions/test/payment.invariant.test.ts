@@ -19,17 +19,19 @@ vi.mock("./../lib/executorHot", () => ({
 
 const ALLOWED_ORIGIN = "https://aeternacapsule.com";
 
+const PAYMENT_INTENT_ID = "intent-1";
+const CREATOR_IDENTITY_ID = "creator-1";
+const EVIDENCE_ID = "ev-1";
+const TX_HASH = "0x" + "a".repeat(64);
+
 async function seedBusinessQuote(
   kv: ReturnType<typeof createFakeKV>,
-  capsuleId: string,
-  expectedAmount = 1,
-  currency = "USD"
+  paymentIntentId = PAYMENT_INTENT_ID
 ) {
   await createBusinessQuote(kv, {
-    capsuleId,
-    billableSizeBytes: 1024,
-    expectedAmount,
-    currency,
+    paymentIntentId,
+    expectedAmount: 1,
+    currency: "USD",
     createdAt: Date.now(),
     expiresAt: Date.now() + 30 * 60 * 1000,
   });
@@ -38,6 +40,8 @@ async function seedBusinessQuote(
 interface ServicePaymentEnv {
   BUSINESS_QUOTES: ReturnType<typeof createFakeKV> | undefined;
   CREATOR_IDENTITIES: ReturnType<typeof createFakeKV> | undefined;
+  CREATOR_CREDITS: ReturnType<typeof createFakeKV> | undefined;
+  UPLOAD_TOKENS: ReturnType<typeof createFakeKV> | undefined;
   VERIFIED_PAYMENTS: ReturnType<typeof createFakeKV> | undefined;
   ALCHEMY_BASE_RPC_URL?: string;
   CHAINSTACK_BASE_RPC_URL?: string;
@@ -52,6 +56,8 @@ function buildServicePaymentContext(overrides?: {
   const env: ServicePaymentEnv = {
     BUSINESS_QUOTES: createFakeKV(),
     CREATOR_IDENTITIES: createFakeKV(),
+    CREATOR_CREDITS: createFakeKV(),
+    UPLOAD_TOKENS: createFakeKV(),
     VERIFIED_PAYMENTS: createFakeKV(),
     ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
     ...overrides?.env,
@@ -60,7 +66,7 @@ function buildServicePaymentContext(overrides?: {
   const request = createFakeRequest({
     headers: {
       origin: ALLOWED_ORIGIN,
-      "content-type": "application/json",
+      "content-type": overrides?.contentType ?? "application/json",
     },
     body: overrides?.body,
   });
@@ -73,6 +79,7 @@ function buildUploadTokenContext(overrides?: {
   env?: Partial<ServicePaymentEnv>;
 }) {
   const env: ServicePaymentEnv = {
+    CREATOR_CREDITS: createFakeKV(),
     UPLOAD_TOKENS: createFakeKV(),
     VERIFIED_PAYMENTS: createFakeKV(),
     ...overrides?.env,
@@ -103,9 +110,8 @@ describe("Payment authorization / replay protection invariants", () => {
     it("VERIFIED PAYMENT REQUIRED: rejects when verified payment missing", async () => {
       const { context } = buildUploadTokenContext({
         body: {
-          capsuleId: "a".repeat(64),
           canonicalLifecycleId: "lifecycle-1",
-          correlationTransactionId: "a".repeat(20),
+          creatorIdentityId: "creator-1",
         },
       });
 
@@ -113,81 +119,93 @@ describe("Payment authorization / replay protection invariants", () => {
       expect(res.status).toBe(403);
     });
 
-    it("WRONG CAPSULE REJECTION: rejects when verified record capsuleId mismatches", async () => {
+    it("WRONG PAYMENT INTENT REJECTION: rejects mismatched paymentIntentId in body", async () => {
       const { env, context } = buildUploadTokenContext({
         body: {
-          capsuleId: "a".repeat(64),
           canonicalLifecycleId: "lifecycle-1",
-          correlationTransactionId: "a".repeat(20),
+          creatorIdentityId: "creator-1",
+          paymentIntentId: "intent-other",
         },
       });
 
-      await env.VERIFIED_PAYMENTS!.put(`capsule:${"a".repeat(64)}`, JSON.stringify({
-        capsuleId: "b".repeat(64),
-        ok: true,
-        transactionId: "a".repeat(20),
-        expiresAt: Date.now() + 60_000,
-      }));
+      await env.CREATOR_CREDITS!.put(
+        "creator:credit:lifecycle:creator-1:lifecycle-1",
+        JSON.stringify({
+          status: "CONSUMING",
+          creatorIdentityId: "creator-1",
+          paymentIntentId: "intent-1",
+        })
+      );
 
       const res = await uploadTokenPost(context);
       expect(res.status).toBe(403);
     });
 
-    it("EXPIRED AUTHORIZATION / PAYMENT STATE: rejects expired verified record", async () => {
+    it("EXPIRED CREDIT STATE: rejects when credit state is invalid", async () => {
       const { env, context } = buildUploadTokenContext({
         body: {
-          capsuleId: "a".repeat(64),
           canonicalLifecycleId: "lifecycle-1",
-          correlationTransactionId: "a".repeat(20),
+          creatorIdentityId: "creator-1",
         },
       });
 
-      await env.VERIFIED_PAYMENTS!.put(`capsule:${"a".repeat(64)}`, JSON.stringify({
-        capsuleId: "a".repeat(64),
-        ok: true,
-        transactionId: "a".repeat(20),
-        expiresAt: Date.now() - 1000,
-      }));
+      await env.CREATOR_CREDITS!.put(
+        "creator:credit:lifecycle:creator-1:lifecycle-1",
+        JSON.stringify({
+          status: "AVAILABLE",
+          creatorIdentityId: "creator-1",
+          paymentIntentId: "intent-1",
+        })
+      );
 
       const res = await uploadTokenPost(context);
       expect(res.status).toBe(403);
     });
 
-    it("PAYMENT VERIFICATION BINDING: rejects mismatched transactionId", async () => {
+    it("PAYMENT INTENT BINDING: accepts valid request when paymentIntentId matches credit", async () => {
       const { env, context } = buildUploadTokenContext({
         body: {
-          capsuleId: "a".repeat(64),
           canonicalLifecycleId: "lifecycle-1",
+          creatorIdentityId: "creator-1",
+          paymentIntentId: "intent-1",
           correlationTransactionId: "a".repeat(20),
         },
       });
 
-      await env.VERIFIED_PAYMENTS!.put(`capsule:${"a".repeat(64)}`, JSON.stringify({
-        capsuleId: "a".repeat(64),
-        ok: true,
-        transactionId: "a".repeat(20),
-        expiresAt: Date.now() + 60_000,
-      }));
+      await env.CREATOR_CREDITS!.put(
+        "creator:credit:lifecycle:creator-1:lifecycle-1",
+        JSON.stringify({
+          status: "CONSUMING",
+          creatorIdentityId: "creator-1",
+          paymentIntentId: "intent-1",
+        })
+      );
 
       const res = await uploadTokenPost(context);
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
+      const payload = await res.json();
+      expect(payload.ok).toBe(true);
+      expect(typeof payload.uploadToken).toBe("string");
     });
 
-    it("INVALID PAYMENT: rejects non-ok verified record", async () => {
+    it("INVALID PAYMENT INTENT: rejects when supplied paymentIntentId does not match credit", async () => {
       const { env, context } = buildUploadTokenContext({
         body: {
-          capsuleId: "a".repeat(64),
           canonicalLifecycleId: "lifecycle-1",
+          creatorIdentityId: "creator-1",
+          paymentIntentId: "intent-bad",
           correlationTransactionId: "a".repeat(20),
         },
       });
 
-      await env.VERIFIED_PAYMENTS!.put(`capsule:${"a".repeat(64)}`, JSON.stringify({
-        capsuleId: "a".repeat(64),
-        ok: false,
-        transactionId: "a".repeat(20),
-        expiresAt: Date.now() + 60_000,
-      }));
+      await env.CREATOR_CREDITS!.put(
+        "creator:credit:lifecycle:creator-1:lifecycle-1",
+        JSON.stringify({
+          status: "CONSUMING",
+          creatorIdentityId: "creator-1",
+          paymentIntentId: "intent-1",
+        })
+      );
 
       const res = await uploadTokenPost(context);
       expect(res.status).toBe(403);
@@ -195,29 +213,17 @@ describe("Payment authorization / replay protection invariants", () => {
 
     it("FAIL-CLOSED: rejects malformed body missing required field", async () => {
       const { context } = buildUploadTokenContext({
-        body: { capsuleId: "a".repeat(64) },
+        body: { canonicalLifecycleId: "lifecycle-1" },
       });
 
       const res = await uploadTokenPost(context);
       expect(res.status).toBe(400);
     });
 
-    it("FAIL-CLOSED: rejects invalid transactionId format", async () => {
-      const { context } = buildUploadTokenContext({
-        body: {
-          capsuleId: "a".repeat(64),
-          transactionId: "!!!invalid!!!",
-        },
-      });
-
-      const res = await uploadTokenPost(context);
-      expect(res.status).toBe(400);
-    });
-
-    it("FAIL-CLOSED: rejects when VERIFIED_PAYMENTS binding missing", async () => {
+    it("FAIL-CLOSED: rejects when CREATOR_CREDITS binding missing", async () => {
       const env = {
+        CREATOR_CREDITS: undefined,
         UPLOAD_TOKENS: createFakeKV(),
-        VERIFIED_PAYMENTS: undefined,
       };
 
       const request = createFakeRequest({
@@ -226,8 +232,8 @@ describe("Payment authorization / replay protection invariants", () => {
           "content-type": "application/json",
         },
         body: {
-          capsuleId: "a".repeat(64),
           canonicalLifecycleId: "lifecycle-1",
+          creatorIdentityId: "creator-1",
           correlationTransactionId: "a".repeat(20),
         },
       });
@@ -238,22 +244,22 @@ describe("Payment authorization / replay protection invariants", () => {
       expect(res.status).toBe(503);
     });
 
-    it("issues upload token for valid verified payment with mocked executor", async () => {
+    it("issues upload token for valid entitlement with mocked executor", async () => {
       const { env, context } = buildUploadTokenContext({
         body: {
-          capsuleId: "a".repeat(64),
           canonicalLifecycleId: "lifecycle-1",
-          correlationTransactionId: "a".repeat(20),
+          creatorIdentityId: "creator-1",
         },
       });
 
-      await env.VERIFIED_PAYMENTS!.put(`capsule:${"a".repeat(64)}`, JSON.stringify({
-        capsuleId: "a".repeat(64),
-        ok: true,
-        transactionId: "a".repeat(20),
-        expiresAt: Date.now() + 60_000,
-        creatorIdentityId: "a".repeat(32),
-      }));
+      await env.CREATOR_CREDITS!.put(
+        "creator:credit:lifecycle:creator-1:lifecycle-1",
+        JSON.stringify({
+          status: "CONSUMING",
+          creatorIdentityId: "creator-1",
+          paymentIntentId: "intent-1",
+        })
+      );
 
       const res = await uploadTokenPost(context);
       expect(res.status).toBe(200);
@@ -274,9 +280,9 @@ describe("Payment authorization / replay protection invariants", () => {
       const request = createFakeRequest({
         headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
         body: {
-          capsuleId: "a".repeat(64),
-          creatorIdentityId: "a".repeat(32),
-          evidenceId: "ev-1",
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
+          evidenceId: EVIDENCE_ID,
         },
       });
 
@@ -289,27 +295,27 @@ describe("Payment authorization / replay protection invariants", () => {
     it("FAIL-CLOSED: rejects verification when quote is not exactly 1 USD", async () => {
       const env = {
         BUSINESS_QUOTES: {
-          get: async () => JSON.stringify({
-            capsuleId: "a".repeat(64),
-            expectedAmount: 2,
-            currency: "USD",
-            expiresAt: Date.now() + 60_000,
-          }),
+          get: async () =>
+            JSON.stringify({
+              paymentIntentId: PAYMENT_INTENT_ID,
+              expectedAmount: 2,
+              currency: "USD",
+              expiresAt: Date.now() + 60_000,
+            }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: "a".repeat(32) }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
-        ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
       };
 
       const request = createFakeRequest({
         headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
         body: {
-          capsuleId: "a".repeat(64),
-          creatorIdentityId: "a".repeat(32),
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
           evidenceId: "ev-amount",
-          txHash: "0x" + "a".repeat(64),
+          txHash: TX_HASH,
         },
       });
 
@@ -322,15 +328,16 @@ describe("Payment authorization / replay protection invariants", () => {
     it("FAIL-CLOSED: rejects invalid txHash", async () => {
       const env = {
         BUSINESS_QUOTES: {
-          get: async () => JSON.stringify({
-            capsuleId: "a".repeat(64),
-            expectedAmount: 1,
-            currency: "USD",
-            expiresAt: Date.now() + 60_000,
-          }),
+          get: async () =>
+            JSON.stringify({
+              paymentIntentId: PAYMENT_INTENT_ID,
+              expectedAmount: 1,
+              currency: "USD",
+              expiresAt: Date.now() + 60_000,
+            }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: "a".repeat(32) }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
       };
@@ -338,8 +345,8 @@ describe("Payment authorization / replay protection invariants", () => {
       const request = createFakeRequest({
         headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
         body: {
-          capsuleId: "a".repeat(64),
-          creatorIdentityId: "a".repeat(32),
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
           evidenceId: "ev-tx",
           txHash: "not-a-txhash",
         },
@@ -354,15 +361,16 @@ describe("Payment authorization / replay protection invariants", () => {
     it("FAIL-CLOSED: rejects when both providers are unavailable", async () => {
       const env = {
         BUSINESS_QUOTES: {
-          get: async () => JSON.stringify({
-            capsuleId: "a".repeat(64),
-            expectedAmount: 1,
-            currency: "USD",
-            expiresAt: Date.now() + 60_000,
-          }),
+          get: async () =>
+            JSON.stringify({
+              paymentIntentId: PAYMENT_INTENT_ID,
+              expectedAmount: 1,
+              currency: "USD",
+              expiresAt: Date.now() + 60_000,
+            }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: "a".repeat(32) }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
       };
@@ -370,10 +378,10 @@ describe("Payment authorization / replay protection invariants", () => {
       const request = createFakeRequest({
         headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
         body: {
-          capsuleId: "a".repeat(64),
-          creatorIdentityId: "a".repeat(32),
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
           evidenceId: "ev-provider",
-          txHash: "0x" + "a".repeat(64),
+          txHash: TX_HASH,
         },
       });
 
@@ -386,15 +394,16 @@ describe("Payment authorization / replay protection invariants", () => {
     it("FAIL-CLOSED: rejects when providers disagree on chain", async () => {
       const env = {
         BUSINESS_QUOTES: {
-          get: async () => JSON.stringify({
-            capsuleId: "a".repeat(64),
-            expectedAmount: 1,
-            currency: "USD",
-            expiresAt: Date.now() + 60_000,
-          }),
+          get: async () =>
+            JSON.stringify({
+              paymentIntentId: PAYMENT_INTENT_ID,
+              expectedAmount: 1,
+              currency: "USD",
+              expiresAt: Date.now() + 60_000,
+            }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: "a".repeat(32) }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
         ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
@@ -434,10 +443,10 @@ describe("Payment authorization / replay protection invariants", () => {
       const request = createFakeRequest({
         headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
         body: {
-          capsuleId: "a".repeat(64),
-          creatorIdentityId: "a".repeat(32),
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
           evidenceId: "ev-disagree",
-          txHash: "0x" + "a".repeat(64),
+          txHash: TX_HASH,
         },
       });
 
@@ -452,35 +461,36 @@ describe("Payment authorization / replay protection invariants", () => {
     it("IDEMPOTENT: returns existing verification without creating duplicate", async () => {
       const existing = JSON.stringify({
         ok: true,
-        capsuleId: "a".repeat(64),
-        quoteId: "a".repeat(64),
-        creatorIdentityId: "a".repeat(32),
-        evidenceId: "ev-3",
+        paymentIntentId: PAYMENT_INTENT_ID,
+        quoteId: PAYMENT_INTENT_ID,
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        evidenceId: EVIDENCE_ID,
         verifiedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
       });
 
       const env = {
         BUSINESS_QUOTES: {
-          get: async () => JSON.stringify({
-            capsuleId: "a".repeat(64),
-            expectedAmount: 1,
-            currency: "USD",
-            expiresAt: Date.now() + 60_000,
-          }),
+          get: async () =>
+            JSON.stringify({
+              paymentIntentId: PAYMENT_INTENT_ID,
+              expectedAmount: 1,
+              currency: "USD",
+              expiresAt: Date.now() + 60_000,
+            }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: "a".repeat(32) }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
         },
-        VERIFIED_PAYMENTS: { get: async (k: string) => k === `verified-payment:${"a".repeat(64)}:ev-3` ? existing : null, put: async () => {} },
+        VERIFIED_PAYMENTS: { get: async (k: string) => k === `verified-payment:${PAYMENT_INTENT_ID}:${EVIDENCE_ID}` ? existing : null, put: async () => {} },
       };
 
       const request = createFakeRequest({
         headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
         body: {
-          capsuleId: "a".repeat(64),
-          creatorIdentityId: "a".repeat(32),
-          evidenceId: "ev-3",
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
+          evidenceId: EVIDENCE_ID,
         },
       });
 
@@ -495,10 +505,10 @@ describe("Payment authorization / replay protection invariants", () => {
     it("FAIL-CLOSED: rejects already-consumed payment", async () => {
       const existing = JSON.stringify({
         ok: true,
-        capsuleId: "a".repeat(64),
-        quoteId: "a".repeat(64),
-        creatorIdentityId: "a".repeat(32),
-        evidenceId: "ev-consumed",
+        paymentIntentId: PAYMENT_INTENT_ID,
+        quoteId: PAYMENT_INTENT_ID,
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        evidenceId: EVIDENCE_ID,
         verifiedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
         consumed: true,
@@ -506,26 +516,26 @@ describe("Payment authorization / replay protection invariants", () => {
 
       const env = {
         BUSINESS_QUOTES: {
-          get: async () => JSON.stringify({
-            capsuleId: "a".repeat(64),
-            expectedAmount: 1,
-            currency: "USD",
-            expiresAt: Date.now() + 60_000,
-          }),
+          get: async () =>
+            JSON.stringify({
+              paymentIntentId: PAYMENT_INTENT_ID,
+              expectedAmount: 1,
+              currency: "USD",
+              expiresAt: Date.now() + 60_000,
+            }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: "a".repeat(32) }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
         },
-        VERIFIED_PAYMENTS: { get: async (k: string) => k === `verified-payment:${"a".repeat(64)}:ev-consumed` ? existing : null, put: async () => {} },
+        VERIFIED_PAYMENTS: { get: async (k: string) => k === `verified-payment:${PAYMENT_INTENT_ID}:${EVIDENCE_ID}` ? existing : null, put: async () => {} },
       };
 
       const request = createFakeRequest({
         headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
         body: {
-          capsuleId: "a".repeat(64),
-          creatorIdentityId: "a".repeat(32),
-          evidenceId: "ev-consumed",
-          txHash: "0x" + "a".repeat(64),
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
+          evidenceId: EVIDENCE_ID,
         },
       });
 

@@ -1,9 +1,7 @@
 # AETERNA
 
 AETERNA is a cryptographically sealed, non-custodial digital time capsule protocol.
-
 The protocol provides:
-
 - client-side encrypted capsules
 - recipient-exclusive decrypt authority
 - Trusted Time unlock enforcement
@@ -19,185 +17,66 @@ AETERNA is designed around deterministic protocol invariants rather than infrast
 # Core Principles
 
 ## Recipient Authority
-
 Decrypt authority belongs exclusively to the holder of the Recipient Capability.
-
-Recipient secrets:
-
-- never leave the client
-- never reach backend systems
-- never appear in manifests
-- never appear in storage providers
-
-Capability possession defines decrypt authority.
-
----
+Recipient secrets never leave the client and never reach backend systems.
 
 ## Client-Side Cryptography
-
-All cryptographic operations execute locally:
-
-- key derivation
-- vault encryption
-- AES-256-GCM decryption
-- integrity verification
-
-Servers never possess:
-
-- plaintext
-- vault keys
-- recipient secrets
-
----
+All cryptographic operations execute locally. Servers never possess plaintext, vault keys, or recipient secrets.
 
 ## Trusted Time
-
-Unlock eligibility derives from canonical Trusted Time.
-
-Trusted Time participates only in Open Authority.
-
-Local device time never becomes protocol authority.
-
----
+Unlock eligibility derives from canonical Trusted Time. Local device time never becomes protocol authority.
 
 ## Immutable Manifest
-
 Capsule Manifests become immutable after sealing.
 
-Manifest mutation invalidates protocol correctness.
-
----
-
 ## Hostile Storage
-
-Storage infrastructure is treated as hostile.
-
-Security derives from:
-
-- SHA-256 verification
-- AES-256-GCM authentication
-- canonical validation
-
-Never from storage trust.
-
----
+Security derives from cryptographic verification, not storage trust.
 
 ## Emergency Runtime
+Emergency Runtime preserves validation parity, decrypt ordering, Heartbeat behavior, and fail-closed behavior.
 
-Emergency Runtime preserves protocol continuity during infrastructure failure.
-
-Emergency Runtime preserves:
-
-- validation parity
-- decrypt ordering
-- Heartbeat behavior
-- Open Authority semantics
-- fail-closed behavior
+## Service Payment
+One verified AETERNA Service Payment of exactly 1 USDC grants exactly one Creator Credit and one capsule creation entitlement.
 
 ---
 
-# Architecture
+# Documentation
 
-AETERNA consists of the following layers:
+## Active Documentation
 
-| Layer | Responsibility |
-|---|---|
-| Creator Runtime | Capsule creation |
-| Recipient Runtime | Unlock and decrypt |
-| Emergency Runtime | Recovery continuity |
-| API Layer | Trusted Time + Business services |
-| Storage Layer | Ciphertext persistence |
-| Crypto Layer | Encryption and integrity |
+Active AI documentation:
+- `AI/AI_CONSTITUTION.md`
+- `AI/04_AGENT_RULES.md`
+- `AI/07_PROJECT_GLOSSARY.md`
 
-Runtime Layer performs execution only.
+Active canonical documentation:
+- `docs/canonical/AETERNA_COMPLETE_ENGINEERING_MODEL.md`
+- `docs/canonical/AETERNA_COMPLETE_PROJECT_LOGIC.md`
+- `docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md`
+- `docs/canonical/AETERNA_INFRASTRUCTURE.md`
+- `docs/canonical/AETERNA_CREATOR_CREDIT_SPEC.md`
+- `docs/canonical/AETERNA_CREATOR_CREDIT_CONSUMPTION_AND_CAPSULE_CREATION_INTERFACE_SPEC.md`
+- `docs/canonical/AETERNA_WALLET_PAYMENT_ARCHITECTURE_SPEC.md`
+- `docs/canonical/AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md`
+- `docs/canonical/AETERNA_SERVICE_PAYMENT_ENDPOINT_ARCHITECTURE_SPEC.md`
+- `docs/canonical/AETERNA_MULTI_RAIL_SERVICE_PAYMENT_POLICY_SPEC.md`
+- `docs/canonical/AETERNA_IRYS_DIRECT_CREATOR_PAYMENT_AND_CHUNK_PAYMENT_POLICY_SPEC.md`
+- `docs/canonical/AETERNA_CREATOR_IDENTITY_ARCHITECTURE_SPEC.md`
+- `docs/canonical/AETERNA_USDC_AMOUNT_AND_FINALITY_POLICY_SPEC.md`
+- `docs/canonical/AETERNA_AUTHORITATIVE_PUBLICATION_SEAL_VERIFICATION_AND_LIFECYCLE_RECOVERY_SPEC.md`
+- `docs/canonical/AETERNA_FINALIZATION_PUBLICATION_SEAL_RECOVERY_RUNTIME_INTERFACE_SPEC.md`
+- `docs/canonical/INVARIANTS.md`
+- `docs/canonical/MANIFEST_EVOLUTION.md`
+- `docs/canonical/VAULT_EVOLUTION.md`
 
-Runtime Layer is **not** an Authority.
+Operational documentation:
+- `HARDENING.md`
+- `DISASTER_RECOVERY.md`
 
----
+Proposed changes:
+- `docs/rfc/RFC-001_CHUNK_POINTERS.md`
 
-# Authority Domains
+## Archived Documentation
 
-The protocol separates authority into independent domains:
-
-| Authority | Responsibility |
-|---|---|
-| Ciphertext Authority | Vault integrity |
-| Open Authority | Trusted Time + unlock policy |
-| Business Authority | Creator Service Quote + service-payment validation + Creator Credit authority |
-| Storage Authority | Immutable ciphertext persistence |
-
-Authority Domains remain isolated.
-
----
-
-# Streaming Model
-
-AETERNA preserves:
-
-- Streaming Preview
-- Streaming Upload
-- Streaming Download
-- Streaming Reconstruction
-- Bounded Memory
-
-Whole-capsule buffering is never required by the protocol.
-
----
-
-# Security Model
-
-AETERNA is designed around:
-
-- protocol invariants
-- authority isolation
-- fail-closed behavior
-- deterministic validation
-- hostile infrastructure assumptions
-- runtime parity
-- cryptographic verification supremacy
-
-Protocol correctness derives from invariant preservation.
-
----
-
-# Canonical Documentation
-
-Core protocol documentation:
-
-| Document | Purpose |
-|---|---|
-| Master Protocol | Canonical protocol specification |
-| Complete System Logic | Canonical protocol behavior |
-| Canonical Specifications | Domain-specific specifications |
-| Threat Model | Security assumptions |
-| Runtime Specifications | Runtime architecture |
-| Cryptographic Specifications | Cryptographic architecture |
-| Audit Documentation | Security audits |
-
----
-
-# Development
-
-Install dependencies:
-
-```bash
-npm install
-```
-
-Run the development server:
-
-```bash
-npm run dev
-```
-
-Create a production build:
-
-```bash
-npm run build
-```
-
----
-
-# License
-
-See the repository license for licensing information.
+`docs/archive/` contains historical and archived materials.
+Archived documents are not active canonical authority.

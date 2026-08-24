@@ -9,13 +9,7 @@
  */
 
 export interface BusinessQuote {
-  capsuleId: string;
-
-  /**
-   * Canonical billable user size.
-   * Never encrypted size.
-   */
-  billableSizeBytes: number;
+  paymentIntentId: string;
 
   /**
    * Immutable creator-visible amount.

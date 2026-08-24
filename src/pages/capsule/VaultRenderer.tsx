@@ -36,10 +36,9 @@ import {
 /**
  * Reads a full MediaSession into a single Blob object URL.
  *
- * This path is now used only for media types/mime combinations
- * that cannot be progressively streamed through MediaSource
- * in the current browser. The canonical progressive path for
- * supported video/audio is `sessionToMediaSource()`.
+ * This bounded fallback is used only when the File System Access
+ * API is unavailable and the file is small enough to materialize
+ * safely in JS memory.
  */
 export async function sessionToObjectUrl(
   session: MediaSession,
@@ -67,13 +66,147 @@ export async function sessionToObjectUrl(
 }
 
 /**
- * Streams a MediaSession through a MediaSource so the browser
- * can begin playback before the entire object is materialized.
+ * Streams a MediaSession into a browser-native file download
+ * without assembling the full decrypted file in JS memory.
  *
- * This replaces the previous full-buffer Blob/object-URL path
- * for video and audio when the browser supports progressive
- * playback for the requested MIME type.
+ * Uses the File System Access API when available.
  */
+export async function sessionToDownloadStream(
+  session: MediaSession,
+  size: number,
+  mimeType: string,
+  filename?: string,
+): Promise<void> {
+
+  const safeName =
+    typeof filename === "string" &&
+    filename.trim().length > 0
+      ? filename.trim()
+      : "download.bin";
+
+  try {
+
+    if (
+      typeof window !== "undefined" &&
+      "showSaveFilePicker" in window &&
+      typeof (window as Window).showSaveFilePicker === "function"
+    ) {
+
+      try {
+
+        const handle =
+          await (window as Window).showSaveFilePicker({
+            suggestedName: safeName,
+            types: [
+              {
+                description: "AETERNA capsule file",
+                accept: {
+                  [mimeType]: [safeName],
+                },
+              },
+            ],
+          });
+
+        const writable =
+          await handle.createWritable();
+
+        try {
+
+          let offset = 0;
+          const chunkSize = 256 * 1024;
+
+          while (offset < size) {
+
+            const end =
+              Math.min(
+                offset + chunkSize,
+                size,
+              );
+
+            const bytes =
+              await session.read(
+                offset,
+                end,
+              );
+
+            await writable.write(bytes);
+            offset = end;
+          }
+
+          await writable.close();
+
+        } catch (err) {
+
+          try {
+            await writable.abort();
+          } catch {
+            // best-effort abort
+          }
+
+          throw err;
+
+        }
+
+        return;
+
+      } catch (err) {
+
+        if (
+          err instanceof Error &&
+          (err.name === "AbortError" ||
+            err.message.includes("user"))
+        ) {
+          // User cancelled picker; exit silently.
+          return;
+        }
+
+        // Fall through to bounded fallback.
+      }
+
+    }
+
+    // Bounded fallback for unsupported browsers.
+    const maxFallbackBytes = 256 * 1024;
+
+    if (typeof document === "undefined" || size > maxFallbackBytes) {
+      throw new Error(
+        `[AETERNA] Streaming download unavailable for ${size} bytes. ` +
+          "Use a Chromium-based browser with File System Access API.",
+      );
+    }
+
+    const bytes =
+      await session.read(0, size);
+
+    const blob =
+      new Blob(
+        [bytes],
+        { type: mimeType },
+      );
+
+    const objectUrl =
+      URL.createObjectURL(blob);
+
+    const anchor =
+      document.createElement("a");
+
+    anchor.href = objectUrl;
+    anchor.download = safeName;
+
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+
+    URL.revokeObjectURL(objectUrl);
+
+  } finally {
+
+    session.dispose();
+
+  }
+
+}
+
 export async function sessionToMediaSource(
   session: MediaSession,
   mimeType: string,
@@ -511,6 +644,9 @@ function MediaItemV2Block({
   const abortRef =
     useRef<(() => void) | null>(null);
 
+  const mediaSessionRef =
+    useRef<MediaSession | null>(null);
+
 
   useEffect(() => {
 
@@ -564,7 +700,7 @@ function MediaItemV2Block({
           media,
         };
 
-        let url: string;
+        let url: string | null = null;
 
         switch (media.mediaType) {
 
@@ -583,6 +719,9 @@ function MediaItemV2Block({
 
             const session =
               await openVideo(request);
+
+            mediaSessionRef.current =
+              session;
 
             const controller =
               new AbortController();
@@ -606,6 +745,9 @@ function MediaItemV2Block({
             const session =
               await openAudio(request);
 
+            mediaSessionRef.current =
+              session;
+
             const controller =
               new AbortController();
 
@@ -628,10 +770,11 @@ function MediaItemV2Block({
             const session =
               await downloadFile(request);
 
-            url = await sessionToObjectUrl(
+            await sessionToDownloadStream(
               session,
               media.size,
               media.mimeType,
+              media.filename,
             );
 
             break;
@@ -650,7 +793,8 @@ function MediaItemV2Block({
 
         if (cancelled) {
 
-          URL.revokeObjectURL(url);
+          if (url)
+            URL.revokeObjectURL(url);
 
           return;
 
@@ -658,10 +802,14 @@ function MediaItemV2Block({
 
         createdUrl = url;
 
-        if (!cancelled) {
+        if (createdUrl && !cancelled) {
 
           setObjectUrl(createdUrl);
+          setLoading(false);
 
+        } else if (!createdUrl && !cancelled) {
+
+          setError(true);
           setLoading(false);
 
         }
@@ -675,6 +823,12 @@ function MediaItemV2Block({
             "[AETERNA MEDIA LOAD ERROR]",
             err,
           );
+        }
+
+
+        if (mediaSessionRef.current) {
+          mediaSessionRef.current.dispose();
+          mediaSessionRef.current = null;
         }
 
         if (!cancelled) {
@@ -694,7 +848,14 @@ function MediaItemV2Block({
 
     return () => {
 
+
       cancelled = true;
+
+      if (mediaSessionRef.current) {
+        mediaSessionRef.current.dispose();
+        mediaSessionRef.current = null;
+      }
+
 
       if (abortRef.current) {
         abortRef.current();
@@ -724,7 +885,7 @@ function MediaItemV2Block({
     );
 
 
-  if (error || !objectUrl)
+  if (error || !objectUrl || item.mediaType === "file")
     return (
       <ErrorBlock
         filename={sanitizeFilename(item.filename)}

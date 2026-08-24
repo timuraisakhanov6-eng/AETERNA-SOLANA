@@ -75,7 +75,7 @@ These MUST NOT independently establish publication success.
 Authoritative publication evidence is evidence established by the
 server-side/canonical lifecycle authority from a trusted source.
 
-### 3.2 Minimum authoritative publication evidence requirements
+### 3.2 Authoritative publication source and minimum evidence requirements
 
 The server/lifecycle authority MUST independently establish:
 
@@ -88,13 +88,39 @@ The server/lifecycle authority MUST independently establish:
 - verification of object existence/availability through an authoritative source;
 - correct association between the published artifact and the lifecycle/capsule.
 
-The exact Irys verification mechanism/provider may remain
-implementation-selection PENDING.
+Primary authoritative source:
+- Irys Node/API.
 
-### 3.3 Security invariant
+Secondary signal:
+- gateway propagation/availability may be used as an additional availability signal.
+- Gateway is NOT standalone finality authority.
 
-NO authoritative publication evidence
--> NO final Credit consumption.
+Client-supplied publicationId / txHash / providerRef:
+- evidence references only;
+- MUST NOT be treated as authority.
+
+The exact Irys Node/API endpoint/response fields remain implementation-selection PENDING.
+
+### 3.3 Payment and publication authority separation
+
+AETERNA Service Payment:
+- $1.00 USDC;
+- exactly 1 Creator Credit;
+- exactly 1 capsule creation entitlement.
+
+Irys publication/storage:
+- paid separately by the creator;
+- separate economic layer from AETERNA Service Payment;
+- AETERNA $1 does NOT include Irys fees.
+
+Executor Hot:
+- NOT canonical target architecture;
+- NOT AETERNA payment authority;
+- NOT canonical publication authority;
+- NOT canonical verifier;
+- current presence in implementation is implementation residue only.
+
+No implementation may treat Executor Hot as canonical publication verification source.
 
 ## 4. PUBLICATION EVIDENCE INTEGRITY
 
@@ -140,8 +166,29 @@ Publication success requires:
 Only the condition selected as canonical success may allow the lifecycle
 to advance.
 
-Exact confirmation/finality policy may remain PENDING if
-network/provider-specific.
+Canonical finality rule:
+- FINALITY THRESHOLD = provider-defined authoritative signal.
+- Do NOT introduce artificial numeric confirmation counts.
+- Do NOT introduce arbitrary timeouts.
+
+VERIFIED requires:
+- exact publication/data-item identifier confirmed by authoritative Irys source;
+- correct Irys network confirmed;
+- artifact existence confirmed;
+- required availability signal successful;
+- AETERNA binding matches:
+  - creatorIdentityId
+  - lifecycleId
+  - capsuleId
+- no unresolved/unknown conditions.
+
+UNKNOWN / PENDING / provider unavailable:
+- MUST NOT become VERIFIED;
+- fail-closed.
+
+If provider does not provide sufficient authoritative signal:
+→ PENDING/UNKNOWN
+→ NOT VERIFIED.
 
 Mandatory:
 
@@ -186,12 +233,31 @@ implementation-selection PENDING.
 
 CONSUMING
 → CONSUMED
-
 MUST require:
-
 AUTHORITATIVE PUBLICATION SUCCESS
 AND
 AUTHORITATIVE SEAL SUCCESS.
+
+### 6.4 Seal commit and authoritative Seal verification
+
+Seal commit is the irreversible manifest boundary.
+Seal commit alone is NOT automatically authoritative Seal verification.
+
+Separate seal/verify remains required to establish authoritative Seal evidence.
+
+### 6.5 Publication / Seal / Finalize order
+
+Canonical target order:
+- upload;
+- publication verification;
+- seal;
+- seal/verify;
+- finalize-credit;
+- Creator Credit CONSUMED.
+
+Reason:
+seal is irreversible manifest boundary;
+publication must be independently verified before irreversible seal commit.
 
 ## 7. SEAL EVIDENCE BINDING
 

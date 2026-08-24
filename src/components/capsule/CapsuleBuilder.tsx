@@ -93,7 +93,7 @@ type SessionCapsuleData = {
    * in IndexedDB.
    */
 
-  encryptedPayloadBase64: string;
+  encryptedVaultPointer: string;
 
   encryptedSizeBytes: number;
 
@@ -135,8 +135,8 @@ function isValidSessionCapsuleData(
   const p = parsed as Partial<SessionCapsuleData>;
 
   return (
-    typeof p.encryptedPayloadBase64 === "string" &&
-    p.encryptedPayloadBase64.length > 0 &&
+    typeof p.encryptedVaultPointer === "string" &&
+    p.encryptedVaultPointer.length > 0 &&
 
     Number.isSafeInteger(p.encryptedSizeBytes) &&
     (p.encryptedSizeBytes as number) > 0 &&
@@ -294,8 +294,7 @@ function restorePreparedFromSession(
     itemIds: parsed.itemIds,
     prepared: {
       capsuleId: parsed.capsuleId,
-      encryptedPayload:
-        base64ToUint8Array(parsed.encryptedPayloadBase64),
+      encryptedVaultPointer: parsed.encryptedVaultPointer,
       encryptedSizeBytes: parsed.encryptedSizeBytes,
       vaultSha256: parsed.vaultSha256,
       saltBase: parsed.saltBase,
@@ -656,10 +655,8 @@ export default function CapsuleBuilder() {
     itemIds:
       holdState.itemIds,
 
-    encryptedPayloadBase64:
-      uint8ArrayToBase64(
-        holdState.prepared.encryptedPayload
-      ),
+    encryptedVaultPointer:
+      holdState.prepared.encryptedVaultPointer,
 
     encryptedSizeBytes:
       holdState.prepared.encryptedSizeBytes,
@@ -747,10 +744,8 @@ export default function CapsuleBuilder() {
         ...(typeof description === "string" ? { description } : {}),
         capsuleId: prepared.prepared.capsuleId,
         itemIds: prepared.itemIds,
-        encryptedPayloadBase64:
-          typeof prepared.prepared.encryptedPayload !== "undefined"
-            ? uint8ArrayToBase64(prepared.prepared.encryptedPayload)
-            : "",
+        encryptedVaultPointer:
+          prepared.prepared.encryptedVaultPointer,
         encryptedSizeBytes: prepared.prepared.encryptedSizeBytes,
         vaultSha256: prepared.prepared.vaultSha256,
         saltBase: prepared.prepared.saltBase,

@@ -172,12 +172,7 @@ Content size MUST NOT determine:
 - next-block price;
 - per-MB AETERNA fee.
 
-Active canonical documents MUST NOT retain:
-- BLOCK 1;
-- 20 MB LEFT;
-- NEXT +20MB;
-- +$3;
-- size-based AETERNA pricing.
+Active canonical documents MUST NOT retain block-based commercial pricing language.
 
 ---
 

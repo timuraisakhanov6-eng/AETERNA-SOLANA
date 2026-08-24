@@ -6,9 +6,6 @@ export interface RuntimeStorage {
 
   /**
    * Opens Runtime storage for one capsule session.
-   *
-   * Runtime storage exists only while the capsule
-   * is being prepared and sealed.
    */
   open(
     capsuleId: string,
@@ -24,10 +21,6 @@ export interface RuntimeStorage {
 
   /**
    * Reads one encrypted chunk ciphertext.
-   *
-   * MUST throw if the chunk does not exist.
-   *
-   * Runtime follows the Fail Closed principle.
    */
   read(
     chunkId: string,
@@ -42,12 +35,29 @@ export interface RuntimeStorage {
   ): Promise<void>;
 
   /**
-   * Destroys the entire Runtime session.
+   * Stores a temporary encrypted Vault inside the Runtime Layer.
+   */
+  storeVault(
+    capsuleId: string,
+    ciphertext: Uint8Array,
+  ): Promise<void>;
 
-     Removes every temporary Runtime record
-     created during capsule preparation.
-   *
-   * Used when sealing completes or fails.
+  /**
+   * Reads a temporary encrypted Vault from the Runtime Layer.
+   */
+  readVault(
+    capsuleId: string,
+  ): Promise<Uint8Array>;
+
+  /**
+   * Removes a temporary encrypted Vault from the Runtime Layer.
+   */
+  removeVault(
+    capsuleId: string,
+  ): Promise<void>;
+
+  /**
+   * Destroys the entire Runtime session.
    */
   clear(): Promise<void>;
 

@@ -34,10 +34,11 @@ export interface CreatorCreditContextValue {
   creditStatus: CreditStatus;
   creditId: string | null;
   lifecycleId: string | null;
+  paymentIntentId: string | null;
   error: string | null;
-  refreshCredit: (capsuleId: string) => Promise<void>;
-  checkEntitlement: (challengeId: string, network: string, account: string, signature: string, capsuleId: string) => Promise<CreateAccessStatus>;
-  reserveLifecycle: (capsuleId: string, lifecycleId: string) => Promise<{ ok: boolean; status?: string }>;
+  refreshCredit: (challengeId: string, network: string, account: string, signature: string, creatorCreditId: string, lifecycleId?: string | null) => Promise<void>;
+  checkEntitlement: (challengeId: string, network: string, account: string, signature: string, creatorCreditId: string, lifecycleId?: string | null) => Promise<CreateAccessStatus>;
+  reserveLifecycle: (creatorCreditId: string, lifecycleId: string, capsuleId: string) => Promise<{ ok: boolean; status?: string }>;
   accessStatus: CreateAccessStatus;
   setAccessStatus: (status: CreateAccessStatus) => void;
   clear: () => void;
@@ -113,24 +114,32 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
 }
 
 export function CreatorCreditProvider({ children }: { children: ReactNode }) {
+  const { creatorIdentityId } = useCreatorIdentity();
   const [creditStatus, setCreditStatus] = useState<CreditStatus>("idle");
   const [creditId, setCreditId] = useState<string | null>(null);
   const [lifecycleId, setLifecycleId] = useState<string | null>(null);
+  const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accessStatus, setAccessStatus] = useState<CreateAccessStatus>("loading");
 
-  const refreshCredit = useCallback(async (capsuleId: string) => {
+  const refreshCredit = useCallback(async (challengeId: string, network: string, account: string, signature: string, creatorCreditId: string, lifecycleId?: string | null) => {
     setCreditStatus("pending");
     setError(null);
     try {
-      const res = await fetch(`/api/creator/credit-status?capsuleId=${encodeURIComponent(capsuleId)}`);
+      const res = await fetch("/api/creator/credit-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challengeId, network, account, signature, creatorCreditId, lifecycleId }),
+      });
       const data = await res.json();
-      if (!res.ok || !data?.ok) {
+      if (!res.ok || !data?.ok || typeof data?.status !== "string") {
         throw new Error(data?.error || "CREDIT_STATUS_FAILED");
       }
-      setCreditStatus(data.status ?? "idle");
-      setCreditId(data.creatorCreditId ?? null);
-      setLifecycleId(data.lifecycleId ?? null);
+      const status = data.status;
+      const mapped: CreditStatus = status === "available" || status === "consuming" || status === "consumed" ? status : "idle";
+      setCreditStatus(mapped);
+      setCreditId(data.creatorCreditId ?? creatorCreditId);
+      setLifecycleId(data.lifecycleId ?? lifecycleId ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "CREDIT_ERROR");
       setCreditStatus("error");
@@ -142,7 +151,8 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
     network: string,
     account: string,
     signature: string,
-    capsuleId: string
+    creatorCreditId: string,
+    lifecycleId?: string | null
   ) => {
     setAccessStatus("loading");
     setError(null);
@@ -150,22 +160,24 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
       const res = await fetch("/api/creator/credit-status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ challengeId, network, account, signature, capsuleId }),
+        body: JSON.stringify({ challengeId, network, account, signature, creatorCreditId, lifecycleId }),
       });
       const data = await res.json();
       if (!res.ok || !data?.ok || typeof data?.status !== "string") {
         throw new Error(data?.error || "ENTITLEMENT_CHECK_FAILED");
       }
       const status = data.status;
-      if (status === "available" || status === "consumed") {
+      if (status === "available" || status === "consuming") {
         setAccessStatus("available");
+        setCreditId(data.creatorCreditId ?? creatorCreditId);
+        setLifecycleId(data.lifecycleId ?? lifecycleId ?? null);
         return "available";
-      } else if (status === "none") {
-        setAccessStatus("access-required");
-        return "access-required";
+      } else if (status === "consumed") {
+        setAccessStatus("unavailable");
+        return "unavailable";
       }
-      setAccessStatus("unavailable");
-      return "unavailable";
+      setAccessStatus("access-required");
+      return "access-required";
     } catch (err) {
       setError(err instanceof Error ? err.message : "ENTITLEMENT_ERROR");
       setAccessStatus("unavailable");
@@ -173,21 +185,26 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const reserveLifecycle = useCallback(async (capsuleId: string, lifecycleId: string) => {
+  const reserveLifecycle = useCallback(async (creatorCreditId: string, lifecycleId: string, capsuleId: string) => {
     setCreditStatus("pending");
     setError(null);
     try {
       const res = await fetch("/api/creator/reserve-lifecycle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ capsuleId, lifecycleId }),
+        body: JSON.stringify({
+          creatorIdentityId: creatorIdentityId,
+          creatorCreditId,
+          lifecycleId,
+          capsuleId,
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || "LIFECYCLE_RESERVATION_FAILED");
       }
       setCreditStatus(data.status ?? "consuming");
-      setCreditId(data.creatorCreditId ?? null);
+      setCreditId(data.creatorCreditId ?? creatorCreditId);
       setLifecycleId(lifecycleId);
       return data;
     } catch (err) {
@@ -195,20 +212,20 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
       setCreditStatus("error");
       throw err;
     }
-  }, []);
+  }, [creatorIdentityId]);
 
   const clear = useCallback(() => {
     setCreditStatus("idle");
     setCreditId(null);
     setLifecycleId(null);
+    setPaymentIntentId(null);
     setError(null);
     setAccessStatus("loading");
   }, []);
 
   return (
-    <CreatorCreditContext.Provider value={{ creditStatus, creditId, lifecycleId, error, refreshCredit, checkEntitlement, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
+    <CreatorCreditContext.Provider value={{ creditStatus, creditId, lifecycleId, paymentIntentId, error, refreshCredit, checkEntitlement, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
       {children}
     </CreatorCreditContext.Provider>
   );
 }
-

@@ -47,6 +47,13 @@ interface UploadEnv extends ExecutorEnv {
     get(key: string): Promise<string | null>;
   };
   CHUNK_POINTER_REGISTRY: ChunkPointerRegistryKVNamespace;
+  PUBLICATION_VERIFICATIONS: {
+    get(key: string): Promise<string | null>;
+    put(key: string, value: string): Promise<void>;
+  };
+  CREDIT_OPERATION_COORDINATOR: {
+    fetch(request: Request): Promise<Response>;
+  };
 }
 
 /* ================= ORIGINS ================= */
@@ -189,6 +196,10 @@ export const onRequestPost = async (
   }
 
   if (!env?.UPLOAD_TOKENS || !env?.VERIFIED_PAYMENTS) {
+    return fail(origin, 503, "STORAGE_UNAVAILABLE");
+  }
+
+  if (!env?.PUBLICATION_VERIFICATIONS || !env?.CREDIT_OPERATION_COORDINATOR) {
     return fail(origin, 503, "STORAGE_UNAVAILABLE");
   }
 
@@ -370,6 +381,92 @@ export const onRequestPost = async (
     return fail(origin, 403, "UPLOAD_TOKEN_PAYMENT_UNRESOLVABLE");
   }
 
+  /* 8.1 Vault publication claim — only for vault uploads.
+         Serializes single-claim publication attempt through the
+         CreditOperationCoordinator without changing credit business
+         semantics. Chunk uploads skip this gate. */
+  if (kind === "vault") {
+    const tokenLifecycleId =
+      typeof tokenData.canonicalLifecycleId === "string"
+        ? tokenData.canonicalLifecycleId.trim()
+        : "";
+
+    const tokenCreatorIdentityId =
+      typeof tokenData.creatorIdentityId === "string"
+        ? tokenData.creatorIdentityId.trim()
+        : "";
+
+    if (!tokenLifecycleId || !tokenCreatorIdentityId) {
+      return fail(origin, 403, "UPLOAD_TOKEN_UNBOUND");
+    }
+
+    const lifecycleKey = `creator:credit:lifecycle:${tokenCreatorIdentityId}:${tokenLifecycleId}`;
+    const lifecycleRaw = await env.CREATOR_CREDITS.get(lifecycleKey);
+    if (!lifecycleRaw) {
+      return fail(origin, 409, "LIFECYCLE_NOT_RESERVED");
+    }
+
+    let creditRecord: { id?: string; status?: string; creatorIdentityId?: string } | null = null;
+    try {
+      creditRecord = JSON.parse(lifecycleRaw) as typeof creditRecord;
+    } catch {
+      return fail(origin, 503, "CREDIT_STORAGE_CORRUPTED");
+    }
+
+    const creatorCreditId =
+      typeof creditRecord?.id === "string" && creditRecord.id.trim().length > 0
+        ? creditRecord.id.trim()
+        : "";
+
+    if (!creatorCreditId) {
+      return fail(origin, 409, "LIFECYCLE_NOT_RESERVED");
+    }
+
+    const claimPayload = {
+      op: "vault-publication-claim" as const,
+      creatorCreditId,
+      creatorIdentityId: tokenCreatorIdentityId,
+      lifecycleId: tokenLifecycleId,
+      capsuleId: resolvedCapsuleId,
+    };
+
+    let claimResult: { ok: boolean; outcome: string; status: string; creatorCreditId: string; lifecycleId: string | null; revision: number };
+    try {
+      const claimResponse = await env.CREDIT_OPERATION_COORDINATOR.fetch(
+        new Request("http://localhost", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(claimPayload),
+        })
+      );
+
+      const claimRaw = await claimResponse.text();
+      try {
+        claimResult = JSON.parse(claimRaw) as typeof claimResult;
+      } catch {
+        return fail(origin, 503, "COORDINATOR_RESPONSE_INVALID");
+      }
+    } catch {
+      return fail(origin, 503, "COORDINATOR_UNAVAILABLE");
+    }
+
+    if (!claimResult.ok && claimResult.outcome === "VAULT_PUBLICATION_EXPLICIT_FAILURE") {
+      return fail(origin, 409, "PUBLICATION_CLAIM_FAILED");
+    }
+
+    if (!claimResult.ok || claimResult.outcome !== "VAULT_PUBLICATION_CLAIMED") {
+      return fail(origin, 409, "PUBLICATION_CLAIM_REJECTED");
+    }
+
+    if (
+      claimResult.creatorCreditId !== creatorCreditId ||
+      claimResult.lifecycleId !== tokenLifecycleId ||
+      claimResult.status !== "CONSUMING"
+    ) {
+      return fail(origin, 409, "PUBLICATION_CLAIM_INVALID");
+    }
+  }
+
   /* 9. Declared size vs actual received size */
 
   // Transport decoding only.
@@ -411,8 +508,51 @@ export const onRequestPost = async (
   /* 11–13. Fund Executor Hot if required, upload via Executor Hot,
      await independently-confirmed propagation. Nothing above this
      line may fund or sign anything (Section 4, final MUST NOT). */
+  let storagePointer: string | null = null;
+
   try {
-    const { storagePointer } = await publishCiphertext(env, bytes, now);
+    const publishResult = await publishCiphertext(env, bytes, now);
+    storagePointer = publishResult.storagePointer;
+
+    if (kind === "vault") {
+      const tokenLifecycleId =
+        typeof tokenData.canonicalLifecycleId === "string"
+          ? tokenData.canonicalLifecycleId.trim()
+          : "";
+
+      const tokenCreatorIdentityId =
+        typeof tokenData.creatorIdentityId === "string"
+          ? tokenData.creatorIdentityId.trim()
+          : "";
+
+      const publicationKey = `creator:publication:${tokenLifecycleId}`;
+      const existingPublicationRaw = await env.PUBLICATION_VERIFICATIONS.get(publicationKey);
+
+      if (existingPublicationRaw) {
+        const existingPublication = JSON.parse(existingPublicationRaw) as Record<string, unknown>;
+        if (existingPublication.state !== "PENDING" || existingPublication.expectedTxId !== storagePointer) {
+          return fail(origin, 409, "PUBLICATION_ALREADY_BOUND");
+        }
+      } else {
+        const publicationRecord = {
+          lifecycleId: tokenLifecycleId,
+          capsuleId: resolvedCapsuleId,
+          creatorIdentityId: tokenCreatorIdentityId,
+          state: "PENDING",
+          expectedTxId: storagePointer,
+          expectedVaultSha256: null,
+          evidenceIds: [storagePointer],
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        try {
+          await env.PUBLICATION_VERIFICATIONS.put(publicationKey, JSON.stringify(publicationRecord));
+        } catch {
+          return fail(origin, 503, "PUBLICATION_RECORD_WRITE_FAILED");
+        }
+      }
+    }
 
     /* Chunk path — canonical Chunk Pointer Registry persistence
        (Storage Authority). Sequence: obtain StoragePointer →
@@ -449,10 +589,66 @@ export const onRequestPost = async (
       return fail(origin, 503, "EXECUTOR_TEMPORARILY_UNAVAILABLE");
     }
 
+    if (kind === "vault") {
+      const tokenLifecycleId =
+        typeof tokenData.canonicalLifecycleId === "string"
+          ? tokenData.canonicalLifecycleId.trim()
+          : "";
+
+      const tokenCreatorIdentityId =
+        typeof tokenData.creatorIdentityId === "string"
+          ? tokenData.creatorIdentityId.trim()
+          : "";
+
+      if (tokenLifecycleId && tokenCreatorIdentityId) {
+        const lifecycleKey = `creator:credit:lifecycle:${tokenCreatorIdentityId}:${tokenLifecycleId}`;
+        const lifecycleRaw = await env.CREATOR_CREDITS.get(lifecycleKey);
+        if (lifecycleRaw) {
+          let creditRecord: { id?: string } | null = null;
+          try {
+            creditRecord = JSON.parse(lifecycleRaw) as typeof creditRecord;
+          } catch {
+            creditRecord = null;
+          }
+
+          const creatorCreditId =
+            typeof creditRecord?.id === "string" && creditRecord.id.trim().length > 0
+              ? creditRecord.id.trim()
+              : "";
+
+          if (creatorCreditId) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const isExplicitIrysRejection = /Irys upload failed:\s*[4-5]\d\d\b/.test(errorMessage);
+
+            if (isExplicitIrysRejection) {
+              try {
+                await env.CREDIT_OPERATION_COORDINATOR.fetch(
+                  new Request("http://localhost", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({
+                      op: "vault-publication-claim",
+                      creatorCreditId,
+                      creatorIdentityId: tokenCreatorIdentityId,
+                      lifecycleId: tokenLifecycleId,
+                      capsuleId: resolvedCapsuleId,
+                      outcome: "PUBLICATION_EXPLICIT_FAILURE",
+                    }),
+                  })
+                );
+              } catch {
+                // best-effort failure marking; do not hide the original upload failure
+              }
+            }
+          }
+        }
+      }
+    }
+
     if (env.DEBUG === "true") {
       console.error(
         "[AETERNA][upload] publication failed",
-        error instanceof Error ? error.stack : String(error)
+        error instanceof Error ? error.name : typeof error
       );
     }
 

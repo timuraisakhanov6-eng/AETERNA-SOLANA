@@ -4,14 +4,13 @@
  * Canonical service-payment modal.
  *
  * Active flow:
- *   canonical service quote -> Base USDC payment -> server verification
- *   -> Creator Credit -> entitlement -> /create
+ *   paymentIntentId -> immutable quote -> Base USDC payment
+ *   -> server verification -> Creator Credit -> entitlement -> /create
  *
  * This modal MUST NOT:
  * - calculate authoritative price
  * - declare payment success locally
  * - write Credit state
- * - use Paddle as authority
  * - treat frontend state as authority
  */
 
@@ -35,19 +34,20 @@ interface PaymentModalProps {
   open: boolean
   onClose: () => void
   description?: string
-  billableSizeBytes: number
-  expectedAmount: number
+  billableSizeBytes?: number
+  expectedAmount?: number
   unlockAt: number | null
-  capsuleId: string
   protocolAccepted: boolean
   creatorIdentityId?: string | null
   onCreditReady?: (result: {
     status: string
     creatorCreditId?: string
+    paymentIntentId?: string
   }) => void
   onReserveReady?: (result: {
     creatorCreditId: string
     lifecycleId: string
+    paymentIntentId: string
   }) => void
 }
 
@@ -86,10 +86,7 @@ export function PaymentModal({
   open,
   onClose,
   description,
-  billableSizeBytes,
-  expectedAmount,
   unlockAt,
-  capsuleId,
   protocolAccepted,
   creatorIdentityId,
   onCreditReady,
@@ -98,6 +95,7 @@ export function PaymentModal({
   const [phase, setPhase] = useState<PaymentPhase>("idle")
   const [rail, setRail] = useState<Rail>("Base")
   const [quote, setQuote] = useState<{
+    paymentIntentId: string
     expectedAmount: number
     currency: string
     expiresAt: number
@@ -139,10 +137,12 @@ export function PaymentModal({
     setIsProcessing(true)
 
     try {
+      const paymentIntentId = crypto.randomUUID()
+
       const res = await fetch("/api/service-payment/create-quote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ capsuleId }),
+        body: JSON.stringify({ paymentIntentId }),
       })
 
       const data = await res.json()
@@ -151,7 +151,8 @@ export function PaymentModal({
       }
 
       const q = {
-        expectedAmount: Number(data.expectedAmount),
+        paymentIntentId: typeof data.paymentIntentId === "string" ? data.paymentIntentId : paymentIntentId,
+        expectedAmount: Number(data.expectedAmount ?? 1),
         currency: String(data.currency ?? "USD"),
         expiresAt: Number(data.expiresAt),
       }
@@ -190,7 +191,7 @@ export function PaymentModal({
   }
 
   const confirmAndVerify = async () => {
-    if (!protocolAccepted || !creatorIdentityId) {
+    if (!protocolAccepted || !creatorIdentityId || !quote) {
       setError(
         !creatorIdentityId
           ? "Creator identity is required."
@@ -218,13 +219,15 @@ export function PaymentModal({
         throw new Error("No transaction hash from wallet.")
       }
 
+      const evidenceId = `payment-modal-${quote.paymentIntentId}-${Date.now()}`
+
       const verifyRes = await fetch("/api/service-payment/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          capsuleId,
+          paymentIntentId: quote.paymentIntentId,
           creatorIdentityId,
-          evidenceId: `payment-modal-${capsuleId}-${Date.now()}`,
+          evidenceId,
           transactionId: txHash,
         }),
       })
@@ -238,43 +241,47 @@ export function PaymentModal({
         throw new Error("PAYMENT_NOT_VERIFIED")
       }
 
-      const res = await fetch("/api/creator/grant-credit", {
+      const grantRes = await fetch("/api/creator/grant-credit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          capsuleId,
+          paymentIntentId: quote.paymentIntentId,
           creatorIdentityId,
-          verifiedPaymentId: `payment-modal-${capsuleId}-${Date.now()}`,
+          verifiedPaymentId: evidenceId,
           transactionId: txHash,
         }),
       })
 
-      const data = await res.json()
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "PAYMENT_VERIFICATION_FAILED")
+      const grantData = await grantRes.json()
+      if (!grantRes.ok || !grantData?.ok) {
+        throw new Error(grantData?.error || "PAYMENT_VERIFICATION_FAILED")
       }
 
-      const status = data.status ?? "available"
+      const status = grantData.status ?? "available"
       setPhase(status === "available" ? "available" : "verifying")
       setIsProcessing(false)
       onCreditReady?.({
         status,
-        creatorCreditId: data.creatorCreditId,
+        creatorCreditId: grantData.creatorCreditId,
+        paymentIntentId: quote.paymentIntentId,
       })
 
-      if (status !== "available" || !data.creatorCreditId) {
+      if (status !== "available" || !grantData.creatorCreditId) {
         return
       }
 
       setPhase("reserving")
       setError(null)
+      const lifecycleId = `lifecycle-${quote.paymentIntentId}-${Date.now()}`
+
       const lifecycleRes = await fetch("/api/creator/reserve-lifecycle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          capsuleId,
+          paymentIntentId: quote.paymentIntentId,
           creatorIdentityId,
-          lifecycleId: `lifecycle-${capsuleId}-${Date.now()}`,
+          capsuleId: `reserve-${quote.paymentIntentId}-${Date.now()}`,
+          lifecycleId,
         }),
       })
 
@@ -284,8 +291,9 @@ export function PaymentModal({
       }
 
       onReserveReady?.({
-        creatorCreditId: data.creatorCreditId,
-        lifecycleId: lifecycleData.lifecycleId ?? `lifecycle-${capsuleId}-${Date.now()}`,
+        creatorCreditId: grantData.creatorCreditId,
+        lifecycleId: lifecycleData.lifecycleId ?? lifecycleId,
+        paymentIntentId: quote.paymentIntentId,
       })
     } catch (err) {
       const message =
@@ -372,18 +380,19 @@ export function PaymentModal({
             </div>
           </div>
 
-          {rail === "Solana" && (
-            <div className="text-xs text-amber-500">
-              Solana service payment is not yet available.
-            </div>
-          )}
-
           {quote && (
             <div className="space-y-1">
               <div className="text-xs text-muted-foreground">Quote</div>
               <div className="text-xs">
                 ${quote.expectedAmount.toFixed(2)} {quote.currency}
               </div>
+            </div>
+          )}
+
+          {unlockDate && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Opens</div>
+              <div className="text-xs">{unlockDate}</div>
             </div>
           )}
 
@@ -425,8 +434,7 @@ export function PaymentModal({
               phase === "available" ||
               phase === "connecting_wallet" ||
               phase === "verifying" ||
-              phase === "reserving" ||
-              rail !== "Base"
+              phase === "reserving"
             }
             onClick={
               phase === "quote_ready" || phase === "error"

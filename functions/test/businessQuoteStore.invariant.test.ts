@@ -30,7 +30,7 @@ function buildContext(overrides?: {
 
 describe("Business Quote invariants — canonical service-payment create-quote", () => {
   const validBody = {
-    capsuleId: "a".repeat(64),
+    paymentIntentId: "intent-1",
   };
 
   it("server price authority: expectedAmount is canonical $1 USD, not client-supplied", async () => {
@@ -79,7 +79,7 @@ describe("Business Quote invariants — canonical service-payment create-quote",
 
     const stored = await getBusinessQuote(
       env,
-      validBody.capsuleId
+      validBody.paymentIntentId
     );
 
     expect(stored).not.toBeNull();
@@ -108,11 +108,11 @@ describe("Business Quote invariants — canonical service-payment create-quote",
 
     const stored = await getBusinessQuote(
       env,
-      validBody.capsuleId
+      validBody.paymentIntentId
     );
 
     expect(stored).not.toBeNull();
-    expect(stored!.capsuleId).toBe(validBody.capsuleId);
+    expect(stored!.paymentIntentId).toBe(validBody.paymentIntentId);
     expect(stored!.expectedAmount).toBe(1);
   });
 

@@ -73,13 +73,9 @@ The concrete wallet provider, wallet protocol, blockchain, payment asset,
 signature scheme, and wallet authentication mechanism are NOT YET SELECTED.
 
 Do NOT hardcode:
-
-- Solana;
-- MetaMask;
-- Reown;
-- WalletConnect;
-- Alchemy;
-- USDC;
+- legacy Paddle;
+- legacy bank-card rails;
+- legacy Web3 provider assumptions;
 - any specific wallet provider.
 
 Use an abstract concept:
@@ -87,6 +83,12 @@ Use an abstract concept:
 Authenticated Creator Identity
 
 The concrete Wallet/Payment Architecture will be specified separately.
+
+Current active implementation:
+- Base Mainnet / native USDC via minimal EIP-1193 browser provider.
+
+Future adapters:
+- Additional wallet/provider adapters may be added only through explicit canonical selection.
 
 ## 6. STATE MACHINE
 

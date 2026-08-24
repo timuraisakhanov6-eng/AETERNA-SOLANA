@@ -10,6 +10,7 @@
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
+import { verifyMessage } from "ethers";
 import {
   getCreatorIdentity,
   createCreatorIdentity,
@@ -100,7 +101,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   const challengeRaw = await env.CREATOR_IDENTITIES.get(`${CHALLENGE_PREFIX}${challengeId}`);
   if (!challengeRaw) {
-    return fail(origin, 400, "CHALLENGE_NOT_FOUND");
+    return fail(origin, 401, "CHALLENGE_NOT_FOUND");
   }
 
   let challengeRecord: Record<string, unknown>;
@@ -124,7 +125,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   let recovered = "";
   try {
     const message = `AETERNA identity challenge:${challengeRecord.challenge}`;
-    const recoveredAddress = await recoverPersonalSignAddress(signature, message);
+    const recoveredAddress = await verifyMessage(message, signature);
     recovered = recoveredAddress;
   } catch {
     return fail(origin, 400, "INVALID_SIGNATURE");

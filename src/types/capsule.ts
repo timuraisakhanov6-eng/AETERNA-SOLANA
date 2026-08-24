@@ -38,8 +38,8 @@ export interface PreparedCapsule {
   readonly chunkMetadata:
     readonly ChunkMetadata[];
 
-  readonly encryptedPayload:
-    Uint8Array;
+  readonly encryptedVaultPointer:
+    string;
 
   readonly encryptedSizeBytes:
     number;

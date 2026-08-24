@@ -29,7 +29,6 @@ Future project treasury governance and fund custody.
 
 Current stage status:
 - Treasury Safe is NOT the active Web3 payment receiver;
-- Treasury Safe does NOT participate in the current funding flow for Executor Hot;
 - Treasury Safe is NOT required for current capsule publication.
 
 Future use:
@@ -38,7 +37,6 @@ Future use:
 
 Does not
 - does not accept user payments in the current stage;
-- does not fund Executor Hot in the current stage;
 - does not participate in Irys publication;
 - does not perform encryption.
 
@@ -161,18 +159,17 @@ Does not:
 - does not accept payments;
 - does not sign transactions.
 
-### 8. Reown (WalletConnect)
+### 8. Wallet Connection Abstraction
 
 Purpose
 
-Connecting user wallets.
+Connecting user wallets for AETERNA service payment and identity proof.
 
-Supports:
-- MetaMask
-- Coinbase Wallet
-- Rabby
-- Rainbow
-- Trust Wallet
+Current active implementation:
+- Minimal EIP-1193 browser provider for Base Mainnet / native USDC.
+
+Pending expansions:
+- Additional wallet/provider adapters may be added only through explicit canonical selection.
 
 Used for:
 - Connect Wallet;
@@ -367,7 +364,7 @@ Does not know:
 | CREATOR_CREDIT | Server-authoritative entitlement for one capsule lifecycle; bound to Creator Identity |
 | AETERNA_EXECUTOR_HOT | PENDING selection; publication execution component; not canonical AETERNA service-payment receiver or Irys funder |
 | Alchemy | Access to supported blockchains and transaction verification |
-| Reown (WalletConnect) | Connecting user wallets |
+| Minimal EIP-1193 browser provider | Base Mainnet / native USDC wallet connect and signing |
 | MetaMask | Storing keys and signing transactions |
 | ChainList | Adding supported networks for the user |
 | Irys | Publishing the encrypted Vault; separate publication/storage payment layer |

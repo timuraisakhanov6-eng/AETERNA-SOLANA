@@ -354,6 +354,21 @@ function resolveRange(
 
 }
 
+/**
+ * ByteRuntime decrypted chunk cache bounds.
+ *
+ * These are internal implementation-level memory-safety limits.
+ * They are not protocol parameters and do not affect:
+ * AES-256-GCM, PBKDF2, chunk ciphertext layout, storage pointers,
+ * Vault schema, Manifest schema, or CapsuleView semantics.
+ *
+ * Bounds are derived from existing repository constants to avoid
+ * arbitrary magic numbers while still capping decrypted chunk
+ * retention independently of total capsule size.
+ */
+const BYTE_RUNTIME_MAX_CACHE_ENTRIES = 16;
+const BYTE_RUNTIME_MAX_CACHE_BYTES = MAX_CHUNK_SIZE * 2;
+
 export function createByteRuntime(
     capsuleId: string,
     cryptoKey: CryptoKey,
@@ -362,6 +377,7 @@ export function createByteRuntime(
 ): ByteRuntime {
     const byteMap =
         buildByteMap(chunks, plaintextSize);
+
     /**
      * Decrypted chunk cache.
      *
@@ -372,6 +388,42 @@ export function createByteRuntime(
      */
     const cache =
         new Map<number, Uint8Array>();
+
+    /** Approximate total decrypted bytes held in cache. */
+    let cacheBytes = 0;
+
+    /**
+     * LRU order list.
+     *
+     * Oldest entries are at the front; most-recently used entries
+     * are at the back. This is used only for bounded eviction and
+     * is not exposed outside this runtime.
+     */
+    const lru: number[] = [];
+
+    function touch(key: number): void {
+        const index = lru.indexOf(key);
+        if (index >= 0) {
+            lru.splice(index, 1);
+        }
+        lru.push(key);
+    }
+
+    function evict(): void {
+        while (
+            lru.length > 0 &&
+            (lru.length > BYTE_RUNTIME_MAX_CACHE_ENTRIES ||
+                cacheBytes > BYTE_RUNTIME_MAX_CACHE_BYTES)
+        ) {
+            const key = lru.shift()!;
+            const bytes = cache.get(key);
+            if (bytes) {
+                bytes.fill(0);
+                cacheBytes -= bytes.byteLength;
+            }
+            cache.delete(key);
+        }
+    }
 
     /**
      * Returns the fully decrypted bytes for a single chunk,
@@ -389,6 +441,7 @@ export function createByteRuntime(
             cache.get(chunk.index);
 
         if (cached) {
+            touch(chunk.index);
             return cached;
         }
 
@@ -399,7 +452,30 @@ export function createByteRuntime(
                 cryptoKey,
             );
 
-        cache.set(chunk.index, decrypted);
+        /**
+         * Copy before caching so cache zeroization never
+         * aliases external buffers. The returned decrypted
+         * bytes from loadChunk() may share an underlying
+         * ArrayBuffer with caller/test fixtures; this copy
+         * isolates cache-owned plaintext.
+         */
+        const cachedCopy =
+            new Uint8Array(decrypted);
+
+        if (
+            cachedCopy.byteLength <=
+            BYTE_RUNTIME_MAX_CACHE_BYTES
+        ) {
+            cache.set(
+                chunk.index,
+                cachedCopy,
+            );
+            cacheBytes +=
+                cachedCopy.byteLength;
+            lru.push(chunk.index);
+        }
+
+        evict();
 
         return decrypted;
 
@@ -555,6 +631,9 @@ export function createByteRuntime(
                 bytes.fill(0);
             }
             cache.clear();
+            lru.length = 0;
+            cacheBytes = 0;
         },
     });
+
 }
