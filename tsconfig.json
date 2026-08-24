@@ -1,23 +1,16 @@
 {
   "files": [],
-
   "references": [
     { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
+    { "path": "./tsconfig.node.json" },
+    { "path": "./tsconfig.runtime-sw.json" }
   ],
-
   "compilerOptions": {
-
     "composite": true,
-
     "baseUrl": ".",
-
     "paths": {
       "@/*": ["src/*"]
     },
-
-    /* ================= SECURITY CORE ================= */
-
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
@@ -27,20 +20,11 @@
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "alwaysStrict": true,
-
-    /* ================= RUNTIME SAFETY ================= */
-
     "allowJs": false,
     "skipLibCheck": false,
     "forceConsistentCasingInFileNames": true,
-
-    /* ================= CLEANLINESS ================= */
-
     "noUnusedParameters": false,
     "noUnusedLocals": false
   },
-
-  "exclude": [
-    "node_modules"
-  ]
+  "exclude": ["node_modules"]
 }
