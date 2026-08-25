@@ -35,20 +35,7 @@ const MAX_DESCRIPTION = 140;
 
 type SealPhase = "idle" | "preparing";
 
-/* ================= BASE64 ENCODE (browser-safe) ================= */
 
-// Uint8Array → base64 без Buffer (Vite / browser / Cloudflare Pages safe)
-// String.fromCharCode(...bytes) — stack overflow на больших массивах,
-// поэтому итерируем явно.
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = "";
-
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]!);
-  }
-
-  return btoa(binary);
-}
 
 /* ================= MIME NORMALIZATION ================= */
 
@@ -110,19 +97,7 @@ type SessionCapsuleData = {
 
 };
 
-/* ================= PREPARED IDENTITY HELPERS ================= */
 
-// base64 → Uint8Array without Buffer (Vite / browser / Cloudflare Pages
-// safe). Mirrors CapsuleHold.tsx — used to restore the PreparedCapsule
-// from sessionStorage instead of re-preparing (single-shot PREPARED).
-function base64ToUint8Array(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
 
 
 // Strict shape-check for the sessionStorage recovery payload. Mirrors
@@ -426,32 +401,6 @@ export default function CapsuleBuilder() {
   /* ================= PREPARE ================= */
 
   const encoder = new TextEncoder();
-
-  const estimatedTextSize =
-    encoder.encode(description ?? "").length +
-    items
-      // FIX 5: canonical narrowing via Extract<> instead of intersection hack
-      .filter(
-        (i): i is Extract<CapsuleItem, { type: "text" }> =>
-          i.type === "text"
-      )
-      .reduce((acc: number, i) => {
-        return acc + encoder.encode(i.text ?? "").length;
-      }, 0);
-
-  // FIX 6: canonical narrowing — only "media" items carry a size; skip the
-  // rest instead of relying on (item.size ?? 0), which silently summed
-  // undefined-size fields from non-media items.
-  const estimatedMediaSize =
-    items.reduce((acc, item) => {
-
-      if (item.type !== "media") {
-        return acc;
-      }
-
-      return acc + item.size;
-
-    }, 0);
 
   // AETERNA service entitlement is fixed at 1.00 USDC
   // and MUST NOT be derived from capsule size or block pricing.
