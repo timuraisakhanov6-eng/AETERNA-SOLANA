@@ -229,6 +229,7 @@ export default function CapsuleHold() {
                 ? { description: parsed.description }
                 : {}),
               itemIds:        parsed.itemIds,
+              creatorAuthority: parsed.creatorAuthority,
               prepared: {
                 capsuleId:
                   parsed.capsuleId,

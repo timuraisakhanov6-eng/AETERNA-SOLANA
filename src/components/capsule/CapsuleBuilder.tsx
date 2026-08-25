@@ -292,6 +292,7 @@ function restorePreparedFromSession(
       ? { description: parsed.description }
       : {}),
     itemIds: parsed.itemIds,
+    creatorAuthority: parsed.creatorAuthority,
     prepared: {
       capsuleId: parsed.capsuleId,
       encryptedVaultPointer: parsed.encryptedVaultPointer,
