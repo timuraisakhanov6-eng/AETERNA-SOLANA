@@ -34,6 +34,10 @@ import {
   createByteRuntime,
 } from "@/lib/capsule/runtime/byteRuntime";
 
+import {
+  getChunkPointers,
+} from "@/lib/storage/storage";
+
 import type {
   OpenMediaRequest,
   OpenableMediaItem,
@@ -115,6 +119,8 @@ export async function initEmergencyRuntime({
     return;
   }
 
+  const chunkPointers = await getChunkPointers(manifest.capsuleId);
+
   let nowUtc: number;
   try {
     const trusted = await getTrustedTimeSource();
@@ -167,7 +173,7 @@ export async function initEmergencyRuntime({
       manifest,
     });
 
-    renderEmergencyVault(root, vault, status);
+    renderEmergencyVault(root, vault, status, chunkPointers);
     status.textContent = "Capsule opened.";
   } catch {
     status.textContent = "Capsule unavailable.";
@@ -206,6 +212,7 @@ async function attemptOpen(args: {
   effectiveOpenAtValue: number;
   getTrustedTime: typeof getTrustedTime;
   openCapsule: typeof openCapsule;
+  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
 }): Promise<void> {
   stopHeartbeatRefresh();
   waiting = false;
@@ -232,7 +239,12 @@ async function attemptOpen(args: {
       manifest: args.manifest,
     });
 
-    renderEmergencyVault(args.root, vault, args.status);
+    renderEmergencyVault(
+      args.root,
+      vault,
+      args.status,
+      args.chunkPointers,
+    );
     args.status.textContent = "Capsule opened.";
   } catch {
     args.status.textContent = "Capsule unavailable.";
@@ -249,6 +261,7 @@ function startHeartbeatRefresh(args: {
   loadHeartbeat: typeof loadHeartbeatRecord;
   resolveOpenAt: typeof resolveEffectiveOpenAt;
   openCapsule: typeof openCapsule;
+  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
 }): void {
   if (heartbeatPollHandle !== null || !waiting) {
     return;
@@ -314,6 +327,7 @@ function startHeartbeatRefresh(args: {
       effectiveOpenAtValue: effectiveOpenAt,
       getTrustedTime: args.getTrustedTime,
       openCapsule: args.openCapsule,
+      chunkPointers: args.chunkPointers,
     });
   }, 30_000);
 }
@@ -429,6 +443,7 @@ function renderEmergencyVault(
   root: HTMLElement,
   vault: VaultV2,
   status: HTMLElement,
+  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>,
 ): void {
   root.innerHTML = "";
 
@@ -549,6 +564,7 @@ function renderEmergencyVault(
         item: mediaItem,
         capsuleId: vault.capsule.capsuleId,
         chunks,
+        chunkPointers,
         mediaType,
         mimeType,
         size,
@@ -560,6 +576,7 @@ function renderEmergencyVault(
         item: mediaItem,
         capsuleId: vault.capsule.capsuleId,
         chunks,
+        chunkPointers,
         mimeType,
         size,
       });
@@ -570,6 +587,7 @@ function renderEmergencyVault(
         item: mediaItem,
         capsuleId: vault.capsule.capsuleId,
         chunks,
+        chunkPointers,
         mimeType,
         size,
       });
@@ -587,6 +605,7 @@ function buildEmergencyMediaElement(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly MediaItemV2["chunks"];
+  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mediaType: MediaItemV2["mediaType"];
   mimeType: string;
   size: number;
@@ -651,6 +670,7 @@ function buildEmergencyMediaElement(args: {
     item: args.item,
     capsuleId: args.capsuleId,
     chunks: args.chunks,
+    chunkPointers: args.chunkPointers,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: (objectUrl) => {
@@ -671,6 +691,7 @@ function buildEmergencyImage(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly MediaItemV2["chunks"];
+  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mimeType: string;
   size: number;
 }): void {
@@ -704,6 +725,7 @@ function buildEmergencyImage(args: {
     item: args.item,
     capsuleId: args.capsuleId,
     chunks: args.chunks,
+    chunkPointers: args.chunkPointers,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: (url) => {
@@ -724,6 +746,7 @@ function buildEmergencyFile(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly MediaItemV2["chunks"];
+  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mimeType: string;
   size: number;
 }): void {
@@ -761,6 +784,7 @@ function buildEmergencyFile(args: {
     item: args.item,
     capsuleId: args.capsuleId,
     chunks: args.chunks,
+    chunkPointers: args.chunkPointers,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: (url) => {
@@ -788,6 +812,7 @@ function buildEmergencyMediaSession(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly MediaItemV2["chunks"];
+  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mimeType: string;
   size: number;
   onStreamReady: (objectUrl: string) => void;
@@ -797,6 +822,7 @@ function buildEmergencyMediaSession(args: {
     item: args.item,
     capsuleId: args.capsuleId,
     chunks: args.chunks,
+    chunkPointers: args.chunkPointers,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: args.onStreamReady,
@@ -832,6 +858,7 @@ function createEmergencyMediaSession(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly MediaItemV2["chunks"];
+  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mimeType: string;
   size: number;
   onStreamReady: (objectUrl: string) => void;
@@ -840,7 +867,7 @@ function createEmergencyMediaSession(args: {
 }): MediaSession {
   const resolvedChunks = resolveChunkPointers(
     args.chunks as MediaItemV2["chunks"],
-    buildChunkPointerMap(args.chunks),
+    args.chunkPointers,
   );
 
   const request: OpenMediaRequest = {
@@ -992,52 +1019,6 @@ function createEmergencyMediaSession(args: {
 
   void runFileFallback();
   return session;
-}
-
-/* =========================================================
-   EMERGENCY CHUNK POINTER AUTHORITY
-   ========================================================= */
-
-function buildChunkPointerMap(
-  chunks: readonly MediaItemV2["chunks"],
-): Readonly<Record<ChunkId, StoragePointer>> {
-  const map: Record<ChunkId, StoragePointer> = {};
-
-  for (const chunk of chunks) {
-    if (
-      typeof chunk !== "object" ||
-      chunk === null ||
-      Array.isArray(chunk)
-    ) {
-      throw new Error(
-        "[AETERNA] Invalid chunk metadata.",
-      );
-    }
-
-    const source = chunk as Record<string, unknown>;
-
-    if (
-      typeof source.chunkId !== "string" ||
-      source.chunkId.length === 0
-    ) {
-      throw new Error(
-        "[AETERNA] Invalid chunk metadata.",
-      );
-    }
-
-    if (
-      typeof source.pointer !== "string" ||
-      source.pointer.length === 0
-    ) {
-      throw new Error(
-        `[AETERNA] Missing storage pointer for chunk ${source.chunkId}`,
-      );
-    }
-
-    map[source.chunkId] = source.pointer as StoragePointer;
-  }
-
-  return Object.freeze(map);
 }
 
 /* =========================================================
