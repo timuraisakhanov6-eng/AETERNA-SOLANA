@@ -30,7 +30,7 @@ export async function getUiTime(): Promise<{
    * 🚨 Hard guard — UI only
    * Prevent accidental usage in protocol context
    */
-  if (typeof (globalThis as Record<string, unknown>).__AETERNA_PROTOCOL_TIME__ !== "undefined") {
+  if (typeof (globalThis as Record<string, unknown>)["__AETERNA_PROTOCOL_TIME__"] !== "undefined") {
     throw new Error("[AETERNA] UI time used in protocol context");
   }
 
