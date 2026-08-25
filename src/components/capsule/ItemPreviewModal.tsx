@@ -105,7 +105,7 @@ const ItemPreviewModal = ({
     if (!touch) return;
 
     const delta =
-      e.touches[0].clientY -
+      touch.clientY -
       startY.current;
 
     if (delta > 120) {
