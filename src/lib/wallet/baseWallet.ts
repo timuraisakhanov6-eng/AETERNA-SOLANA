@@ -91,9 +91,14 @@ export async function connectBaseWallet(): Promise<string> {
     throw new Error("Wallet connection was rejected.");
   }
 
+  const account = accounts[0];
+  if (account === undefined) {
+    throw new Error("Wallet provider returned no account.");
+  }
+
   await ensureBaseChain(provider);
 
-  return accounts[0];
+  return account;
 }
 
 export async function sendBaseUSDCPayment(): Promise<string> {
