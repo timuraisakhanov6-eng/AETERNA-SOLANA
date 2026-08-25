@@ -461,9 +461,7 @@ function renderEmergencyVault(
       continue;
     }
 
-    const record = item as Record<string, unknown>;
-
-    if (record.type !== "media") {
+    if (item.type !== "media") {
       const eyebrow = document.createElement("p");
       eyebrow.className = "item-eyebrow";
       eyebrow.textContent = "Message";
@@ -471,8 +469,8 @@ function renderEmergencyVault(
       const body = document.createElement("div");
       body.className = "item-text";
       body.textContent =
-        typeof record.text === "string"
-          ? record.text
+        typeof item.text === "string"
+          ? item.text
           : "";
 
       div.appendChild(eyebrow);
@@ -481,7 +479,7 @@ function renderEmergencyVault(
       continue;
     }
 
-    const mediaItem = record as Partial<MediaItemV2>;
+    const mediaItem = item;
 
     const filename =
       typeof mediaItem.filename === "string" &&
