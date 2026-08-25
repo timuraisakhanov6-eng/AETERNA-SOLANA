@@ -14,5 +14,8 @@
     "isolatedModules": true,
     "moduleDetection": "force"
   },
-  "include": ["src/emergency/emergencyRuntime.ts"]
+  "include": [
+    "src/emergency/emergencyRuntime.ts",
+    "src/vite-env.d.ts"
+  ]
 }
