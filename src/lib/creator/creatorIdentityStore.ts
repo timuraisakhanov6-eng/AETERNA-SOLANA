@@ -56,7 +56,15 @@ export async function getCreatorIdentityById(
   const indexKey = `creator:identity:id:${id}`;
   const raw = await env.CREATOR_IDENTITIES.get(indexKey);
   if (!raw) return null;
-  const [network, account] = raw.split(":");
+
+  const separatorIndex = raw.indexOf(":");
+  if (separatorIndex < 0) {
+    throw new Error("Malformed creator identity index");
+  }
+
+  const network = raw.slice(0, separatorIndex);
+  const account = raw.slice(separatorIndex + 1);
+
   return getCreatorIdentity(env, network, account);
 }
 
