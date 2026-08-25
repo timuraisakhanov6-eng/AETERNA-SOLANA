@@ -3,6 +3,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Lock, Loader2 } from "lucide-react";
 import { useCapsule } from "../../context/CapsuleContext";
+import { useCreatorIdentity } from "@/context/CreatorRuntimeContext";
 import ActionMenu from "./ActionMenu";
 import MediaCapture from "./MediaCapture";
 import CapsuleInput from "./CapsuleInput";
@@ -324,6 +325,8 @@ export default function CapsuleBuilder() {
     getMediaFile,
     resetCapsule,
   } = useCapsule();
+
+  const { creatorIdentityId } = useCreatorIdentity();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -706,6 +709,10 @@ export default function CapsuleBuilder() {
 
   const reserveLifecycle = async (prepared: CapsuleHoldState, creatorCreditId: string) => {
     const candidateLifecycleId = `lifecycle-${prepared.prepared.capsuleId}-${Date.now()}`
+
+    if (!creatorIdentityId) {
+      throw new Error("Creator identity is required to reserve lifecycle.");
+    }
 
     const response = await fetch("/api/creator/reserve-lifecycle", {
       method: "POST",
