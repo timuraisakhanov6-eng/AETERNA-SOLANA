@@ -60,7 +60,9 @@ export function LandingPaymentGateProvider({
         protocolAccepted={true}
         creatorIdentityId={null}
         onCreditReady={({ paymentIntentId }) => {
-          onEntitlementReady?.(paymentIntentId)
+          if (paymentIntentId) {
+            onEntitlementReady?.(paymentIntentId)
+          }
         }}
         onReserveReady={(result) => {
           setOpen(false)
