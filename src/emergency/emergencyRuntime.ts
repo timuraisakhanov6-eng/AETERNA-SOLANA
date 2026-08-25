@@ -130,7 +130,7 @@ export async function initEmergencyRuntime({
   lastConfirmedAt = heartbeatRecord?.lastConfirmedAt ?? null;
   effectiveOpenAt = resolveOpenAtSource({
     manifestOpenAt: manifest.openAt,
-    lastConfirmedAt,
+    lastConfirmedAt: lastConfirmedAt ?? undefined,
     heartbeatInterval,
   });
 
@@ -143,6 +143,8 @@ export async function initEmergencyRuntime({
       manifest,
       creatorAuthorityFragment: parsed.creatorAuthorityFragment,
       sendHeartbeat: sendHeartbeatSource,
+      loadHeartbeat: loadHeartbeatSource,
+      resolveOpenAt: resolveOpenAtSource,
     });
   }
 
@@ -282,7 +284,7 @@ function startHeartbeatRefresh(args: {
     lastConfirmedAt = newLastConfirmedAt;
     effectiveOpenAt = args.resolveOpenAt({
       manifestOpenAt: args.manifest.openAt,
-      lastConfirmedAt,
+      lastConfirmedAt: lastConfirmedAt ?? undefined,
       heartbeatInterval: args.manifest.heartbeatInterval ?? 0,
     });
 
@@ -336,6 +338,8 @@ function wireConfirmPresence(args: {
   manifest: ManifestV1;
   creatorAuthorityFragment: string;
   sendHeartbeat: typeof sendHeartbeat;
+  loadHeartbeat: typeof loadHeartbeatRecord;
+  resolveOpenAt: typeof resolveEffectiveOpenAt;
 }): void {
   const confirmWrap =
     document.getElementById("confirmWrap");
@@ -381,15 +385,15 @@ function wireConfirmPresence(args: {
         }, 3000);
 
         try {
-          const refreshed = await loadHeartbeatSource(
+          const refreshed = await args.loadHeartbeat(
             args.manifest.capsuleId,
           );
 
           if (!runtimeDisposed && waiting) {
             lastConfirmedAt = refreshed?.lastConfirmedAt ?? lastConfirmedAt;
-            effectiveOpenAt = resolveOpenAtSource({
+            effectiveOpenAt = args.resolveOpenAt({
               manifestOpenAt: args.manifest.openAt,
-              lastConfirmedAt,
+              lastConfirmedAt: lastConfirmedAt ?? undefined,
               heartbeatInterval: args.manifest.heartbeatInterval ?? 0,
             });
 
