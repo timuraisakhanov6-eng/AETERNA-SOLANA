@@ -41,7 +41,6 @@ import {
 import type {
   OpenMediaRequest,
   OpenableMediaItem,
-  OpenImageResult,
   MediaSession,
 } from "@/lib/capsule/open/openTypes";
 
@@ -55,6 +54,7 @@ import type {
 } from "@/types/manifest";
 
 import type {
+  ChunkMetadata,
   MediaItemV2,
   VaultV2,
 } from "@/types/vault";
@@ -505,7 +505,7 @@ function renderEmergencyVault(
         : 0;
 
     const chunks = Array.isArray(mediaItem.chunks)
-      ? (mediaItem.chunks as readonly MediaItemV2["chunks"])
+      ? (mediaItem.chunks as readonly ChunkMetadata[])
       : [];
 
     const eyebrow = document.createElement("p");
@@ -604,7 +604,7 @@ function buildEmergencyMediaElement(args: {
   status: HTMLElement;
   item: Partial<MediaItemV2>;
   capsuleId: string;
-  chunks: readonly MediaItemV2["chunks"];
+  chunks: readonly ChunkMetadata[];
   chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mediaType: MediaItemV2["mediaType"];
   mimeType: string;
@@ -690,7 +690,7 @@ function buildEmergencyImage(args: {
   status: HTMLElement;
   item: Partial<MediaItemV2>;
   capsuleId: string;
-  chunks: readonly MediaItemV2["chunks"];
+  chunks: readonly ChunkMetadata[];
   chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mimeType: string;
   size: number;
@@ -745,7 +745,7 @@ function buildEmergencyFile(args: {
   status: HTMLElement;
   item: Partial<MediaItemV2>;
   capsuleId: string;
-  chunks: readonly MediaItemV2["chunks"];
+  chunks: readonly ChunkMetadata[];
   chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mimeType: string;
   size: number;
@@ -811,7 +811,7 @@ function buildEmergencyMediaSession(args: {
   status: HTMLElement;
   item: Partial<MediaItemV2>;
   capsuleId: string;
-  chunks: readonly MediaItemV2["chunks"];
+  chunks: readonly ChunkMetadata[];
   chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mimeType: string;
   size: number;
@@ -857,7 +857,7 @@ function buildEmergencyMediaSession(args: {
 function createEmergencyMediaSession(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
-  chunks: readonly MediaItemV2["chunks"];
+  chunks: readonly ChunkMetadata[];
   chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   mimeType: string;
   size: number;
