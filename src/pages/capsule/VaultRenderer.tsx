@@ -94,8 +94,15 @@ export async function sessionToDownloadStream(
 
       try {
 
+        const saveFilePicker =
+          (window as Window).showSaveFilePicker;
+
+        if (typeof saveFilePicker !== "function") {
+          return;
+        }
+
         const handle =
-          await (window as Window).showSaveFilePicker({
+          await saveFilePicker({
             suggestedName: safeName,
             types: [
               {
