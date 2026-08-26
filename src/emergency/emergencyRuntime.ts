@@ -1,12 +1,4 @@
 import {
-  parseCapsuleCapability,
-} from "@/lib/capsule/parseCapsuleCapability";
-
-import {
-  loadManifest,
-} from "@/lib/capsule/loadManifest";
-
-import {
   loadHeartbeatRecord,
 } from "@/lib/capsule/loadHeartbeatRecord";
 
