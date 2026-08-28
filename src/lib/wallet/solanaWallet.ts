@@ -243,21 +243,19 @@ const SOLANA_MAINNET_RPC = "https://api.mainnet-beta.solana.com";
 export interface SendSolanaUSDCPaymentOptions {
   readonly destination?: string;
   readonly amountAtomic?: string;
+  readonly publicKey?: string;
+  readonly signAndSendTransaction?: (transaction: import('@solana/web3.js').Transaction | import('@solana/web3.js').VersionedTransaction) => Promise<{ signature: string }>;
 }
 
 export async function sendSolanaUSDCPayment({
   destination = AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS,
   amountAtomic = "1000000",
+  publicKey: publicKeyOption,
+  signAndSendTransaction: signAndSendOption,
 }: SendSolanaUSDCPaymentOptions = {}): Promise<string> {
-  const adapter = await connectSolanaWallet();
-  const publicKey = adapter.getPublicKey();
-  if (!publicKey) {
-    throw new Error("Solana wallet is not connected");
-  }
-
-  const web3 = await import("@solana/web3.js");
-  const { Connection, Transaction, PublicKey } = web3;
-  const spl = await import("@solana/spl-token");
+  const web3 = await import("@solana/web3.js")
+  const { Connection, Transaction, PublicKey } = web3
+  const spl = await import("@solana/spl-token")
   const {
     getAssociatedTokenAddressSync,
     createAssociatedTokenAccountInstruction,
@@ -265,20 +263,38 @@ export async function sendSolanaUSDCPayment({
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
     createTransferInstruction,
-  } = spl;
+  } = spl
 
-  const connection = new Connection(SOLANA_MAINNET_RPC, "confirmed");
-  const payer = new PublicKey(publicKey);
-  const mint = new PublicKey(SOLANA_USDC_MINT);
-  const destinationWallet = new PublicKey(destination);
+  const connection = new Connection(SOLANA_MAINNET_RPC, "confirmed")
 
-  const sourceAta = getAssociatedTokenAddressSync(mint, payer, false);
-  const destinationAta = getAssociatedTokenAddressSync(mint, destinationWallet, false);
+  let publicKey = publicKeyOption
+  if (!publicKey && signAndSendOption) {
+    throw new Error("publicKey is required when using signAndSendTransaction")
+  }
 
-  const instructions: unknown[] = [];
+  if (!signAndSendOption) {
+    const adapter = await connectSolanaWallet()
+    publicKey = adapter.getPublicKey() ?? publicKey
+    if (!publicKey) {
+      throw new Error("Solana wallet is not connected")
+    }
+  }
+
+  if (!publicKey) {
+    throw new Error("Solana wallet public key is required")
+  }
+
+  const payer = new PublicKey(publicKey)
+  const mint = new PublicKey(SOLANA_USDC_MINT)
+  const destinationWallet = new PublicKey(destination)
+
+  const sourceAta = getAssociatedTokenAddressSync(mint, payer, false)
+  const destinationAta = getAssociatedTokenAddressSync(mint, destinationWallet, false)
+
+  const instructions: unknown[] = []
 
   try {
-    await getAccount(connection, destinationAta);
+    await getAccount(connection, destinationAta)
   } catch {
     instructions.push(
       createAssociatedTokenAccountInstruction(
@@ -289,7 +305,7 @@ export async function sendSolanaUSDCPayment({
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
       )
-    );
+    )
   }
 
   instructions.push(
@@ -301,13 +317,21 @@ export async function sendSolanaUSDCPayment({
       [payer],
       TOKEN_PROGRAM_ID
     )
-  );
+  )
 
-  const transaction = new Transaction().add(...instructions as never[]);
-  transaction.feePayer = payer;
-  transaction.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash;
+  const transaction = new Transaction().add(...instructions as never[])
+  transaction.feePayer = payer
+  transaction.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash
 
-  const signedTransaction = (await adapter.signTransaction(transaction)) as { serialize: () => Uint8Array };
-  const signature = await connection.sendRawTransaction(signedTransaction.serialize());
-  return signature;
+  if (signAndSendOption) {
+    const result = await signAndSendOption(transaction)
+    if (!result?.signature) {
+      throw new Error("No transaction signature from wallet.")
+    }
+    return result.signature
+  }
+
+  const signedTransaction = (await connectSolanaWallet().then(adapter => adapter.signTransaction(transaction))) as { serialize: () => Uint8Array }
+  const signature = await connection.sendRawTransaction(signedTransaction.serialize())
+  return signature
 }

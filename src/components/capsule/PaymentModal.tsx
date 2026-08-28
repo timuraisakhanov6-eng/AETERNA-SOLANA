@@ -25,7 +25,8 @@ import {
 import { Button } from "@/components/ui/button"
 import { Loader2 } from "lucide-react"
 
-import { connectSolanaWallet, sendSolanaUSDCPayment } from "@/lib/wallet/solanaWallet"
+import { useAeternaWallet } from "@/context/AETERNAWalletContext"
+import { sendSolanaUSDCPayment } from "@/lib/wallet/solanaWallet"
 
 /* ───────────────── TYPES ───────────────── */
 
@@ -85,6 +86,7 @@ export function PaymentModal({
   onCreditReady,
   onReserveReady,
 }: PaymentModalProps) {
+  const wallet = useAeternaWallet()
   const [phase, setPhase] = useState<PaymentPhase>("idle")
   const [quote, setQuote] = useState<{
     paymentIntentId: string
@@ -163,8 +165,8 @@ export function PaymentModal({
     setError(null)
 
     try {
-      await connectSolanaWallet()
-      setPhase("confirming")
+      await wallet.openWalletPicker()
+      setPhase("quote_ready")
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "WALLET_CONNECT_FAILED"
@@ -191,9 +193,15 @@ export function PaymentModal({
     setIsProcessing(true)
 
     try {
+      if (!wallet.account) {
+        throw new Error("Wallet account is required for payment.")
+      }
+
       const txHash = await sendSolanaUSDCPayment({
         destination: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
         amountAtomic: "1000000",
+        publicKey: wallet.account,
+        signAndSendTransaction: wallet.signAndSendTransaction,
       })
 
       if (!txHash) {
@@ -358,6 +366,16 @@ export function PaymentModal({
             </div>
           )}
 
+          {wallet.connected && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Wallet</div>
+              <div className="text-xs">
+                {wallet.walletName ?? "Connected wallet"}{" "}
+                {wallet.account ? `(${wallet.account.slice(0, 4)}...${wallet.account.slice(-4)})` : null}
+              </div>
+            </div>
+          )}
+
           {unlockDate && (
             <div className="space-y-1">
               <div className="text-xs text-muted-foreground">Opens</div>
@@ -412,11 +430,10 @@ export function PaymentModal({
             }
             className="w-full"
           >
-            {isProcessing && (
-              <Loader2 className="mr-2 animate-spin" />
-            )}
+            {isProcessing && <Loader2 className="mr-2 animate-spin" />}
             {phase === "quoting" && "Requesting quote..."}
-            {phase === "quote_ready" && "Connect Wallet"}
+            {phase === "quote_ready" && !wallet.connected && "Connect Wallet"}
+            {phase === "quote_ready" && wallet.connected && "Confirm $1.00 USDC"}
             {phase === "connecting_wallet" && "Connecting..."}
             {phase === "confirming" && "Confirm $1.00 USDC"}
             {phase === "verifying" && "Verifying..."}

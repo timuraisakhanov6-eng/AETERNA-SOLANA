@@ -5,6 +5,7 @@ import App from "./App";
 import { CapsuleProvider } from "@/context/CapsuleContext";
 import { CreatorIdentityProvider, CreatorCreditProvider } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
+import { AETERNAWalletProvider } from "@/context/AETERNAWalletContext";
 
 import {
   registerRuntimeServiceWorker,
@@ -91,15 +92,17 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <BrowserRouter>
-    <CapsuleProvider>
-      <CreatorIdentityProvider>
-        <CreatorCreditProvider>
-          <LandingPaymentGateProvider>
-            <App />
-          </LandingPaymentGateProvider>
-        </CreatorCreditProvider>
-      </CreatorIdentityProvider>
-    </CapsuleProvider>
+    <AETERNAWalletProvider>
+      <CapsuleProvider>
+        <CreatorIdentityProvider>
+          <CreatorCreditProvider>
+            <LandingPaymentGateProvider>
+              <App />
+            </LandingPaymentGateProvider>
+          </CreatorCreditProvider>
+        </CreatorIdentityProvider>
+      </CapsuleProvider>
+    </AETERNAWalletProvider>
   </BrowserRouter>
 );
 

@@ -20,12 +20,13 @@ import { Loader2 } from "lucide-react";
 import CapsuleBuilder from "@/components/capsule/CapsuleBuilder";
 import { useCreatorIdentity, useCreatorCredit } from "@/context/CreatorRuntimeContext";
 import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext";
-import { connectSolanaWallet } from "@/lib/wallet/solanaWallet";
+import { useAeternaWallet } from "@/context/AETERNAWalletContext";
 
 type AccessView = "loading" | "workspace" | "access-required" | "unavailable";
 
 export default function Create() {
   const navigate = useNavigate();
+  const wallet = useAeternaWallet();
   const { creatorIdentityId, status: identityStatus, issueChallenge, hasDevBypass, hasCreatePreview } =
     useCreatorIdentity();
   const { accessStatus, creatorCreditId, lifecycleId, checkEntitlement, clear: clearCredit } =
@@ -34,11 +35,13 @@ export default function Create() {
 
   const [view, setView] = useState<AccessView>(() => {
     if (hasDevBypass || hasCreatePreview) {
-      return "workspace"
+      return "workspace";
     }
 
-    return creatorIdentityId ? "loading" : "access-required"
+    return creatorIdentityId ? "loading" : "access-required";
   });
+
+  const [boundAccount, setBoundAccount] = useState<string | null>(null);
 
   useEffect(() => {
     if (!creatorIdentityId || !creatorCreditId) {
@@ -48,53 +51,88 @@ export default function Create() {
       return;
     }
 
+    if (!wallet.ready) {
+      setView("loading");
+      return;
+    }
+
+    if (!wallet.account) {
+      setView("access-required");
+      return;
+    }
+
+    if (boundAccount && wallet.account !== boundAccount) {
+      setView("access-required");
+      return;
+    }
+
+    if (identityStatus === "authenticated" && boundAccount !== wallet.account) {
+      setBoundAccount(wallet.account);
+    }
+
     let cancelled = false;
 
     const run = async () => {
       try {
-        const { challengeId, challenge } = await issueChallenge(
-          "solana"
-        );
+        if (!boundAccount || wallet.account !== boundAccount) {
+          const { challengeId, challenge } = await issueChallenge("solana");
 
-        let wallet;
-        try {
-          wallet = await connectSolanaWallet();
-        } catch {
-          if (!cancelled) setView("access-required");
-          return;
-        }
-
-        const account = wallet.getPublicKey();
-        if (!account) {
-          if (!cancelled) setView("access-required");
-          return;
-        }
-
-        const encoded = typeof challenge === "string" ? new TextEncoder().encode(challenge) : challenge;
-        const signatureResult = await wallet.signMessage(encoded);
-        const signature = signatureResult.signature;
-
-        const result = await checkEntitlement(
-          challengeId,
-          "solana",
-          account,
-          signature,
-          creatorCreditId,
-          lifecycleId
-        );
-
-        if (!cancelled) {
-          if (result === "available") {
-            setView("workspace");
-          } else if (result === "access-required") {
-            setView("access-required");
-          } else {
-            setView("unavailable");
+          try {
+            await wallet.openWalletPicker();
+          } catch {
+            if (!cancelled) {
+              setView("access-required");
+              setBoundAccount(null);
+            }
+            return;
           }
+
+          if (!wallet.account) {
+            if (!cancelled) {
+              setView("access-required");
+              setBoundAccount(null);
+            }
+            return;
+          }
+
+          if (boundAccount && wallet.account !== boundAccount) {
+            if (!cancelled) {
+              setView("access-required");
+              setBoundAccount(null);
+            }
+            return;
+          }
+
+          const encoded = typeof challenge === "string" ? new TextEncoder().encode(challenge) : challenge;
+          const { signature } = await wallet.signMessage(encoded);
+
+          const result = await checkEntitlement(
+            challengeId,
+            "solana",
+            wallet.account,
+            signature,
+            creatorCreditId,
+            lifecycleId
+          );
+
+          if (!cancelled) {
+            if (result === "available") {
+              setBoundAccount(wallet.account);
+              setView("workspace");
+            } else if (result === "access-required") {
+              setView("access-required");
+              setBoundAccount(wallet.account);
+            } else {
+              setView("unavailable");
+            }
+          }
+        } else if (view !== "workspace") {
+          setView("workspace");
         }
       } catch {
         if (!cancelled) {
           setView("unavailable");
+          setBoundAccount((prev) => (wallet.account && prev === wallet.account ? prev : null));
         }
       }
     };
@@ -104,7 +142,32 @@ export default function Create() {
     return () => {
       cancelled = true;
     };
-  }, [creatorIdentityId, identityStatus, issueChallenge, checkEntitlement, creatorCreditId, lifecycleId]);
+  }, [
+    creatorIdentityId,
+    identityStatus,
+    issueChallenge,
+    checkEntitlement,
+    creatorCreditId,
+    lifecycleId,
+    wallet.account,
+    wallet.ready,
+    wallet.openWalletPicker,
+    wallet.signMessage,
+    wallet,
+    boundAccount,
+    view,
+  ]);
+
+  useEffect(() => {
+    if (!creatorIdentityId || !boundAccount) {
+      return;
+    }
+
+    if (wallet.account && wallet.account !== boundAccount) {
+      setView("access-required");
+      setBoundAccount((prev) => (prev === boundAccount ? null : prev));
+    }
+  }, [wallet.account, creatorIdentityId, boundAccount]);
 
   const isDevPreview = import.meta.env.DEV && (hasDevBypass || hasCreatePreview);
 
