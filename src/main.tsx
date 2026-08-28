@@ -5,7 +5,7 @@ import App from "./App";
 import { CapsuleProvider } from "@/context/CapsuleContext";
 import { CreatorIdentityProvider, CreatorCreditProvider } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
-import { AETERNAWalletProvider } from "@/context/AETERNAWalletContext";
+import { AETERNAWalletProvider, getReownAppKitInstance } from "@/context/AETERNAWalletContext";
 
 import {
   registerRuntimeServiceWorker,
@@ -89,6 +89,8 @@ if (!rootElement) {
   );
 
 }
+
+getReownAppKitInstance();
 
 createRoot(rootElement).render(
   <BrowserRouter>
