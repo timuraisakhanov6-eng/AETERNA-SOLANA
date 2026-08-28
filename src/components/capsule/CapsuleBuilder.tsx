@@ -400,8 +400,6 @@ export default function CapsuleBuilder() {
 
   /* ================= PREPARE ================= */
 
-  const encoder = new TextEncoder();
-
   // AETERNA service entitlement is fixed at 1.00 USDC
   // and MUST NOT be derived from capsule size or block pricing.
   const canSeal =
@@ -741,33 +739,6 @@ export default function CapsuleBuilder() {
   const isPreparing = sealPhase === "preparing";
   const isBusy = isPreparing;
 
-  const totalBytes = items.reduce((acc, item) => {
-    if (
-      item.type === "media" &&
-      typeof item.size === "number" &&
-      Number.isFinite(item.size) &&
-      Number.isInteger(item.size) &&
-      item.size >= 0
-    ) {
-      return acc + item.size;
-    }
-
-    if (item.type === "text" && typeof item.text === "string") {
-      return acc + encoder.encode(item.text).byteLength;
-    }
-
-    return acc;
-  }, 0);
-
-  const formatBytes = (value: number) => {
-    if (value <= 0) return "0 B";
-    const mb = value / (1024 * 1024);
-    if (mb >= 1) return `${mb.toFixed(2)} MB`;
-    const kb = value / 1024;
-    if (kb >= 1) return `${kb.toFixed(2)} KB`;
-    return `${value} B`;
-  };
-
   return (
     <div className="min-h-screen bg-background relative">
 
@@ -792,10 +763,10 @@ export default function CapsuleBuilder() {
       </header>
 
       <main
-        className="mx-auto px-5 pb-[180px]"
+        className="mx-auto px-5 pb-[160px] sm:pb-[200px] lg:pb-[240px]"
         style={{ paddingTop: HEADER_HEIGHT + 32 }}
       >
-        <div className="mx-auto w-full max-w-[720px] space-y-12">
+        <div className="mx-auto w-full max-w-[720px] space-y-8">
 
           <section className="space-y-2">
             <div className="flex items-center justify-between">
@@ -822,21 +793,14 @@ export default function CapsuleBuilder() {
           <HorizontalCapsule
             items={items}
             isSealed={false}
+            maxFiles={100}
+            capacityBytes={100 * 1024}
             onViewContents={() =>
               navigate("/capsule/preview", {
                 state: { items, description, unlockAt },
               })
             }
           />
-
-          <section className="text-center">
-            <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              TOTAL CONTENT
-            </p>
-            <p className="font-display text-2xl sm:text-3xl tracking-wide">
-              {formatBytes(totalBytes)}
-            </p>
-          </section>
 
           <DateTimePicker
             date={unlockAt ? new Date(unlockAt) : null}
@@ -846,7 +810,7 @@ export default function CapsuleBuilder() {
             }}
           />
 
-          <section className="rounded-xl border bg-card/30 backdrop-blur-sm p-6 space-y-6 text-center">
+          <section className="rounded-xl border bg-card/30 backdrop-blur-sm p-4 space-y-5 text-center">
             <div className="space-y-4">
               <label className="flex items-center justify-center gap-3 cursor-pointer group opacity-90 hover:opacity-100 transition">
                 <Checkbox
@@ -884,7 +848,7 @@ export default function CapsuleBuilder() {
                 className={[
                   "w-full h-14 text-lg font-display tracking-widest transition-all active:scale-[0.98]",
                   canSeal
-                    ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_0_30px_rgba(5,150,105,0.3)]"
+                    ? "bg-emerald-600 hover:bg-emerald-500 text-white"
                     : "bg-muted text-muted-foreground cursor-not-allowed",
                 ].join(" ")}
               >

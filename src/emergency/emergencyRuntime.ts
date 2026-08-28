@@ -11,22 +11,6 @@ import {
 } from "@/shared/heartbeat/resolveEffectiveOpenAt";
 
 import {
-  getTrustedTime,
-} from "@/shared/time/getTrustedTime";
-
-import {
-  openCapsule,
-} from "@/lib/capsule/openCapsule";
-
-import {
-  resolveChunkPointers,
-} from "@/lib/capsule/open/resolveChunkPointers";
-
-import {
-  createByteRuntime,
-} from "@/lib/capsule/runtime/byteRuntime";
-
-import {
   getChunkPointers,
 } from "@/lib/storage/storage";
 
@@ -35,6 +19,14 @@ import type {
   OpenableMediaItem,
   MediaSession,
 } from "@/lib/capsule/open/openTypes";
+
+import {
+  resolveChunkPointers,
+} from "@/lib/capsule/open/resolveChunkPointers";
+
+import {
+  createByteRuntime,
+} from "@/lib/capsule/runtime/byteRuntime";
 
 import type {
   StoragePointer,
@@ -194,134 +186,6 @@ function stopHeartbeatRefresh(): void {
     clearInterval(heartbeatPollHandle);
     heartbeatPollHandle = null;
   }
-}
-
-async function attemptOpen(args: {
-  root: HTMLElement;
-  status: HTMLElement;
-  recipientSecret: string;
-  manifest: ManifestV1;
-  effectiveOpenAtValue: number;
-  getTrustedTime: typeof getTrustedTime;
-  openCapsule: typeof openCapsule;
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
-}): Promise<void> {
-  stopHeartbeatRefresh();
-  waiting = false;
-
-  let nowUtc: number;
-  try {
-    nowUtc = (await args.getTrustedTime()).nowUtc;
-  } catch {
-    args.status.textContent = "Trusted time unavailable.";
-    return;
-  }
-
-  if (nowUtc < args.effectiveOpenAtValue || args.manifest.sealedAt > nowUtc) {
-    args.status.textContent = "Capsule is not yet open.";
-    return;
-  }
-
-  args.status.textContent = "Opening capsule…";
-
-  try {
-    const { vault } = await args.openCapsule({
-      capsuleId: args.manifest.capsuleId,
-      secret: args.recipientSecret,
-      manifest: args.manifest,
-    });
-
-    renderEmergencyVault(
-      args.root,
-      vault,
-      args.status,
-      args.chunkPointers,
-    );
-    args.status.textContent = "Capsule opened.";
-  } catch {
-    args.status.textContent = "Capsule unavailable.";
-  }
-}
-
-function startHeartbeatRefresh(args: {
-  capsuleId: string;
-  manifest: ManifestV1;
-  status: HTMLElement;
-  root: HTMLElement;
-  recipientSecret: string;
-  getTrustedTime: typeof getTrustedTime;
-  loadHeartbeat: typeof loadHeartbeatRecord;
-  resolveOpenAt: typeof resolveEffectiveOpenAt;
-  openCapsule: typeof openCapsule;
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
-}): void {
-  if (heartbeatPollHandle !== null || !waiting) {
-    return;
-  }
-
-  heartbeatPollHandle = setInterval(async () => {
-    if (runtimeDisposed || !waiting) {
-      stopHeartbeatRefresh();
-      return;
-    }
-
-    let heartbeatRecord: Awaited<
-      ReturnType<typeof loadHeartbeatRecord>
-    > | null = null;
-
-    try {
-      heartbeatRecord = await args.loadHeartbeat(args.capsuleId);
-    } catch {
-      // preserve authoritative state; retry on next tick
-      return;
-    }
-
-    if (runtimeDisposed || !waiting) {
-      return;
-    }
-
-    const newLastConfirmedAt = heartbeatRecord?.lastConfirmedAt ?? null;
-
-    if (newLastConfirmedAt === lastConfirmedAt) {
-      return;
-    }
-
-    lastConfirmedAt = newLastConfirmedAt;
-    effectiveOpenAt = args.resolveOpenAt({
-      manifestOpenAt: args.manifest.openAt,
-      lastConfirmedAt: lastConfirmedAt ?? undefined,
-      heartbeatInterval: args.manifest.heartbeatInterval ?? 0,
-    });
-
-    updateWaitingDisplay(effectiveOpenAt);
-
-    let nowUtc: number;
-    try {
-      nowUtc = (await args.getTrustedTime()).nowUtc;
-    } catch {
-      return;
-    }
-
-    if (
-      runtimeDisposed ||
-      !waiting ||
-      nowUtc < effectiveOpenAt ||
-      args.manifest.sealedAt > nowUtc
-    ) {
-      return;
-    }
-
-    await attemptOpen({
-      root: args.root,
-      status: args.status,
-      recipientSecret: args.recipientSecret,
-      manifest: args.manifest,
-      effectiveOpenAtValue: effectiveOpenAt,
-      getTrustedTime: args.getTrustedTime,
-      openCapsule: args.openCapsule,
-      chunkPointers: args.chunkPointers,
-    });
-  }, 30_000);
 }
 
 function getCapsuleIdFromPath(): string {

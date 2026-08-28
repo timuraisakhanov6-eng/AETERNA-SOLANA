@@ -205,6 +205,7 @@ const CapsuleInput = ({
                       placeholder:text-foreground/60
                       overflow-y-auto
                       py-[6px]
+                      capsule-textarea
                     "
                     style={{ height: `${height}px` }}
                   />

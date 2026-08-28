@@ -194,16 +194,52 @@ Wallet control is proven by:
 
 The frontend MUST NOT be trusted to simply submit a wallet address.
 
-For initial launch (EVM injected provider):
+For initial launch:
+- supported Solana-compatible wallet;
+- Solana Wallet Standard;
+- Sign In With Solana (SIWS)-compatible authentication model;
+- Ed25519 signature verification.
 
-- challenge/nonce is signed via EIP-191 personal_sign or equivalent
-  officially supported EVM signing method;
-- server recovers address from signature;
-- recovered address MUST match the claimed account.
+Required wallet capability:
+- `solana:signMessage`
+- or equivalent SIWS/sign-in capability exposed by the wallet.
+
+Wallet brand MUST NOT be hardcoded.
+Provider-agnostic adapters are required.
+
+Authentication message must be bound to:
+- AETERNA domain/application identifier;
+- network = `solana`;
+- creator public key;
+- server-generated challenge/nonce;
+- issuedAt timestamp;
+- expiration timestamp;
+- unique challenge id.
+
+The message MUST NOT include private data.
+
+Challenge requirements:
+- server-generated;
+- single-use;
+- expiring;
+- replay-protected.
+
+Server MUST verify:
+- claimed public key;
+- signature;
+- exact challenge bytes;
+- network = `solana`;
+- challenge expiry;
+- challenge not consumed.
+
+Client-supplied `verified=true` MUST NOT be trusted.
+Client-supplied `creatorIdentityId` MUST NOT be trusted.
 
 For future providers:
-
 - equivalent standards-based proof per provider/network.
+
+Legacy/frozen rail:
+- EVM injected provider proof remains defined for future Base reactivation.
 
 ## 8. MULTI-NETWORK ASSOCIATION
 

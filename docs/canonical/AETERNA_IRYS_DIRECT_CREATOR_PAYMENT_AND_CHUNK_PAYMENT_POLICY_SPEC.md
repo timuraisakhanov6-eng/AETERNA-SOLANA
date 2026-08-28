@@ -69,6 +69,8 @@ Implementation status:
 Executor Hot:
 - CURRENT IMPLEMENTATION: server-side publication authority;
 - CANONICAL TARGET BUSINESS ROLE: excluded from target business payment model.
+- Current normal creator flow uses a supported Solana-compatible wallet for service payment and identity.
+- Base payment rail is frozen and reserved for future activation.
 
 Executor Hot:
 - is NOT the AETERNA Service Payment recipient;
@@ -156,6 +158,7 @@ Current implementation gaps vs this canonical policy:
 - Irys economics are not yet separated from AETERNA $1 in runtime;
 - paymentIntentId migration is pending;
 - chunk-level AETERNA payment UX is not implemented and must remain pending.
+- Active canonical creator rail is a supported Solana-compatible wallet; Base is frozen/reserved.
 
 These gaps:
 - do NOT change the canonical target policy;

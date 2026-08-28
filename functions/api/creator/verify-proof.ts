@@ -3,7 +3,10 @@
  *
  * POST /api/creator/verify-proof
  *
- * Verifies an EIP-191 personal_sign signature over an issued challenge.
+ * Verifies:
+ * - EIP-191 personal_sign for EVM networks
+ * - SIWS/Ed25519 for Solana network
+ *
  * On success, creates/returns a server-side Creator Identity.
  */
 
@@ -21,6 +24,7 @@ interface VerifyProofEnv {
   CREATOR_IDENTITIES: {
     get(key: string): Promise<string | null>;
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+    delete(key: string): Promise<void>;
   };
 }
 
@@ -44,6 +48,109 @@ function baseHeaders(origin: string): Record<string, string> {
 
 function fail(origin: string, status = 400, error = "error"): Response {
   return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders(origin) });
+}
+
+function buildSolanaMessage(record: {
+  network: string;
+  challenge: string;
+  publicKey: string;
+  issuedAt: number;
+  expiresAt: number;
+  id: string;
+}): string {
+  return [
+    "AETERNA identity challenge",
+    `network=${record.network}`,
+    `address=${record.publicKey}`,
+    `challenge=${record.challenge}`,
+    `id=${record.id}`,
+    `issuedAt=${record.issuedAt}`,
+    `expiresAt=${record.expiresAt}`,
+  ].join("\n");
+}
+
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function base58Decode(input: string): Uint8Array {
+  const lookup = new Map<string, number>();
+  for (let i = 0; i < BASE58_ALPHABET.length; i++) {
+    lookup.set(BASE58_ALPHABET[i]!, i);
+  }
+
+  const bytes: number[] = [];
+  for (const char of input) {
+    const value = lookup.get(char);
+    if (value === undefined) {
+      throw new Error("Invalid base58");
+    }
+
+    let carry = value;
+    for (let i = 0; i < bytes.length; i++) {
+      carry += bytes[i] * 58;
+      bytes[i] = carry & 0xff;
+      carry >>>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>>= 8;
+    }
+  }
+
+  let leadingZeros = 0;
+  for (const char of input) {
+    if (char === "1") {
+      leadingZeros++;
+    } else {
+      break;
+    }
+  }
+
+  const result = new Uint8Array(leadingZeros + bytes.length);
+  for (let i = 0; i < leadingZeros; i++) {
+    result[i] = 0;
+  }
+  for (let i = 0; i < bytes.length; i++) {
+    result[leadingZeros + bytes.length - 1 - i] = bytes[i];
+  }
+
+  return result;
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function verifySolanaSignature(publicKey: string, signatureBase64: string, message: string): Promise<boolean> {
+  const publicKeyBytes = base58Decode(publicKey);
+  if (publicKeyBytes.length !== 32) {
+    return false;
+  }
+
+  const messageBytes = new TextEncoder().encode(message);
+  const signatureBytes = base64ToUint8Array(signatureBase64);
+  if (signatureBytes.length !== 64) {
+    return false;
+  }
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    publicKeyBytes,
+    { name: "Ed25519" },
+    false,
+    ["verify"]
+  );
+
+  return crypto.subtle.verify(
+    { name: "Ed25519" },
+    key,
+    signatureBytes,
+    messageBytes
+  );
 }
 
 export async function onRequestOptions(context: EventContext<Record<string, unknown>, string, VerifyProofEnv>): Promise<Response> {
@@ -95,8 +202,19 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 400, "INVALID_FIELDS");
   }
 
-  if (!/^0x[a-fA-F0-9]{40}$/.test(account)) {
-    return fail(origin, 400, "INVALID_ACCOUNT");
+  if (network === "solana") {
+    try {
+      const publicKeyBytes = base58Decode(account);
+      if (publicKeyBytes.length !== 32) {
+        return fail(origin, 400, "INVALID_ACCOUNT");
+      }
+    } catch {
+      return fail(origin, 400, "INVALID_ACCOUNT");
+    }
+  } else {
+    if (!/^0x[a-fA-F0-9]{40}$/.test(account)) {
+      return fail(origin, 400, "INVALID_ACCOUNT");
+    }
   }
 
   const challengeRaw = await env.CREATOR_IDENTITIES.get(`${CHALLENGE_PREFIX}${challengeId}`);
@@ -121,18 +239,30 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 400, "CHALLENGE_EXPIRED");
   }
 
-  // Recover signer from EIP-191 personal_sign.
-  let recovered = "";
-  try {
-    const message = `AETERNA identity challenge:${challengeRecord.challenge}`;
-    const recoveredAddress = await verifyMessage(message, signature);
-    recovered = recoveredAddress;
-  } catch {
-    return fail(origin, 400, "INVALID_SIGNATURE");
+  if (challengeRecord.consumed === true) {
+    return fail(origin, 401, "CHALLENGE_ALREADY_USED");
   }
 
-  if (recovered.toLowerCase() !== account.toLowerCase()) {
-    return fail(origin, 400, "ACCOUNT_MISMATCH");
+  if (network === "solana") {
+    const message = buildSolanaMessage(challengeRecord);
+    const valid = await verifySolanaSignature(account, signature, message);
+    if (!valid) {
+      return fail(origin, 400, "INVALID_SIGNATURE");
+    }
+  } else {
+    // Recover signer from EIP-191 personal_sign.
+    let recovered = "";
+    try {
+      const message = `AETERNA identity challenge:${challengeRecord.challenge}`;
+      const recoveredAddress = await verifyMessage(message, signature);
+      recovered = recoveredAddress;
+    } catch {
+      return fail(origin, 400, "INVALID_SIGNATURE");
+    }
+
+    if (recovered.toLowerCase() !== account.toLowerCase()) {
+      return fail(origin, 400, "ACCOUNT_MISMATCH");
+    }
   }
 
   await env.CREATOR_IDENTITIES.delete(`${CHALLENGE_PREFIX}${challengeId}`);

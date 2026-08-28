@@ -28,6 +28,28 @@ declare global {
 
     };
 
+    /**
+     * Solana-compatible wallet provider.
+     *
+     * Present only in Creator Runtime when a supported Solana-compatible
+     * wallet is available.
+     *
+     * Supports Wallet Standard / standard Solana wallet capability
+     * detection. Brand MUST NOT be hardcoded.
+     */
+
+    readonly solana?: {
+      publicKey?: { toBase58(): string } | string;
+      signMessage?: (message: Uint8Array) => Promise<{ signature: Uint8Array } | Uint8Array>;
+      signTransaction?: (transaction: unknown) => Promise<unknown>;
+      signAndSendTransaction?: (transaction: unknown) => Promise<{ signature: string } | string>;
+      connect?: () => Promise<void>;
+      disconnect?: () => Promise<void>;
+      autoConnect?: boolean;
+    };
+
+    readonly solana_wallet?: Window["solana"];
+
   }
 
 }

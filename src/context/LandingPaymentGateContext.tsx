@@ -55,7 +55,6 @@ export function LandingPaymentGateProvider({
       <PaymentModal
         open={open}
         onClose={handleClose}
-        description="AETERNA Service Payment"
         unlockAt={null}
         protocolAccepted={true}
         creatorIdentityId={null}

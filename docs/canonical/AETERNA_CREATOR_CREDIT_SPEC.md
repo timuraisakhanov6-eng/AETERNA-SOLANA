@@ -85,7 +85,8 @@ Authenticated Creator Identity
 The concrete Wallet/Payment Architecture will be specified separately.
 
 Current active implementation:
-- Base Mainnet / native USDC via minimal EIP-1193 browser provider.
+- Base Mainnet / native USDC via minimal EIP-1193 browser provider is frozen and reserved for future activation.
+- Active canonical implementation: supported Solana-compatible wallet for Solana Mainnet / native USDC.
 
 Future adapters:
 - Additional wallet/provider adapters may be added only through explicit canonical selection.

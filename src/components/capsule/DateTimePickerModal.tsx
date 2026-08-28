@@ -33,7 +33,6 @@ interface DateTimePickerModalProps {
 
 }
 
-
 /**
  * Canonical creator runtime invariant
  *
@@ -43,7 +42,6 @@ interface DateTimePickerModalProps {
 
 const CANONICAL_TIME =
   "12:00";
-
 
 export function DateTimePickerModal({
 
@@ -56,16 +54,11 @@ export function DateTimePickerModal({
   onTimeChange,
 
   trigger,
-
 }: DateTimePickerModalProps) {
 
   const [open, setOpen] =
     useState(false);
 
-
-  /**
-   * TEMP BUFFER STATE
-   */
 
   const [
     tempDate,
@@ -90,16 +83,6 @@ export function DateTimePickerModal({
     useState(false);
 
 
-  /**
-   * HARDENING:
-   * reject invalid Date instance.
-   *
-   * Object.prototype.toString.call() replaces bare Number.isNaN check —
-   * instanceof Date breaks across iframe / Worker / SSR hydration
-   * boundaries where the Date constructor may differ between realms.
-   * toString tag comparison is realm-agnostic and portable.
-   */
-
   useEffect(() => {
 
     if (
@@ -119,10 +102,6 @@ export function DateTimePickerModal({
   }, [date]);
 
 
-  /**
-   * Sync modal buffer when opened
-   */
-
   useEffect(() => {
 
     if (!open) {
@@ -133,7 +112,6 @@ export function DateTimePickerModal({
 
 
     setTempDate(date);
-
 
     if (date) {
 
@@ -152,7 +130,6 @@ export function DateTimePickerModal({
 
     }
 
-
     setDateInputError(
       false
     );
@@ -167,10 +144,6 @@ export function DateTimePickerModal({
     tempDate ?? undefined;
 
 
-  /**
-   * HANDLERS
-   */
-
   const handleDateInputChange =
     (
       e:
@@ -184,6 +157,7 @@ export function DateTimePickerModal({
           /[^\d]/g,
           ""
         );
+
 
 
       if (
@@ -202,7 +176,6 @@ export function DateTimePickerModal({
 
       }
 
-
       if (
         value.length > 5
       ) {
@@ -219,7 +192,6 @@ export function DateTimePickerModal({
 
       }
 
-
       if (
         value.length > 10
       ) {
@@ -232,11 +204,9 @@ export function DateTimePickerModal({
 
       }
 
-
       setDateInput(
         value
       );
-
 
       if (
         value.length === 10
@@ -252,11 +222,6 @@ export function DateTimePickerModal({
           );
 
 
-        /**
-         * Canonical UTC parsing
-         * replaces date-fns.parse()
-         */
-
         const parsed =
           new Date(
             Date.UTC(
@@ -268,11 +233,6 @@ export function DateTimePickerModal({
           );
 
 
-        // PATCH — unified UTC midnight boundary
-        // Aligns manual-input "today" comparison with calendar
-        // disable path, which already uses setUTCHours.
-        // Eliminates local/UTC split on timezone boundaries
-        // (UTC+ offsets, DST transitions, mobile drift).
 
         const todayUtc =
           new Date();
@@ -284,9 +244,7 @@ export function DateTimePickerModal({
           0
         );
 
-
         if (
-
           isValid(
             parsed
           ) &&
@@ -299,7 +257,6 @@ export function DateTimePickerModal({
 
           parsed.getUTCMonth() + 1 ===
             Number(mm)
-
         ) {
 
           setTempDate(
@@ -332,7 +289,6 @@ export function DateTimePickerModal({
 
     };
 
-
   const handleDateSelect =
     (
       d:
@@ -348,9 +304,7 @@ export function DateTimePickerModal({
 
       setTempDate(d);
 
-
       setDateInput(
-
         format(
           d,
           "dd.MM.yyyy"
@@ -360,13 +314,8 @@ export function DateTimePickerModal({
 
     };
 
-
   const handleConfirm =
     () => {
-
-      /**
-       * Defensive guard
-       */
 
       if (
         !tempDate ||
@@ -385,14 +334,9 @@ export function DateTimePickerModal({
       );
 
 
-      /**
-       * Enforce canonical time
-       */
-
       onTimeChange(
         CANONICAL_TIME
       );
-
 
       setOpen(
         false
@@ -401,9 +345,6 @@ export function DateTimePickerModal({
     };
 
 
-  /**
-   * RENDER
-   */
 
   return (
 
@@ -486,7 +427,7 @@ export function DateTimePickerModal({
 
           <DialogTitle>
 
-            Select Unlock Date
+            SELECT UNLOCK DATE & TIME
 
           </DialogTitle>
 
@@ -514,21 +455,23 @@ export function DateTimePickerModal({
 
         <div className="space-y-4 py-4">
 
+          <p className="text-center text-xs text-muted-foreground">
+            Global opening time (UTC)
+          </p>
+
+          <p className="text-center text-[11px] text-muted-foreground/80">
+            The capsule opens at the same moment worldwide.
+          </p>
 
           {/* Manual input */}
 
           <div className="flex flex-col items-center gap-2">
 
             <label
-
               className="text-sm text-muted-foreground"
-
             >
-
-              Enter date (DD.MM.YYYY)
-
+              Date
             </label>
-
 
             <Input
 
@@ -565,11 +508,21 @@ export function DateTimePickerModal({
 
             />
 
+            {tempDate && (
+              <p className="text-[11px] text-muted-foreground/80 text-center">
+                Your local time:{" "}
+                {format(tempDate, "HH:mm")}{" "}
+                {format(tempDate, "zzz")}
+              </p>
+            )}
+
+            <p className="text-[11px] text-muted-foreground/80 text-center">
+              Time (UTC): 12:00
+            </p>
 
             {
 
               dateInputError &&
-
               (
 
                 <p
@@ -587,7 +540,6 @@ export function DateTimePickerModal({
             }
 
           </div>
-
 
           {/* Calendar */}
 
@@ -617,7 +569,7 @@ export function DateTimePickerModal({
 
                 return (
                   d.getTime() <
-                  todayUtc.getTime()
+                    todayUtc.getTime()
                 );
 
               }}
@@ -629,7 +581,6 @@ export function DateTimePickerModal({
           </div>
 
 
-          {/* Confirm */}
 
           <div className="w-full pt-2">
 

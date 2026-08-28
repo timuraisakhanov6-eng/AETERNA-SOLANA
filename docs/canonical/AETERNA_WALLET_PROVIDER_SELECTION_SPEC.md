@@ -53,7 +53,8 @@ source of truth for this specification:
 - Devnet uses faucet tokens.
 - Production AETERNA must target Mainnet.
 - AETERNA must not become Solana-only.
-- AETERNA initial production service payment is selected as Base Mainnet
+|- AETERNA initial production service payment is selected as Solana Mainnet + native USDC.
+|- Base Mainnet + native USDC is frozen and reserved for future reactivation.
   + native USDC.
 - AETERNA is NOT permanently USDC-only; additional assets/networks may be
   added through explicit future canonical selection.
@@ -62,15 +63,19 @@ source of truth for this specification:
 
 Canonical active selection:
 
-Minimal EIP-1193 browser provider for Base Mainnet / native USDC.
+Supported Solana-compatible wallet for Solana Mainnet / native USDC.
 
 Rationale:
-- This is the current active implementation.
+- This is the current active canonical rail.
 - It satisfies the initial production requirement.
 - It preserves server-side verification, replay protection, and
   payment idempotency.
 - It keeps AETERNA $1 separate from Irys publication cost.
 - It avoids unnecessary broker dependencies.
+
+Legacy frozen rail:
+- Minimal EIP-1193 browser provider for Base Mainnet / native USDC remains
+  retained for future reactivation and is NOT the active canonical rail.
 
 ## 5. PENDING WALLET/PROVIDER EXPANSIONS
 
@@ -112,7 +117,8 @@ Pending evaluation summary:
 ## 6. RECOMMENDATION
 
 Recommended initial architecture:
-- Minimal EIP-1193 browser provider for Base Mainnet / native USDC.
+- Supported Solana-compatible wallet for Solana Mainnet / native USDC.
+- Base Mainnet / native USDC via minimal EIP-1193 browser provider is frozen and reserved for future activation.
 
 Future expansion:
 - Additional wallet/provider adapters may be added only through explicit canonical selection.

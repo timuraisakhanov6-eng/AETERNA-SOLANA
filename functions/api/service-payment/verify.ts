@@ -80,7 +80,226 @@ const MIN_CONFIRMATIONS = 1n;
 
 const RPC_TIMEOUT_MS = 10_000;
 
-/* ================= HELPERS ================= */
+/* ================= SOLANA HELPERS ================= */
+
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function base58Decode(input: string): Uint8Array {
+  const lookup = new Map<string, number>();
+  for (let i = 0; i < BASE58_ALPHABET.length; i++) {
+    lookup.set(BASE58_ALPHABET[i]!, i);
+  }
+
+  const bytes: number[] = [];
+  for (const char of input) {
+    const value = lookup.get(char);
+    if (value === undefined) {
+      throw new Error("Invalid base58");
+    }
+
+    let carry = value;
+    for (let i = 0; i < bytes.length; i++) {
+      carry += bytes[i] * 58;
+      bytes[i] = carry & 0xff;
+      carry >>>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>>= 8;
+    }
+  }
+
+  let leadingZeros = 0;
+  for (const char of input) {
+    if (char === "1") {
+      leadingZeros++;
+    } else {
+      break;
+    }
+  }
+
+  const result = new Uint8Array(leadingZeros + bytes.length);
+  for (let i = 0; i < leadingZeros; i++) {
+    result[i] = 0;
+  }
+  for (let i = 0; i < bytes.length; i++) {
+    result[leadingZeros + bytes.length - 1 - i] = bytes[i];
+  }
+
+  return result;
+}
+
+async function solanaRpcCall(method: string, params: unknown[]): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(SOLANA_RPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      throw new Error(`RPC HTTP error ${res.status}`);
+    }
+
+    const json = (await res.json()) as {
+      result?: unknown;
+      error?: { message?: string };
+    };
+
+    if (json.error) {
+      throw new Error(json.error.message ?? "RPC error");
+    }
+
+    return json.result;
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      err.name === "AbortError"
+    ) {
+      throw new Error("RPC_TIMEOUT");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isBase58Address(value: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]+$/.test(value);
+}
+
+function deriveSolanaATA(walletAddress: string, mint: string): string {
+  return `${walletAddress}-ata-${mint}`;
+}
+
+async function verifySolanaPayment(
+  txHash: string,
+  expectedPayer: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!/^[A-Za-z0-9]{64,88}$/.test(txHash)) {
+    return { ok: false as const, error: "INVALID_SOLANA_TX_HASH" };
+  }
+
+  if (!isBase58Address(expectedPayer)) {
+    return { ok: false as const, error: "INVALID_PAYER" };
+  }
+
+  const info = (await solanaRpcCall("getTransaction", [
+    txHash,
+    { encoding: "jsonParsed", commitment: "confirmed" },
+  ])) as {
+    slot?: number;
+    blockTime?: number;
+    transaction?: {
+      message?: {
+        accountKeys?: Array<{ pubkey?: string; signer?: boolean }>;
+      };
+    };
+    meta?: {
+      postTokenBalances?: Array<{ mint?: string; owner?: string; uiTokenAmount?: { uiAmount?: number; decimals?: number } }>;
+      preTokenBalances?: Array<{ mint?: string; owner?: string; uiTokenAmount?: { uiAmount?: number; decimals?: number } }>;
+      err?: unknown;
+      status?: { Ok?: unknown; Err?: unknown };
+    };
+  } | null;
+
+  if (!info || !info.meta) {
+    return { ok: false as const, error: "TX_NOT_FOUND" };
+  }
+
+  if (info.meta.err) {
+    return { ok: false as const, error: "TX_FAILED" };
+  }
+
+  const accountKeys =
+    info.transaction?.message?.accountKeys ?? [];
+
+  const sourceOwner = accountKeys[0]?.pubkey ?? "";
+  if (!isBase58Address(sourceOwner)) {
+    return { ok: false as const, error: "INVALID_SOURCE_OWNER" };
+  }
+
+  if (sourceOwner !== expectedPayer) {
+    return { ok: false as const, error: "PAYER_MISMATCH" };
+  }
+
+  const postBalances = info.meta.postTokenBalances ?? [];
+  const preBalances = info.meta.preTokenBalances ?? [];
+
+  const destinationEntry = postBalances.find(
+    (balance) =>
+      typeof balance.owner === "string" &&
+      balance.owner === SOLANA_SERVICE_SETTLEMENT_ADDRESS &&
+      typeof balance.mint === "string" &&
+      balance.mint === SOLANA_USDC_MINT
+  );
+
+  if (!destinationEntry) {
+    return { ok: false as const, error: "DESTINATION_NOT_FOUND" };
+  }
+
+  const destinationPre = preBalances.find(
+    (balance) =>
+      typeof balance.owner === "string" &&
+      balance.owner === SOLANA_SERVICE_SETTLEMENT_ADDRESS &&
+      typeof balance.mint === "string" &&
+      balance.mint === SOLANA_USDC_MINT
+  );
+
+  const destinationPreAmount =
+    typeof destinationPre?.uiTokenAmount?.uiAmount === "number"
+      ? destinationPre.uiTokenAmount.uiAmount
+      : 0;
+  const destinationPostAmount =
+    typeof destinationEntry.uiTokenAmount?.uiAmount === "number"
+      ? destinationEntry.uiTokenAmount.uiAmount
+      : 0;
+
+  if (destinationPostAmount - destinationPreAmount !== 1) {
+    return { ok: false as const, error: "AMOUNT_MISMATCH" };
+  }
+
+  const sourceEntry = postBalances.find(
+    (balance) =>
+      typeof balance.owner === "string" &&
+      balance.owner === sourceOwner &&
+      typeof balance.mint === "string" &&
+      balance.mint === SOLANA_USDC_MINT
+  );
+
+  if (!sourceEntry) {
+    return { ok: false as const, error: "SOURCE_ACCOUNT_NOT_FOUND" };
+  }
+
+  const sourcePre = preBalances.find(
+    (balance) =>
+      typeof balance.owner === "string" &&
+      balance.owner === sourceOwner &&
+      typeof balance.mint === "string" &&
+      balance.mint === SOLANA_USDC_MINT
+  );
+
+  const sourcePreAmount =
+    typeof sourcePre?.uiTokenAmount?.uiAmount === "number"
+      ? sourcePre.uiTokenAmount.uiAmount
+      : 0;
+  const sourcePostAmount =
+    typeof sourceEntry.uiTokenAmount?.uiAmount === "number"
+      ? sourceEntry.uiTokenAmount.uiAmount
+      : 0;
+
+  if (sourcePreAmount - sourcePostAmount !== 1) {
+    return { ok: false as const, error: "SOURCE_AMOUNT_MISMATCH" };
+  }
+
+  return { ok: true as const };
+}
+
+/* ================= ENDPOINT ================= */
 
 function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
@@ -515,71 +734,110 @@ export async function onRequestPost(
     return fail(origin, 402, "QUOTE_NOT_1_USD");
   }
 
-  /* ================= PROVIDER QUERY ================= */
+  const expectedPayer = await (async () => {
+    const identityRaw = env?.CREATOR_IDENTITIES?.get
+      ? await env.CREATOR_IDENTITIES.get(`creator:identity:${creatorIdentityId}`)
+      : null;
 
-  const primary = await queryPrimary(env, txHash);
-  const secondary = await querySecondary(env, txHash);
+    if (!identityRaw) {
+      return null;
+    }
 
-  const providers = [primary, secondary].filter((p) => !!p.chainId || !!p.receipt);
+    let identity: Record<string, unknown>;
+    try {
+      identity = JSON.parse(identityRaw) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
 
-  if (providers.length === 0) {
-    return fail(origin, 503, "PROVIDERS_UNAVAILABLE");
+    if (typeof identity.account !== "string") {
+      return null;
+    }
+
+    return identity.account;
+  })();
+
+  if (!expectedPayer) {
+    return fail(origin, 403, "CREATOR_IDENTITY_NOT_FOUND");
   }
 
-  const uniqueChainIds = new Set(
-    providers
-      .map((p) => typeof p.chainId === "string" ? p.chainId.toLowerCase() : "")
-      .filter(Boolean)
-  );
+  const isBaseEvmSignature = txHash.startsWith("0x") && txHash.length === 66;
+  const isSolanaSignature = /^[A-Za-z0-9]{64,88}$/.test(txHash) && !isBaseEvmSignature;
 
-  if (uniqueChainIds.size > 1) {
-    return fail(origin, 503, "PROVIDER_DISAGREEMENT");
-  }
+  if (isBaseEvmSignature) {
+    /* ================= PROVIDER QUERY ================= */
 
-  const agreedChainId = providers[0]?.chainId?.toLowerCase();
-  if (agreedChainId !== BASE_CHAIN_ID.toLowerCase()) {
-    return fail(origin, 503, "WRONG_CHAIN");
-  }
+    const primary = await queryPrimary(env, txHash);
+    const secondary = await querySecondary(env, txHash);
 
-  const receiptResults = providers
-    .map((p) => findTransferLog(p.receipt))
-    .filter((r) => r.found);
+    const providers = [primary, secondary].filter((p) => !!p.chainId || !!p.receipt);
 
-  if (receiptResults.length === 0) {
-    const reasons = providers
-      .map((p) => findTransferLog(p.receipt).reason)
-      .filter(Boolean);
-    return fail(origin, 402, `TRANSFER_NOT_FOUND: ${reasons[0] ?? "unknown"}`);
-  }
+    if (providers.length === 0) {
+      return fail(origin, 503, "PROVIDERS_UNAVAILABLE");
+    }
 
-  const receipt = providers.find((p) => findTransferLog(p.receipt).found)?.receipt;
+    const uniqueChainIds = new Set(
+      providers
+        .map((p) => typeof p.chainId === "string" ? p.chainId.toLowerCase() : "")
+        .filter(Boolean)
+    );
 
-  if (!receipt || receipt.status !== "0x1") {
-    return fail(origin, 402, "TX_NOT_SUCCESSFUL");
-  }
+    if (uniqueChainIds.size > 1) {
+      return fail(origin, 503, "PROVIDER_DISAGREEMENT");
+    }
 
-  if (!receipt.blockNumber || typeof receipt.blockNumber !== "string") {
-    return fail(origin, 503, "INVALID_BLOCK_NUMBER");
-  }
+    const agreedChainId = providers[0]?.chainId?.toLowerCase();
+    if (agreedChainId !== BASE_CHAIN_ID.toLowerCase()) {
+      return fail(origin, 503, "WRONG_CHAIN");
+    }
 
-  const latestBlocks = providers
-    .map((p) => p.latestBlock)
-    .filter((b): b is string => typeof b === "string");
+    const receiptResults = providers
+      .map((p) => findTransferLog(p.receipt))
+      .filter((r) => r.found);
 
-  if (latestBlocks.length === 0) {
-    return fail(origin, 503, "CHAIN_HEAD_UNAVAILABLE");
-  }
+    if (receiptResults.length === 0) {
+      const reasons = providers
+        .map((p) => findTransferLog(p.receipt).reason)
+        .filter(Boolean);
+      return fail(origin, 402, `TRANSFER_NOT_FOUND: ${reasons[0] ?? "unknown"}`);
+    }
 
-  const latestBlock = latestBlocks[0];
-  if (!/^0x[0-9a-f]+$/i.test(latestBlock) || !/^0x[0-9a-f]+$/i.test(receipt.blockNumber)) {
-    return fail(origin, 503, "INVALID_BLOCK_HEX");
-  }
+    const receipt = providers.find((p) => findTransferLog(p.receipt).found)?.receipt;
 
-  const confirmationCount =
-    hexToBigInt(latestBlock) - hexToBigInt(receipt.blockNumber);
+    if (!receipt || receipt.status !== "0x1") {
+      return fail(origin, 402, "TX_NOT_SUCCESSFUL");
+    }
 
-  if (confirmationCount < MIN_CONFIRMATIONS) {
-    return fail(origin, 202, "PENDING");
+    if (!receipt.blockNumber || typeof receipt.blockNumber !== "string") {
+      return fail(origin, 503, "INVALID_BLOCK_NUMBER");
+    }
+
+    const latestBlocks = providers
+      .map((p) => p.latestBlock)
+      .filter((b): b is string => typeof b === "string");
+
+    if (latestBlocks.length === 0) {
+      return fail(origin, 503, "CHAIN_HEAD_UNAVAILABLE");
+    }
+
+    const latestBlock = latestBlocks[0];
+    if (!/^0x[0-9a-f]+$/i.test(latestBlock) || !/^0x[0-9a-f]+$/i.test(receipt.blockNumber)) {
+      return fail(origin, 503, "INVALID_BLOCK_HEX");
+    }
+
+    const confirmationCount =
+      hexToBigInt(latestBlock) - hexToBigInt(receipt.blockNumber);
+
+    if (confirmationCount < MIN_CONFIRMATIONS) {
+      return fail(origin, 202, "PENDING");
+    }
+  } else if (isSolanaSignature) {
+    const solanaVerification = await verifySolanaPayment(txHash, expectedPayer);
+    if (!solanaVerification.ok) {
+      return fail(origin, 402, solanaVerification.error);
+    }
+  } else {
+    return fail(origin, 400, "INVALID_TX_HASH");
   }
 
   /* ================= PERSIST VERIFIED PAYMENT ================= */

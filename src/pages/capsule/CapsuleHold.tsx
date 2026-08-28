@@ -173,6 +173,31 @@ export default function CapsuleHold() {
     useState(0);
 
 
+  // @ts-expect-error Phase 2B storage-payment UI state: intentionally declared; render integration pending
+    const [storagePaymentState, setStoragePaymentState] =
+      useState<
+        | "idle"
+        | "preparing"
+        | "quoting"
+        | "quote_ready"
+        | "paying"
+        | "verifying"
+        | "verified"
+        | "error"
+      >("idle");
+
+
+    // @ts-expect-error Phase 2B storage quote state: intentionally declared; render integration pending
+    const [storageQuote, setStorageQuote] =
+      useState<{
+        storagePaymentId: string;
+        expectedAmountAtomic: string;
+        displayAmountUSDC: string;
+        irysDestination: string;
+        expiresAt: number;
+      } | null>(null);
+
+
   // ── Patch #2: slow-mode hint after 6 s ──
   const [slowMode, setSlowMode] =
     useState(false);

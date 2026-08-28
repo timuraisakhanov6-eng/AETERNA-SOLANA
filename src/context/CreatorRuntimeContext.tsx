@@ -21,13 +21,16 @@ export type CreateAccessStatus =
   | "access-required"
   | "unavailable";
 
-export interface CreatorIdentityContextValue {
+export interface CreatorRuntimeContextValue {
   creatorIdentityId: string | null;
   status: CreatorIdentityStatus;
   error: string | null;
   authenticate: (network: string, account: string, signature: string, challengeId: string) => Promise<void>;
   issueChallenge: (network: string) => Promise<{ challengeId: string; challenge: string }>;
   clear: () => void;
+  hasDevBypass: boolean;
+  // TEMPORARY DEV PREVIEW — REMOVE AFTER CREATE UI WORK
+  hasCreatePreview: boolean;
 }
 
 export interface CreatorCreditContextValue {
@@ -45,10 +48,10 @@ export interface CreatorCreditContextValue {
   clear: () => void;
 }
 
-const CreatorIdentityContext = createContext<CreatorIdentityContextValue | null>(null);
+const CreatorIdentityContext = createContext<CreatorRuntimeContextValue | null>(null);
 const CreatorCreditContext = createContext<CreatorCreditContextValue | null>(null);
 
-export function useCreatorIdentity(): CreatorIdentityContextValue {
+export function useCreatorIdentity(): CreatorRuntimeContextValue {
   const ctx = useContext(CreatorIdentityContext);
   if (!ctx) throw new Error("useCreatorIdentity must be used within CreatorIdentityProvider");
   return ctx;
@@ -64,6 +67,13 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
   const [creatorIdentityId, setCreatorIdentityId] = useState<string | null>(null);
   const [status, setStatus] = useState<CreatorIdentityStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+
+  const hasDevBypass = import.meta.env.DEV && typeof sessionStorage !== "undefined"
+    ? sessionStorage.getItem("aeterna-dev-bypass") === "1"
+    : false;
+
+  // TEMPORARY DEV PREVIEW — REMOVE AFTER CREATE UI WORK
+  const hasCreatePreview = import.meta.env.DEV ? true : false;
 
   const authenticate = useCallback(async (network: string, account: string, signature: string, challengeId: string) => {
     setStatus("authenticating");
@@ -108,7 +118,7 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <CreatorIdentityContext.Provider value={{ creatorIdentityId, status, error, authenticate, issueChallenge, clear }}>
+    <CreatorIdentityContext.Provider value={{ creatorIdentityId, status, error, authenticate, issueChallenge, clear, hasDevBypass, hasCreatePreview }}>
       {children}
     </CreatorIdentityContext.Provider>
   );

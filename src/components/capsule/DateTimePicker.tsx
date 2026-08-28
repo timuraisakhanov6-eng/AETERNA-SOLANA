@@ -120,7 +120,7 @@ export function DateTimePicker({
             }
           />
           <p className="mt-2 text-xs text-foreground/60">
-            Unlock occurs automatically on this date.
+            Unlock occurs automatically at 12:00 UTC on this date.
           </p>
         </div>
       ) : (

@@ -77,13 +77,43 @@ Does not
 - does not hold funds;
 - is not an Executor.
 
-## 4. AETERNA_SETTLEMENT_WALLET
+## 4. AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS
+
+Type: AETERNA-owned public Solana service-payment recipient
+
+Purpose
+
+Receives the $1.00 USDC AETERNA Service Payment from creators on Solana Mainnet.
+
+Public address:
+
+`6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu`
+
+Performs
+- receives AETERNA service payments in approved payment assets on approved networks;
+- validates that payments are associated with an immutable Creator Service Quote and a verified Creator Identity.
+
+Does not
+- is not the Irys payment receiver;
+- is not a storage provider;
+- does not determine publication cost;
+- does not fund Irys publication;
+- does not receive user secrets;
+- does not receive encryption keys;
+- does not receive plaintext data.
+
+## 5. AETERNA_SETTLEMENT_WALLET
 
 Type: AETERNA-owned service-payment recipient
 
 Purpose
 
-Receives the AETERNA service payment from creators.
+Receives the AETERNA service payment from creators on supported rails.
+
+Current status:
+- Base payment rail is frozen and reserved for future activation.
+- Active canonical rail: supported Solana-compatible wallet.
+- Active canonical settlement address: AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS.
 
 Performs
 - receives AETERNA service payments in approved payment assets on approved networks;
@@ -108,9 +138,17 @@ Maps one authenticated creator to one or more verified wallet/account controls a
 
 Performs
 - issues challenge/nonce for wallet proof;
-- verifies EIP-191 personal_sign or equivalent proof;
+- verifies wallet signature/proof against claimed account and challenge;
 - creates or retrieves a server-issued Creator Identity record;
 - binds verified network accounts to that Creator Identity.
+
+Active canonical Solana rail uses:
+- Solana Wallet Standard;
+- Sign In With Solana (SIWS)-compatible authentication model;
+- Ed25519 signature verification.
+
+Legacy/frozen Base rail uses:
+- EIP-191 `personal_sign` or equivalent officially supported EVM signing method.
 
 Does not
 - is not a raw blockchain address;
@@ -166,7 +204,8 @@ Purpose
 Connecting user wallets for AETERNA service payment and identity proof.
 
 Current active implementation:
-- Minimal EIP-1193 browser provider for Base Mainnet / native USDC.
+- Supported Solana-compatible wallet for Solana Mainnet / native USDC.
+- Base Mainnet / native USDC via minimal EIP-1193 browser provider is frozen and reserved for future activation.
 
 Pending expansions:
 - Additional wallet/provider adapters may be added only through explicit canonical selection.
@@ -192,6 +231,9 @@ Performs:
 - signing transactions;
 - sending approved service-payment assets;
 - holding gas for on-chain operations.
+
+Note: MetaMask-class EVM wallets remain supported for future Base reactivation.
+Current canonical active rail is a supported Solana-compatible wallet.
 
 ### 10. ChainList
 
@@ -364,7 +406,7 @@ Does not know:
 | CREATOR_CREDIT | Server-authoritative entitlement for one capsule lifecycle; bound to Creator Identity |
 | AETERNA_EXECUTOR_HOT | PENDING selection; publication execution component; not canonical AETERNA service-payment receiver or Irys funder |
 | Alchemy | Access to supported blockchains and transaction verification |
-| Minimal EIP-1193 browser provider | Base Mainnet / native USDC wallet connect and signing |
+| Minimal EIP-1193 browser provider | Base Mainnet / native USDC wallet connect and signing; currently frozen/reserved |
 | MetaMask | Storing keys and signing transactions |
 | ChainList | Adding supported networks for the user |
 | Irys | Publishing the encrypted Vault; separate publication/storage payment layer |

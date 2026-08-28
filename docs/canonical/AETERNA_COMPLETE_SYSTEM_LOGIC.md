@@ -88,7 +88,7 @@ Service Payment Modal
 ↓
 choose supported payment rail
 ↓
-connect compatible wallet
+connect supported Solana-compatible wallet
 ↓
 automatic amount:
 $1.00 USDC
@@ -111,6 +111,11 @@ It MUST NOT be presented as an unrestricted entry point before entitlement verif
 Payment occurs BEFORE /create.
 There is NO second AETERNA Service Payment inside /create.
 
+The creator pays for AETERNA creation entitlement and separately pays the storage cost of each capsule.
+
+Base payment rail is frozen and reserved for future activation.
+Current canonical active creator rail is a supported Solana-compatible wallet.
+
 Heartbeat is automatically supported for every capsule. No separate enable step exists.
 
 If the originally selected opening interval is 30 days or less, Heartbeat becomes available immediately after sealing.
@@ -132,13 +137,13 @@ Landing
 ↓
 CREATE CAPSULE
 ↓
-Service Payment
+AETERNA Service Payment
 ↓
 Verified Payment
 ↓
 Creator Credit
 ↓
-/capsule creation entitlement
+/create
 ↓
 Add Content
 ↓
@@ -150,18 +155,25 @@ Prepare Encrypted Capsule
 ↓
 PREPARED
 ↓
-Request Upload Token
+Calculate Billable Storage
+↓
+Capsule Storage Quote
+↓
+Creator Storage Payment
+↓
+Storage Payment Verification
+↓
+PAYMENT VERIFIED
+↓
+CapsuleHold
 ↓
 Upload
 ↓
-Storage Authority Established
-(Chunk Pointer Registry entries recorded per chunk)
+Storage Authority
 ↓
 Verification
 ↓
-Create Manifest
-↓
-Manifest Authority Established
+Manifest
 ↓
 SEALED
 Capacity is calculated after PREPARED according to the canonical Business Authority rules.
@@ -719,7 +731,8 @@ OPENED — the vault is decrypted and rendered; access becomes permanent.
 Business Layer Authority
 Pricing and settlement are governed by:
 AETERNA_CREATOR_CREDIT_MODEL
-Business authority governs:
+Business authority governs two distinct commercial phases:
+A. Service Entitlement
 - service entitlement creation;
 - creator pricing;
 - AETERNA service payment;
@@ -727,13 +740,20 @@ Business authority governs:
 - Creator Credit authority;
 - future treasury governance settlement.
 
+B. Capsule Storage Settlement
+- capacity/billable size calculation;
+- Capsule Storage Quote;
+- creator storage payment;
+- storage payment verification;
+- storage settlement.
+
 Business authority does not govern:
 - capability authority;
 - key derivation;
 - ciphertext continuity;
 - heartbeat semantics;
 - open semantics;
-- Irys publication/storage payment.
+- Irys publication/storage operational funding by AETERNA infrastructure.
 
 Business authority is isolated from:
 
@@ -746,9 +766,22 @@ open semantics
 ciphertext continuity
 
 If an implementation contradicts the business protocol, the implementation must be fixed. Business law must not be weakened.
+
+Payment Failure Law
+A. Service Payment failure
+- No Creator Credit.
+- No /create entitlement.
+
+B. Storage Payment failure
+- No permanent storage settlement.
+- No upload authorization for permanent storage.
+- No Manifest.
+- No SEALED.
+
+AETERNA does not subsidize storage costs. Infrastructure-funded operational publication is distinct from creator-funded storage settlement.
 Creator Service Quote Authority
-Creator Service Quote is the canonical commercial entitlement object for a capsule.
-Creator Service Quote is created exactly once after PREPARED.
+Creator Service Quote is the canonical commercial entitlement object for AETERNA service access.
+Creator Service Quote is created exactly once after PREPARED for the AETERNA service entitlement flow.
 Creator Service Quote becomes immutable immediately after creation.
 Entitlement verification consumes Creator Service Quote.
 Payment verification consumes Creator Service Quote.
@@ -759,6 +792,18 @@ Creator Service Quote never becomes part of:
 • Vault
 • Manifest
 Creator Service Quote expires after the payment lifecycle completes.
+
+Capsule Storage Quote Authority
+Capsule Storage Quote is the canonical commercial object for permanent storage of a specific capsule.
+Capsule Storage Quote is created after PREPARED based on actual billable storage size.
+Capsule Storage Quote becomes immutable immediately after creation.
+Storage payment verification consumes Capsule Storage Quote.
+Capsule Storage Quote is temporary Business Authority only.
+Capsule Storage Quote never becomes part of:
+• PreparedCapsule
+• Vault
+• Manifest
+Capsule Storage Quote expires after the storage payment lifecycle completes.
 Server Business Authority
 Creator Service Quote is established exclusively by the server.
 The client may display creator pricing for user experience.
@@ -966,7 +1011,7 @@ Core Principles
 No accounts
 Capability-based access control
 Ciphertext continuity
-Creator pays once
+Creator pays for service entitlement and separately for capsule storage
 Storage independence
 Heartbeat governance (always active; availability depends on interval)
 Trusted time source

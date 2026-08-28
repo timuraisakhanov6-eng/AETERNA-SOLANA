@@ -42,6 +42,14 @@ id = "1a5ad159b85b4497bc93c1c54e7d697b"
 binding = "CHUNK_POINTER_REGISTRY"
 id = "36ff68968c164b2aa0929a87779e5199"
 
+[[kv_namespaces]]
+binding = "STORAGE_QUOTES"
+id = "b4b24e8ef17346f1a2354c64196e8bb3"
+
+[[kv_namespaces]]
+binding = "PREPARED_PROJECTIONS"
+id = "549cfafce8ca49ba8d77af5c32e20ca6"
+
 # ─────────────────────────────────────────────
 # Credit Operation Coordinator (Durable Object)
 #
@@ -139,6 +147,14 @@ id = "1a5ad159b85b4497bc93c1c54e7d697b"
 [[env.production.kv_namespaces]]
 binding = "CHUNK_POINTER_REGISTRY"
 id = "36ff68968c164b2aa0929a87779e5199"
+
+[[env.production.kv_namespaces]]
+binding = "STORAGE_QUOTES"
+id = "b4b24e8ef17346f1a2354c64196e8bb3"
+
+[[env.production.kv_namespaces]]
+binding = "PREPARED_PROJECTIONS"
+id = "549cfafce8ca49ba8d77af5c32e20ca6"
 
 # ─────────────────────────────────────────────
 # Creator Identity / Credit Authority

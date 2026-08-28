@@ -1,12 +1,3 @@
-/**
- * AETERNA — Issue Creator Identity Challenge
- *
- * POST /api/creator/issue-challenge
- *
- * Server issues a single-use challenge/nonce bound to a network context.
- * Frontend must sign this challenge with the wallet for that network/account.
- */
-
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
@@ -24,6 +15,9 @@ const ALLOWED_ORIGINS = [
   "https://aeterna-capsule.pages.dev",
 ];
 
+const CHALLENGE_TTL_SEC = 5 * 60;
+const CHALLENGE_PREFIX = "creator:challenge:";
+
 function baseHeaders(origin: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
@@ -38,11 +32,23 @@ function fail(origin: string, status = 400, error = "error"): Response {
   return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders(origin) });
 }
 
-const CHALLENGE_TTL_SEC = 5 * 60;
-const CHALLENGE_PREFIX = "creator:challenge:";
-
-function challengeKey(id: string): string {
-  return `${CHALLENGE_PREFIX}${id}`;
+function buildSolanaMessage(record: {
+  network: string;
+  challenge: string;
+  publicKey: string;
+  issuedAt: number;
+  expiresAt: number;
+  id: string;
+}): string {
+  return [
+    "AETERNA identity challenge",
+    `network=${record.network}`,
+    `address=${record.publicKey}`,
+    `challenge=${record.challenge}`,
+    `id=${record.id}`,
+    `issuedAt=${record.issuedAt}`,
+    `expiresAt=${record.expiresAt}`,
+  ].join("\n");
 }
 
 export async function onRequestOptions(context: EventContext<Record<string, unknown>, string, IssueChallengeEnv>): Promise<Response> {
@@ -80,23 +86,38 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 400, "INVALID_BODY");
   }
 
-  const network = body.network;
-  if (typeof network !== "string" || network.trim().length === 0) {
+  const network = typeof body.network === "string" ? body.network.trim() : "";
+  if (!network) {
     return fail(origin, 400, "INVALID_NETWORK");
+  }
+
+  const publicKey =
+    typeof body.publicKey === "string" && body.publicKey.trim().length > 0
+      ? body.publicKey.trim()
+      : "";
+
+  if (!publicKey) {
+    return fail(origin, 400, "INVALID_PUBLIC_KEY");
   }
 
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
 
-  const challenge = Array.from(crypto.getRandomValues(new Uint8Array(32))).map(v => v.toString(16).padStart(2, "0")).join("");
-  const id = Array.from(crypto.getRandomValues(new Uint8Array(16))).map(v => v.toString(16).padStart(2, "0")).join("");
+  const challenge = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map(v => v.toString(16).padStart(2, "0"))
+    .join("");
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+    .map(v => v.toString(16).padStart(2, "0"))
+    .join("");
 
   const record = {
     id,
     network,
     challenge,
+    publicKey,
     createdAt: now,
     expiresAt: now + CHALLENGE_TTL_SEC * 1000,
+    consumed: false,
   };
 
   if (env?.CREATOR_IDENTITIES) {
@@ -104,7 +125,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   }
 
   return new Response(
-    JSON.stringify({ ok: true, id, challenge, network, expiresAt: record.expiresAt }),
+    JSON.stringify({ ok: true, id, challenge, network, publicKey, message: buildSolanaMessage(record), expiresAt: record.expiresAt }),
     { status: 200, headers: baseHeaders(origin) }
   );
 }

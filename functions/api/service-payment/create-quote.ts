@@ -40,7 +40,12 @@ function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname)) return true;
+    if (
+      url.protocol === "https:" &&
+      (PAGES_PREVIEW_REGEX.test(url.hostname) || NEW_PAGES_PREVIEW_REGEX.test(url.hostname))
+    )
+      return true;
+    if (LOCALHOST_REGEX.test(origin)) return true;
   } catch {
     // ignore
   }

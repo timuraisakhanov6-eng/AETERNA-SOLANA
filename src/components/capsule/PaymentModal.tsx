@@ -4,7 +4,7 @@
  * Canonical service-payment modal.
  *
  * Active flow:
- *   paymentIntentId -> immutable quote -> Base USDC payment
+ *   paymentIntentId -> immutable quote -> Solana USDC payment
  *   -> server verification -> Creator Credit -> entitlement -> /create
  *
  * This modal MUST NOT:
@@ -25,16 +25,13 @@ import {
 import { Button } from "@/components/ui/button"
 import { Loader2 } from "lucide-react"
 
-import { connectBaseWallet, sendBaseUSDCPayment } from "@/lib/wallet/baseWallet"
+import { connectSolanaWallet, sendSolanaUSDCPayment } from "@/lib/wallet/solanaWallet"
 
 /* ───────────────── TYPES ───────────────── */
 
 interface PaymentModalProps {
   open: boolean
   onClose: () => void
-  description?: string
-  billableSizeBytes?: number
-  expectedAmount?: number
   unlockAt: number | null
   protocolAccepted: boolean
   creatorIdentityId?: string | null
@@ -77,14 +74,11 @@ type PaymentPhase =
   | "reserving"
   | "error"
 
-type Rail = "Base" | "Solana"
-
 /* ───────────────── COMPONENT ───────────────── */
 
 export function PaymentModal({
   open,
   onClose,
-  description,
   unlockAt,
   protocolAccepted,
   creatorIdentityId,
@@ -92,7 +86,6 @@ export function PaymentModal({
   onReserveReady,
 }: PaymentModalProps) {
   const [phase, setPhase] = useState<PaymentPhase>("idle")
-  const [rail, setRail] = useState<Rail>("Base")
   const [quote, setQuote] = useState<{
     paymentIntentId: string
     expectedAmount: number
@@ -117,7 +110,6 @@ export function PaymentModal({
       setQuote(null)
       setError(null)
       setIsProcessing(false)
-      setRail("Base")
     }
   }, [open])
 
@@ -167,18 +159,11 @@ export function PaymentModal({
   }
 
   const connectWallet = async () => {
-    if (rail !== "Base") {
-      setError("Solana payment rail is not yet implemented.")
-      setPhase("error")
-      setIsProcessing(false)
-      return
-    }
-
     setPhase("connecting_wallet")
     setError(null)
 
     try {
-      await connectBaseWallet()
+      await connectSolanaWallet()
       setPhase("confirming")
     } catch (err) {
       const message =
@@ -206,16 +191,13 @@ export function PaymentModal({
     setIsProcessing(true)
 
     try {
-      let txHash = ""
-
-      if (rail === "Base") {
-        txHash = await sendBaseUSDCPayment()
-      } else {
-        throw new Error("Solana payment rail is not yet implemented.")
-      }
+      const txHash = await sendSolanaUSDCPayment({
+        destination: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
+        amountAtomic: "1000000",
+      })
 
       if (!txHash) {
-        throw new Error("No transaction hash from wallet.")
+        throw new Error("No transaction signature from wallet.")
       }
 
       const evidenceId = `payment-modal-${quote.paymentIntentId}-${Date.now()}`
@@ -355,27 +337,15 @@ export function PaymentModal({
             <div className="flex items-center gap-2">
               <Button
                 type="button"
-                variant={rail === "Base" ? "default" : "secondary"}
+                variant="default"
                 disabled={isProcessing}
-                onClick={() => setRail("Base")}
-                className="px-3 py-1 text-xs"
-              >
-                Base
-              </Button>
-              <Button
-                type="button"
-                variant={rail === "Solana" ? "default" : "secondary"}
-                disabled={isProcessing}
-                onClick={() => setRail("Solana")}
                 className="px-3 py-1 text-xs"
               >
                 Solana
               </Button>
             </div>
             <div className="text-[11px] text-muted-foreground">
-              {rail === "Base"
-                ? "Base Mainnet / native USDC"
-                : "Canonical target rail. Implementation pending."}
+              Solana Mainnet / native USDC
             </div>
           </div>
 

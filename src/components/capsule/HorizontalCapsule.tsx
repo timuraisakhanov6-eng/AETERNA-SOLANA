@@ -1,3 +1,4 @@
+import { useState, useEffect, useRef } from "react";
 import { CapsuleItem } from "@/types/capsule";
 
 const MB = 1024 * 1024;
@@ -17,14 +18,17 @@ interface HorizontalCapsuleProps {
   items: CapsuleItem[];
   onViewContents: () => void;
   isSealed?: boolean;
+  maxFiles?: number;
+  capacityBytes?: number;
 }
 
 const HorizontalCapsule = ({
   items,
   onViewContents,
   isSealed = false,
+  maxFiles = 100,
+  capacityBytes = 100 * 1024,
 }: HorizontalCapsuleProps): JSX.Element => {
-
   const totalBytes = items.reduce((acc, item) => {
     if (
       item.type === "media" &&
@@ -42,6 +46,19 @@ const HorizontalCapsule = ({
 
     return acc;
   }, 0);
+
+  const [pulseActive, setPulseActive] = useState(false);
+
+  // TEMPORARY DEV PREVIEW — REMOVE AFTER CREATE UI WORK
+  const previousItemsLengthRef = useRef(items.length);
+  useEffect(() => {
+    if (items.length > previousItemsLengthRef.current) {
+      setPulseActive(true);
+      const t = setTimeout(() => setPulseActive(false), 1400);
+      return () => clearTimeout(t);
+    }
+    previousItemsLengthRef.current = items.length;
+  }, [items.length]);
 
   const handleClick = () => {
     if (!isSealed) onViewContents();
@@ -114,24 +131,18 @@ const HorizontalCapsule = ({
         }}
       >
         <div
+          aria-hidden="true"
           style={{
             position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: "40%",
-            background: `
-              linear-gradient(
-                180deg,
-                hsl(160, 55%, 42%)bb 0%,
-                hsl(160, 55%, 42%)ff 100%
-              )
-            `,
-            boxShadow: `
-              inset 0 0 24px hsl(160, 55%, 42%),
-              0 0 36px hsl(160, 55%, 42%)
-            `,
-            transition: "height 1.4s cubic-bezier(0.22, 0.61, 0.36, 1)",
+            inset: 0,
+            borderRadius: "999px",
+            opacity: pulseActive ? 1 : 0,
+            background:
+              "linear-gradient(180deg, rgba(90,190,170,0) 0%, rgba(90,190,170,0.18) 40%, rgba(90,190,170,0.35) 100%)",
+            boxShadow:
+              "inset 0 0 28px rgba(90,190,170,0.35), 0 0 40px rgba(90,190,170,0.25)",
+            transition:
+              "opacity 200ms ease-out, box-shadow 700ms ease-out",
           }}
         />
       </div>
@@ -149,25 +160,26 @@ const HorizontalCapsule = ({
         }}
       >
 
-        <p className="font-bold tracking-widest text-[12px] sm:text-[13px] md:text-[14px] lg:text-[15px]">
-          TOTAL CONTENT
-        </p>
-
-        <p className="text-[11px] sm:text-[13px] md:text-[14px]">
-          {formatBytes(totalBytes)}
-        </p>
+        <div className="flex items-center justify-center gap-1.5 sm:gap-2 flex-nowrap min-w-0">
+          <div className="rounded-full border border-white/25 bg-black/30 px-2.5 py-1 text-[11px] sm:text-[13px] md:text-[14px] lg:text-[15px] font-semibold text-white/90 whitespace-nowrap flex-shrink min-w-0">
+            {items.length} / {maxFiles} FILES
+          </div>
+          <div className="rounded-full border border-white/25 bg-black/30 px-2.5 py-1 text-[11px] sm:text-[13px] md:text-[14px] lg:text-[15px] font-semibold text-white/90 whitespace-nowrap flex-shrink min-w-0">
+            {formatBytes(totalBytes)}
+          </div>
+        </div>
 
         <div
           aria-hidden="true"
           className="
-            mt-2 px-6 py-1.5
+            mt-3 px-4 py-1.5 sm:px-6 sm:py-2 md:px-8 md:py-2
             rounded-full
-            border border-orange-400/80
-            text-[12px] sm:text-[13px]
-            font-semibold text-orange-300
-            bg-black/35
-            shadow-[0_0_18px_rgba(240,180,80,0.35)]
-            opacity-80
+            border border-orange-400/80 md:border-orange-300
+            text-[11px] sm:text-[13px] md:text-sm
+            font-semibold text-orange-200 md:text-orange-100
+            bg-black/35 md:bg-black/30
+            shadow-[0_0_18px_rgba(240,180,80,0.35)] md:shadow-[0_0_24px_rgba(240,180,80,0.45)]
+            opacity-80 md:opacity-90
           "
         >
           VIEW CONTENTS
@@ -177,7 +189,6 @@ const HorizontalCapsule = ({
 
     </div>
   );
-
 };
 
 export default HorizontalCapsule;

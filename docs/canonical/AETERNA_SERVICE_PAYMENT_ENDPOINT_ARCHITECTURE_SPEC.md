@@ -78,6 +78,13 @@ Server MUST independently establish:
 - uniqueness;
 - eligibility for Credit.
 
+Active canonical rail:
+- supported Solana-compatible wallet on Solana Mainnet.
+
+Base rail:
+- FROZEN / RESERVED FOR FUTURE ACTIVATION.
+- Base is NOT the active canonical creator rail.
+
 ## 4. ENDPOINT CONTRACTS
 
 ### 4.1 Create Service Payment Quote

@@ -20,20 +20,25 @@ import { Loader2 } from "lucide-react";
 import CapsuleBuilder from "@/components/capsule/CapsuleBuilder";
 import { useCreatorIdentity, useCreatorCredit } from "@/context/CreatorRuntimeContext";
 import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext";
+import { connectSolanaWallet } from "@/lib/wallet/solanaWallet";
 
 type AccessView = "loading" | "workspace" | "access-required" | "unavailable";
 
 export default function Create() {
   const navigate = useNavigate();
-  const { creatorIdentityId, status: identityStatus, issueChallenge } =
+  const { creatorIdentityId, status: identityStatus, issueChallenge, hasDevBypass, hasCreatePreview } =
     useCreatorIdentity();
   const { accessStatus, creatorCreditId, lifecycleId, checkEntitlement, clear: clearCredit } =
     useCreatorCredit();
   const { openLandingPaymentModal } = useLandingPaymentGate();
 
-  const [view, setView] = useState<AccessView>(() =>
-    creatorIdentityId ? "loading" : "access-required"
-  );
+  const [view, setView] = useState<AccessView>(() => {
+    if (hasDevBypass || hasCreatePreview) {
+      return "workspace"
+    }
+
+    return creatorIdentityId ? "loading" : "access-required"
+  });
 
   useEffect(() => {
     if (!creatorIdentityId || !creatorCreditId) {
@@ -48,44 +53,30 @@ export default function Create() {
     const run = async () => {
       try {
         const { challengeId, challenge } = await issueChallenge(
-          "eip155:8453"
+          "solana"
         );
 
-        // In production, wallet signing should happen here.
-        // For MVP fail-closed gate, require explicit signed proof.
-        const provider = (window as Window & {
-          ethereum?: {
-            request: <T = unknown>(args: {
-              method: string;
-              params?: unknown[] | Record<string, unknown>;
-            }) => Promise<T>;
-          };
-        }).ethereum;
-
-        if (!provider) {
+        let wallet;
+        try {
+          wallet = await connectSolanaWallet();
+        } catch {
           if (!cancelled) setView("access-required");
           return;
         }
 
-        const accounts = (await provider.request<string[]>({
-          method: "eth_accounts",
-        })) as string[];
-
-        const account = accounts?.[0];
+        const account = wallet.getPublicKey();
         if (!account) {
           if (!cancelled) setView("access-required");
           return;
         }
 
-        const message = `AETERNA identity challenge:${challenge}`;
-        const signature = (await provider.request<string>({
-          method: "personal_sign",
-          params: [message, account],
-        })) as string;
+        const encoded = typeof challenge === "string" ? new TextEncoder().encode(challenge) : challenge;
+        const signatureResult = await wallet.signMessage(encoded);
+        const signature = signatureResult.signature;
 
         const result = await checkEntitlement(
           challengeId,
-          "eip155:8453",
+          "solana",
           account,
           signature,
           creatorCreditId,
@@ -115,7 +106,9 @@ export default function Create() {
     };
   }, [creatorIdentityId, identityStatus, issueChallenge, checkEntitlement, creatorCreditId, lifecycleId]);
 
-  if (view === "loading" || accessStatus === "loading") {
+  const isDevPreview = import.meta.env.DEV && (hasDevBypass || hasCreatePreview);
+
+  if ((view === "loading" || accessStatus === "loading") && !isDevPreview) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex items-center gap-2 text-muted-foreground">

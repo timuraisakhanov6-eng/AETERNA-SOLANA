@@ -304,7 +304,7 @@ describe("Payment authorization / replay protection invariants", () => {
             }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
       };
@@ -337,7 +337,7 @@ describe("Payment authorization / replay protection invariants", () => {
             }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
       };
@@ -370,7 +370,7 @@ describe("Payment authorization / replay protection invariants", () => {
             }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
       };
@@ -403,7 +403,7 @@ describe("Payment authorization / replay protection invariants", () => {
             }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
         ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
@@ -480,7 +480,7 @@ describe("Payment authorization / replay protection invariants", () => {
             }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async (k: string) => k === `verified-payment:${PAYMENT_INTENT_ID}:${EVIDENCE_ID}` ? existing : null, put: async () => {} },
       };
@@ -525,7 +525,7 @@ describe("Payment authorization / replay protection invariants", () => {
             }),
         },
         CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID }),
+          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
         },
         VERIFIED_PAYMENTS: { get: async (k: string) => k === `verified-payment:${PAYMENT_INTENT_ID}:${EVIDENCE_ID}` ? existing : null, put: async () => {} },
       };

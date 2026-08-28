@@ -5,6 +5,14 @@ Authority: Business Layer
 Version: 1.0  
 Supersedes: legacy Paddle / card / Base-USDC-only architecture notes
 
+Active canonical creator rail:
+- supported Solana-compatible wallet on Solana Mainnet.
+
+Base rail status:
+- FROZEN / RESERVED FOR FUTURE ACTIVATION.
+- Base remains in repository for future reactivation.
+- Base is NOT the active canonical creator rail.
+
 ---
 
 ## 1. NAME
@@ -232,8 +240,9 @@ entitlement or an equivalent already-processed result.
 
 ### 10.3 Abstraction Requirement
 
-This document does not define the exact chain transaction format,
-because the concrete provider/chain is not yet selected.
+The exact chain transaction format is rail-specific.
+For the active Solana rail, this is SPL Token transfer evidence.
+For future rails, the exact format remains implementation-selection PENDING.
 
 ## 11. CREATOR CREDIT BOUNDARY
 
@@ -278,6 +287,8 @@ Wallet identity rule:
   the AETERNA service payment and the subsequent Irys publication and
   capsule creation lifecycle.
 - A different wallet MUST NOT be used after the AETERNA service payment.
+- Current canonical active rail: supported Solana-compatible wallet.
+- Base rail is frozen and reserved for future activation.
 
 Payment asset rule:
 

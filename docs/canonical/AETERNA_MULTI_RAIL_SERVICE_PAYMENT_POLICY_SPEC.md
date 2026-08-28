@@ -103,8 +103,12 @@ Business Authority remains constant across rails.
 ## 6. SUPPORTED RAILS
 
 Canonical supported rails:
-1. Base Mainnet / native USDC.
-2. Solana Mainnet / native USDC.
+1. Solana Mainnet / native USDC.
+
+Base rail status:
+- FROZEN / RESERVED FOR FUTURE ACTIVATION.
+- Base is retained in repository and may be reactivated through explicit canonical selection.
+- No new Base creation path or Base storage path is active in the current canonical model.
 
 Additional rails may be added only through explicit canonical selection.
 
@@ -122,7 +126,7 @@ Service Payment Modal
 ↓
 choose supported payment rail
 ↓
-connect compatible wallet
+connect supported Solana-compatible wallet
 ↓
 automatic amount:
 $1.00 USDC
@@ -174,6 +178,12 @@ Content size MUST NOT determine:
 
 Active canonical documents MUST NOT retain block-based commercial pricing language.
 
+Current canonical creator rail:
+- supported Solana-compatible wallet.
+
+Base rail:
+- frozen/reserved; not active in canonical creator flow.
+
 ---
 
 ## 9. IRYS BUSINESS BOUNDARY
@@ -197,6 +207,7 @@ Canonical rule:
 Current implementation disclosure:
 - CURRENT IMPLEMENTATION uses server-side Executor Hot-funded Irys publication.
 - TARGET BUSINESS BOUNDARY is separate Irys economics from the AETERNA Service Payment.
+- Base rail is frozen and reserved for future activation; active canonical creator rail is a supported Solana-compatible wallet.
 - This document does NOT redesign Irys implementation.
 
 ---
@@ -204,9 +215,13 @@ Current implementation disclosure:
 ## 10. BASE RAIL POLICY
 
 Base rail status:
-- INITIAL production rail.
+- FROZEN / RESERVED FOR FUTURE ACTIVATION.
+- Base rail is retained for future reactivation.
+- Base rail is NOT the active canonical creator rail.
+- No new Base creation path is active.
+- No new Base storage path is active.
 
-Base rail parameters:
+Base rail parameters remain documented for future activation:
 - network: Base Mainnet;
 - asset: official native USDC on Base Mainnet;
 - transaction semantics: EVM transfer evidence;
@@ -216,14 +231,14 @@ Base rail parameters:
 - settlement recipient policy: documented in AETERNA_SETTLEMENT_WALLET_AND_SERVICE_PAYMENT_SPEC.md.
 
 Base rail does NOT define the universal business rule.
-Base rail is one supported payment rail.
+Base rail is one supported payment rail, currently frozen.
 
 ---
 
 ## 11. SOLANA RAIL TARGET
 
 Solana rail status:
-- CANONICAL TARGET rail.
+- ACTIVE CANONICAL CREATOR RAIL.
 
 Solana rail parameters:
 - network: Solana Mainnet;
@@ -231,11 +246,12 @@ Solana rail parameters:
 - transaction semantics: SPL Token transfer evidence;
 - finality policy: PENDING IMPLEMENTATION POLICY;
 - provider/RPC policy: PENDING IMPLEMENTATION REVIEW;
-- settlement recipient policy: PENDING.
+- settlement recipient: AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS = `6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu`;
+- token mint: documented as CANONICAL / VERIFIED in AETERNA_USDC_AMOUNT_AND_FINALITY_POLICY_SPEC.md.
 
-Until Solana rail policy is explicitly documented and operational:
-- no production quote MAY be issued for Solana;
-- no verification MAY be finalized for Solana.
+Until Solana rail policy is fully documented and operational:
+- no production quote MAY be issued for other rails;
+- no verification MAY be finalized for other rails as the active creator flow.
 
 ---
 

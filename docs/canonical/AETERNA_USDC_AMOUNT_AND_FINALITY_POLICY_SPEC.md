@@ -26,8 +26,12 @@ Network does NOT change the business amount.
 Network is a payment-rail policy, not the business price.
 
 Supported rails:
-- Base Mainnet / native USDC;
 - Solana Mainnet / native USDC.
+
+Base rail status:
+- FROZEN / RESERVED FOR FUTURE ACTIVATION.
+- Base remains in repository for future reactivation.
+- Base is NOT the active canonical creator rail.
 
 Additional rails may be added only through explicit canonical selection.
 
@@ -40,19 +44,23 @@ Canonical rule:
 - Bridged, wrapped, or non-canonical USDC identifiers MUST NOT be used for the AETERNA service payment.
 
 Base rail:
+- FROZEN / RESERVED FOR FUTURE ACTIVATION.
 - asset: official native USDC on Base Mainnet.
 - authoritative identifier: PENDING OFFICIAL SOURCE RETRIEVAL.
 - exact Base Mainnet contract identifier MUST be obtained from official Circle/USDC documentation before production activation.
+- Base rail is NOT the active canonical creator rail.
 
 Solana rail:
 - asset: official native USDC on Solana Mainnet.
-- authoritative mint identifier: PENDING OFFICIAL SOURCE RETRIEVAL.
-- exact Solana mint identifier MUST be obtained from official sources before production activation.
+- authoritative mint identifier: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+- exact Solana Mainnet native USDC mint identifier confirmed from official Circle/USDC documentation.
+- Status: CANONICAL / VERIFIED.
 
 Do NOT use:
 - memory-derived addresses;
 - legacy deployment assumptions;
-- unofficial sources.
+- unofficial sources;
+- bridged/wrapped/non-canonical USDC identifiers.
 
 ---
 
@@ -130,6 +138,9 @@ Finality policy is rail-specific.
 ### 7.1 Base Mainnet
 
 Base Mainnet payment state machine:
+- FROZEN / RESERVED FOR FUTURE ACTIVATION.
+- Base Mainnet is NOT the active canonical creator rail.
+- Base state machine remains documented for future reactivation.
 
 OBSERVED:
 - payment event detected in a Base Mainnet block.
@@ -300,8 +311,6 @@ Quote rules:
 ## 13. REMAINING PENDING DECISIONS
 
 PENDING CANONICAL DECISION:
-- exact official Base Mainnet native USDC token contract identifier;
-- exact official Solana Mainnet native USDC mint identifier;
 - exact price source/oracle for USD 1.00 conversion;
 - exact finality threshold for Base Mainnet;
 - exact finality threshold for Solana Mainnet;

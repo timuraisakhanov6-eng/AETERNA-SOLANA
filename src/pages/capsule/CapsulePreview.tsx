@@ -27,10 +27,6 @@ import { isoNow } from "@/lib/utils/isoNow";
 const MAX_FILES = 100;
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 
-const BLOCK_BASE_MB = 20;
-const BLOCK_STEP_MB = 20;
-
-
 /* ================= ICON ================= */
 
 // FIX 1: dispatch on item.mediaType for media items (canonical schema)
@@ -189,18 +185,8 @@ const CapsulePreview = (): JSX.Element => {
     [orderedItems]
   );
 
-  const totalMB =
-    totalBytes / (1024 * 1024);
-
-  const currentBlock =
-    totalMB <= BLOCK_BASE_MB
-      ? 1
-      : 1 +
-        Math.ceil(
-          (totalMB -
-            BLOCK_BASE_MB) /
-            BLOCK_STEP_MB
-        );
+  // TEMPORARY DEV PREVIEW — REMOVE AFTER CREATE UI WORK
+  // Display cap for /capsule/preview size pill.
 
 /* ================= MEDIA PREVIEW ================= */
 
@@ -413,28 +399,12 @@ Review and edit before sealing
 </div>
 
 <div className="flex justify-center gap-4 pb-6">
-
-<div className="rounded-full border px-5 py-2 text-base bg-card/60">
-
-Block{" "}
-<span className="text-orange-400 font-semibold">
-{currentBlock}
-</span>
-
-</div>
-
-<div className="rounded-full border px-5 py-2 text-base bg-card/60">
-
-{formatMB(totalBytes)} MB total
-
-</div>
-
-<div className="rounded-full border px-5 py-2 text-base bg-card/60 text-muted-foreground">
-
-{items.length} / {MAX_FILES} files
-
-</div>
-
+  <div className="rounded-full border px-5 py-2 text-base bg-card/60">
+    {items.length} / {MAX_FILES} files
+  </div>
+  <div className="rounded-full border px-5 py-2 text-base bg-card/60 text-muted-foreground">
+    {formatMB(totalBytes)} MB
+  </div>
 </div>
 
 </header>
