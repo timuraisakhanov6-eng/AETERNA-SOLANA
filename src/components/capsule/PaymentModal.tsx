@@ -151,6 +151,7 @@ export function PaymentModal({
       }
       setQuote(q)
       setPhase("quote_ready")
+      setIsProcessing(false)
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "QUOTE_REQUEST_FAILED"
