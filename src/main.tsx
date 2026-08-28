@@ -33,6 +33,8 @@ import "./index.css";
  * ✘ know Browser Runtime implementation
  */
 
+const AETERNA_BUILD_VERSION = "22ae350-paymentmodal-fix";
+
 /* =============================
    THEME INITIALIZATION
    ============================= */
@@ -58,6 +60,8 @@ if (typeof window !== "undefined") {
       .classList.add("dark");
 
   }
+
+  document.documentElement.dataset["aeternaBuild"] = AETERNA_BUILD_VERSION;
 
 }
 
