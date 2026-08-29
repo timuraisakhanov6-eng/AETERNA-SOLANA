@@ -20,7 +20,10 @@ import {
   useWalletInfo,
 } from '@reown/appkit/react';
 import type { Provider as SolanaProvider } from '@reown/appkit-utils/solana';
-import { getReownAppKitInstance } from '@/lib/wallet/reownSolana';
+import {
+  ensureReownAppKitInstance,
+  getReownAppKitInstance,
+} from '@/lib/wallet/reownSolana';
 import {
   clearExplicitDisconnectMarker,
   hasExplicitDisconnectMarker,
@@ -106,6 +109,7 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
   const connect = useCallback(async () => {
     try {
       setError(null);
+      await ensureReownAppKitInstance();
       clearExplicitDisconnectMarker();
       await open();
     } catch (e) {
@@ -139,6 +143,7 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
   const changeWallet = useCallback(async () => {
     try {
       setError(null);
+      await ensureReownAppKitInstance();
       clearExplicitDisconnectMarker();
       await appkitDisconnect({ namespace: 'solana' });
       try {
@@ -257,6 +262,10 @@ export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    if (hasExplicitDisconnectMarker()) {
+      setReady(true);
+      return;
+    }
     getReownAppKitInstance();
     setReady(true);
   }, []);
