@@ -28,6 +28,46 @@ import { Loader2 } from "lucide-react"
 import { useAeternaWallet } from "@/context/AETERNAWalletContext"
 import { sendSolanaUSDCPayment } from "@/lib/wallet/solanaWallet"
 
+/* ───────────────── HELPERS ───────────────── */
+
+async function issueChallenge(publicKey: string) {
+  const res = await fetch("/api/creator/issue-challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ network: "solana", publicKey }),
+  })
+
+  const data = (await res.json()) as { ok: boolean; challengeId?: string; challenge?: string; message?: string; expiresAt?: number; error?: string }
+  if (!res.ok || !data?.ok || !data.challengeId || !data.challenge || !data.message) {
+    throw new Error(data?.error || "IDENTITY_CHALLENGE_FAILED")
+  }
+
+  return {
+    challengeId: data.challengeId,
+    challenge: data.challenge,
+    message: data.message,
+    expiresAt: Number(data.expiresAt),
+  }
+}
+
+async function verifyProof(input: { challengeId: string; network: string; account: string; signature: string }) {
+  const res = await fetch("/api/creator/verify-proof", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  })
+
+  const data = (await res.json()) as { ok: boolean; creatorIdentityId?: string; account?: string; error?: string }
+  if (!res.ok || !data?.ok || !data.creatorIdentityId) {
+    throw new Error(data?.error || "IDENTITY_VERIFICATION_FAILED")
+  }
+
+  return {
+    creatorIdentityId: data.creatorIdentityId,
+    account: data.account ?? input.account,
+  }
+}
+
 /* ───────────────── TYPES ───────────────── */
 
 interface PaymentModalProps {
@@ -69,6 +109,8 @@ type PaymentPhase =
   | "quoting"
   | "quote_ready"
   | "connecting_wallet"
+  | "verifying_identity"
+  | "wallet_verified"
   | "confirming"
   | "verifying"
   | "available"
@@ -96,6 +138,8 @@ export function PaymentModal({
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [verifiedCreatorIdentityId, setVerifiedCreatorIdentityId] = useState<string | null>(null)
+  const [verificationError, setVerificationError] = useState<string | null>(null)
 
   const mountedRef = useRef(true)
 
@@ -112,6 +156,8 @@ export function PaymentModal({
       setQuote(null)
       setError(null)
       setIsProcessing(false)
+      setVerifiedCreatorIdentityId(null)
+      setVerificationError(null)
     }
   }, [open])
 
@@ -162,12 +208,31 @@ export function PaymentModal({
   }
 
   const connectWallet = async () => {
+    if (wallet.connected && wallet.account) {
+      if (!creatorIdentityId && !verifiedCreatorIdentityId) {
+        await verifyIdentity()
+      } else {
+        setPhase("quote_ready")
+      }
+      return
+    }
+
     setPhase("connecting_wallet")
     setError(null)
+    setVerificationError(null)
 
     try {
       await wallet.openWalletPicker()
-      setPhase("quote_ready")
+
+      if (!wallet.account) {
+        throw new Error("Wallet account is not available.")
+      }
+
+      if (!creatorIdentityId && !verifiedCreatorIdentityId) {
+        await verifyIdentity()
+      } else {
+        setPhase("quote_ready")
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "WALLET_CONNECT_FAILED"
@@ -177,10 +242,65 @@ export function PaymentModal({
     }
   }
 
+  const verifyIdentity = async () => {
+    if (!wallet.account) {
+      setError("Wallet account is required for verification.")
+      setPhase("error")
+      return
+    }
+
+    setPhase("verifying_identity")
+    setError(null)
+    setVerificationError(null)
+    setIsProcessing(true)
+
+    try {
+      const { challengeId, message } = await issueChallenge(wallet.account)
+
+      const encoded =
+        typeof message === "string" ? new TextEncoder().encode(message) : message
+
+      if (!wallet.account) {
+        throw new Error("Wallet account changed during verification.")
+      }
+
+      const { signature } = await wallet.signMessage(encoded)
+
+      if (!wallet.account) {
+        throw new Error("Wallet account changed after signing.")
+      }
+
+      const uint8 = new Uint8Array(signature)
+      const base64Signature = btoa(
+        String.fromCharCode(...uint8)
+      )
+
+      const { creatorIdentityId } = await verifyProof({
+        challengeId,
+        network: "solana",
+        account: wallet.account,
+        signature: base64Signature,
+      })
+
+      setVerifiedCreatorIdentityId(creatorIdentityId)
+      setPhase("wallet_verified")
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "WALLET_VERIFICATION_FAILED"
+      setVerificationError(message)
+      setError(message)
+      setPhase("error")
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
   const confirmAndVerify = async () => {
-    if (!protocolAccepted || !creatorIdentityId || !quote) {
+    const effectiveCreatorIdentityId =
+      creatorIdentityId || verifiedCreatorIdentityId
+    if (!protocolAccepted || !effectiveCreatorIdentityId || !quote) {
       setError(
-        !creatorIdentityId
+        !effectiveCreatorIdentityId
           ? "Creator identity is required."
           : "Protocol acceptance is required."
       )
@@ -216,7 +336,7 @@ export function PaymentModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId,
+          creatorIdentityId: effectiveCreatorIdentityId,
           evidenceId,
           transactionId: txHash,
         }),
@@ -236,7 +356,7 @@ export function PaymentModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId,
+          creatorIdentityId: effectiveCreatorIdentityId,
           verifiedPaymentId: evidenceId,
           transactionId: txHash,
         }),
@@ -269,7 +389,7 @@ export function PaymentModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId,
+          creatorIdentityId: effectiveCreatorIdentityId,
           capsuleId: `reserve-${quote.paymentIntentId}-${Date.now()}`,
           lifecycleId,
         }),
@@ -416,31 +536,42 @@ export function PaymentModal({
           <Button
             disabled={
               !protocolAccepted ||
-              !creatorIdentityId ||
+              (!creatorIdentityId && !wallet.connected) ||
               isProcessing ||
               phase === "quoting" ||
               phase === "available" ||
               phase === "connecting_wallet" ||
               phase === "verifying" ||
+              phase === "verifying_identity" ||
               phase === "reserving"
             }
             onClick={
-              phase === "quote_ready" || phase === "error"
-                ? connectWallet
-                : confirmAndVerify
+              phase === "quote_ready" || phase === "error" || phase === "wallet_verified"
+                ? phase === "wallet_verified"
+                  ? confirmAndVerify
+                  : connectWallet
+                : connectWallet
             }
             className="w-full"
           >
             {isProcessing && <Loader2 className="mr-2 animate-spin" />}
             {phase === "quoting" && "Requesting quote..."}
             {phase === "quote_ready" && !wallet.connected && "Connect Wallet"}
-            {phase === "quote_ready" && wallet.connected && "Confirm $1.00 USDC"}
+            {phase === "quote_ready" && wallet.connected && !creatorIdentityId && !verifiedCreatorIdentityId && "Verify your wallet"}
+            {phase === "quote_ready" && wallet.connected && (creatorIdentityId || verifiedCreatorIdentityId) && "Confirm $1.00 USDC"}
             {phase === "connecting_wallet" && "Connecting..."}
+            {phase === "verifying_identity" && (
+              <span>
+                Verify your wallet
+                <span className="ml-2 text-xs opacity-80">No funds will be moved.</span>
+              </span>
+            )}
+            {phase === "wallet_verified" && "Wallet verified"}
             {phase === "confirming" && "Confirm $1.00 USDC"}
             {phase === "verifying" && "Verifying..."}
             {phase === "available" && "Credit granted"}
             {phase === "reserving" && "Reserving..."}
-            {phase === "error" && "Retry"}
+            {phase === "error" && (verificationError ? "Retry verification" : "Retry")}
             {phase === "idle" && "Pay $1 to continue"}
           </Button>
 
