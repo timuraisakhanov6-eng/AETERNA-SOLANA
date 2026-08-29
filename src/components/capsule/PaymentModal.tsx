@@ -606,7 +606,7 @@ export function PaymentModal({
               phase === "quote_ready" || phase === "error" || phase === "wallet_verified"
                 ? phase === "wallet_verified"
                   ? confirmAndVerify
-                  : wallet.connected && (creatorIdentityId || verifiedCreatorIdentityId)
+                  : wallet.connected
                   ? wallet.changeWallet
                   : connectWallet
                 : connectWallet
@@ -616,8 +616,7 @@ export function PaymentModal({
             {isProcessing && <Loader2 className="mr-2 animate-spin" />}
             {phase === "quoting" && "Requesting quote..."}
             {phase === "quote_ready" && !wallet.connected && "Connect Wallet"}
-            {phase === "quote_ready" && wallet.connected && !creatorIdentityId && !verifiedCreatorIdentityId && "Verify your wallet"}
-            {phase === "quote_ready" && wallet.connected && (creatorIdentityId || verifiedCreatorIdentityId) && "Change Wallet"}
+            {phase === "quote_ready" && wallet.connected && "Change Wallet"}
             {phase === "connecting_wallet" && "Connecting..."}
             {phase === "verifying_identity" && (
               <span>
@@ -633,6 +632,18 @@ export function PaymentModal({
             {phase === "error" && (verificationError ? "Retry verification" : "Retry")}
             {phase === "idle" && "Pay $1 to continue"}
           </Button>
+
+          {phase === "quote_ready" && wallet.connected && !creatorIdentityId && !verifiedCreatorIdentityId && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={verifyIdentity}
+              disabled={isProcessing}
+              className="w-full"
+            >
+              Verify this wallet
+            </Button>
+          )}
 
           {error && (
             <div className="p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500">

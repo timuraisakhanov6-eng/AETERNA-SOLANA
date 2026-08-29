@@ -31,15 +31,22 @@ function createMockWallet(overrides: Partial<AeternaWallet> = {}): AeternaWallet
   };
 }
 
-function renderPaymentModal(wallet: AeternaWallet, open = true) {
+type RenderPaymentModalOptions = {
+  protocolAccepted?: boolean;
+  creatorIdentityId?: string | null;
+  unlockAt?: number | null;
+};
+
+function renderPaymentModal(wallet: AeternaWallet, options: RenderPaymentModalOptions = {}) {
+  const { protocolAccepted = true, creatorIdentityId = null, unlockAt = null } = options;
   return render(
     <AETERNAWalletContext.Provider value={{ state: wallet, wallet }}>
       <PaymentModal
-        open={open}
+        open
         onClose={() => {}}
-        protocolAccepted={true}
-        creatorIdentityId="creator-1"
-        unlockAt={null}
+        protocolAccepted={protocolAccepted}
+        creatorIdentityId={creatorIdentityId}
+        unlockAt={unlockAt}
       />
     </AETERNAWalletContext.Provider>
   );
@@ -74,8 +81,16 @@ describe("PaymentModal Reown wallet integration", () => {
 
   it("shows Change Wallet when connected and verification present", async () => {
     const wallet = createMockWallet();
-    renderPaymentModal(wallet);
+    renderPaymentModal(wallet, { creatorIdentityId: "creator-1" });
     expect(await screen.findByText("Change Wallet")).toBeDefined();
+    expect(wallet.changeWallet).not.toHaveBeenCalled();
+  });
+
+  it("shows Change Wallet and Verify this wallet when connected but unverified", async () => {
+    const wallet = createMockWallet({ connected: true, account: "MockAccount1111111111111111111111111111111111" });
+    renderPaymentModal(wallet, { protocolAccepted: true, creatorIdentityId: null });
+    expect(await screen.findByText("Change Wallet")).toBeDefined();
+    expect(await screen.findByText("Verify this wallet")).toBeDefined();
     expect(wallet.changeWallet).not.toHaveBeenCalled();
   });
 });
