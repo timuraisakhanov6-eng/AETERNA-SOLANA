@@ -29,7 +29,7 @@ export default function Create() {
   const wallet = useAeternaWallet();
   const { creatorIdentityId, status: identityStatus, issueChallenge, hasDevBypass, hasCreatePreview } =
     useCreatorIdentity();
-  const { accessStatus, creatorCreditId, lifecycleId, checkEntitlement, clear: clearCredit } =
+  const { accessStatus, setAccessStatus, creatorCreditId, lifecycleId, checkEntitlement, clear: clearCredit } =
     useCreatorCredit();
   const { openLandingPaymentModal } = useLandingPaymentGate();
 
@@ -47,6 +47,8 @@ export default function Create() {
     if (!creatorIdentityId || !creatorCreditId) {
       if (creatorIdentityId) {
         setView("access-required");
+      } else if (identityStatus !== "authenticating") {
+        setAccessStatus("access-required");
       }
       return;
     }
