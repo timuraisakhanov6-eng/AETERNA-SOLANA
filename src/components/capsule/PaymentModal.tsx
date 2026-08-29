@@ -150,6 +150,11 @@ export function PaymentModal({
     }
   }, [])
 
+  const walletRef = useRef(wallet)
+  useEffect(() => {
+    walletRef.current = wallet
+  }, [wallet])
+
   useEffect(() => {
     if (!open) {
       setPhase("idle")
@@ -224,7 +229,34 @@ export function PaymentModal({
     try {
       await wallet.openWalletPicker()
 
-      if (!wallet.account) {
+      if (!walletRef.current.account) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            cleanup()
+            reject(new Error("Wallet account is not available."))
+          }, 30000)
+
+          const interval = setInterval(() => {
+            if (!mountedRef.current) {
+              cleanup()
+              reject(new Error("Modal closed during wallet connection."))
+              return
+            }
+            if (walletRef.current.account) {
+              cleanup()
+              resolve()
+            }
+          }, 50)
+
+          const cleanup = () => {
+            clearTimeout(timeout)
+            clearInterval(interval)
+          }
+        })
+      }
+
+      const currentAccount = walletRef.current.account
+      if (!currentAccount) {
         throw new Error("Wallet account is not available.")
       }
 
