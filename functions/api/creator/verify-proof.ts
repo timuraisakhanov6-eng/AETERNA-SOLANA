@@ -32,6 +32,7 @@ const ALLOWED_ORIGINS = [
   "https://aeternacapsule.com",
   "https://www.aeternacapsule.com",
   "https://aeterna-capsule.pages.dev",
+  "https://aeterna-solana-btt.pages.dev",
 ];
 
 const CHALLENGE_PREFIX = "creator:challenge:";
