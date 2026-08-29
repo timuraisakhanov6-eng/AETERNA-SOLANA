@@ -10,41 +10,16 @@
  */
 
 import React, { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
-import { createAppKit, useAppKit, useAppKitAccount, useAppKitConnections, useDisconnect, useAppKitProvider, useWalletInfo } from '@reown/appkit/react';
+import {
+  useAppKit,
+  useAppKitAccount,
+  useAppKitConnections,
+  useDisconnect,
+  useAppKitProvider,
+  useWalletInfo,
+} from '@reown/appkit/react';
 import type { Provider as SolanaProvider } from '@reown/appkit-utils/solana';
-import { SolanaAdapter } from '@reown/appkit-adapter-solana';
-import { solana } from '@reown/appkit/networks';
-import type { AppKit } from '@reown/appkit/react';
-import type { AppKitNetwork } from '@reown/appkit-common';
-import type { ChainAdapter } from '@reown/appkit-controllers';
-
-let cachedAppKit: AppKit | null = null;
-
-export function getReownAppKitInstance(): AppKit {
-  if (cachedAppKit) {
-    return cachedAppKit;
-  }
-
-  const adapter = new SolanaAdapter() as unknown as ChainAdapter;
-  const network = solana as AppKitNetwork;
-
-  cachedAppKit = createAppKit({
-    projectId: import.meta.env['VITE_WALLETCONNECT_PROJECT_ID'] ?? '8bffca7ae7fabf45907579714bde22cc',
-    adapters: [adapter],
-    networks: [network],
-    defaultNetwork: network,
-    metadata: {
-      name: 'AETERNA',
-      description: 'AETERNA Solana Capsule Protocol',
-      url: typeof window !== 'undefined' ? window.location.origin : 'https://aeterna.solana',
-      icons: [
-        'https://aeterna.solana/favicon.ico',
-      ],
-    },
-  });
-
-  return cachedAppKit;
-}
+import { getReownAppKitInstance } from '@/lib/wallet/reownSolana';
 
 export interface AeternaWalletState {
   walletId: string | null;
@@ -95,7 +70,7 @@ function normalizeAccount(raw: unknown): string | null {
   return trimmed;
 }
 
-export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
+function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
   const { open } = useAppKit();
   const { disconnect: appkitDisconnect } = useDisconnect();
   const { walletProvider } = useAppKitProvider<SolanaProvider>('solana');
@@ -228,4 +203,46 @@ export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AETERNAWalletContextValue>(() => ({ state, wallet }), [state, wallet]);
 
   return <AETERNAWalletContext.Provider value={value}>{children}</AETERNAWalletContext.Provider>;
+}
+
+const initializingWallet: AeternaWallet = {
+  ...initialState,
+  connect: async () => {
+    throw new Error('Wallet is initializing');
+  },
+  disconnect: async () => {
+    throw new Error('Wallet is initializing');
+  },
+  changeWallet: async () => {
+    throw new Error('Wallet is initializing');
+  },
+  openWalletPicker: async () => {
+    throw new Error('Wallet is initializing');
+  },
+  signMessage: async () => {
+    throw new Error('Wallet is initializing');
+  },
+  signAndSendTransaction: async () => {
+    throw new Error('Wallet is initializing');
+  },
+};
+
+export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    getReownAppKitInstance();
+    setReady(true);
+  }, []);
+
+  const initializingValue = useMemo<AETERNAWalletContextValue>(
+    () => ({ state: initialState, wallet: initializingWallet }),
+    []
+  );
+
+  if (!ready) {
+    return <AETERNAWalletContext.Provider value={initializingValue}>{children}</AETERNAWalletContext.Provider>;
+  }
+
+  return <AETERNAWalletProviderInner>{children}</AETERNAWalletProviderInner>;
 }

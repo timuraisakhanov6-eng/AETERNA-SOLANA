@@ -37,13 +37,15 @@ async function issueChallenge(publicKey: string) {
     body: JSON.stringify({ network: "solana", publicKey }),
   })
 
-  const data = (await res.json()) as { ok: boolean; challengeId?: string; challenge?: string; message?: string; expiresAt?: number; error?: string }
-  if (!res.ok || !data?.ok || !data.challengeId || !data.challenge || !data.message) {
+  const data = (await res.json()) as { ok: boolean; id?: string; challengeId?: string; challenge?: string; message?: string; expiresAt?: number; error?: string }
+  if (!res.ok || !data?.ok || !data.id || !data.challenge || !data.message) {
     throw new Error(data?.error || "IDENTITY_CHALLENGE_FAILED")
   }
 
+  const challengeId = data.id ?? data.challengeId
+
   return {
-    challengeId: data.challengeId,
+    challengeId,
     challenge: data.challenge,
     message: data.message,
     expiresAt: Number(data.expiresAt),

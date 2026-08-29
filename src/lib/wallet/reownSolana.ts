@@ -20,7 +20,7 @@ import type { ChainAdapter } from '@reown/appkit-controllers';
 
 let cachedAppKit: AppKit | null = null;
 
-export function getReownAppKitInstance(): AppKit {
+function createAeternaAppKit(): AppKit {
   if (cachedAppKit) {
     return cachedAppKit;
   }
@@ -51,6 +51,14 @@ export function getReownAppKitInstance(): AppKit {
   });
 
   return cachedAppKit;
+}
+
+export function getReownAppKitInstance(): AppKit {
+  return createAeternaAppKit();
+}
+
+export function ensureReownAppKitInstance(): Promise<AppKit> {
+  return Promise.resolve(createAeternaAppKit());
 }
 
 export function resetReownAppKitInstance(): void {
