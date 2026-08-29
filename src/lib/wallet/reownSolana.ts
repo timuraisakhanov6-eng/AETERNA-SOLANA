@@ -44,6 +44,10 @@ export function getReownAppKitInstance(): AppKit {
         'https://aeterna.solana/favicon.ico',
       ],
     },
+    features: {
+      email: false,
+      socials: false,
+    },
   });
 
   return cachedAppKit;
