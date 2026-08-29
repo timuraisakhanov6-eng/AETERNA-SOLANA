@@ -23,6 +23,7 @@ function createMockWallet(overrides: Partial<AeternaWallet> = {}): AeternaWallet
     error: null,
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
+    changeWallet: vi.fn().mockResolvedValue(undefined),
     openWalletPicker: vi.fn().mockResolvedValue(undefined),
     signMessage: vi.fn().mockResolvedValue({ signature: new Uint8Array(64) }),
     signAndSendTransaction: vi.fn().mockResolvedValue({ signature: "mock-signature" }),
@@ -38,6 +39,7 @@ function renderPaymentModal(wallet: AeternaWallet, open = true) {
         onClose={() => {}}
         protocolAccepted={true}
         creatorIdentityId="creator-1"
+        unlockAt={null}
       />
     </AETERNAWalletContext.Provider>
   );
@@ -70,11 +72,10 @@ describe("PaymentModal Reown wallet integration", () => {
     expect(wallet.signAndSendTransaction).not.toHaveBeenCalled();
   });
 
-  it("does not write to legacy window.solana in canonical path", async () => {
+  it("shows Change Wallet when connected and verification present", async () => {
     const wallet = createMockWallet();
     renderPaymentModal(wallet);
-    await screen.findByText("Confirm $1.00 USDC");
-    const solanaWindow = (window as Window & { solana?: unknown }).solana;
-    expect(solanaWindow).toBeUndefined();
+    expect(await screen.findByText("Change Wallet")).toBeDefined();
+    expect(wallet.changeWallet).not.toHaveBeenCalled();
   });
 });

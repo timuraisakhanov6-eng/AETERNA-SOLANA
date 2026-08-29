@@ -58,6 +58,7 @@ export interface AeternaWalletState {
 export interface AeternaWallet extends AeternaWalletState {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
+  changeWallet: () => Promise<void>;
   openWalletPicker: () => Promise<void>;
   signMessage: (message: string | Uint8Array) => Promise<{ signature: Uint8Array }>;
   signAndSendTransaction: (transaction: import('@solana/web3.js').Transaction | import('@solana/web3.js').VersionedTransaction) => Promise<{ signature: string }>;
@@ -144,6 +145,19 @@ export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
     }
   }, [appkitDisconnect]);
 
+  const changeWallet = useCallback(async () => {
+    try {
+      setError(null);
+      await appkitDisconnect({ namespace: 'solana' });
+      await open();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Unknown wallet change error';
+      setError(message);
+      setState((prev) => ({ ...prev, error: message }));
+      throw e;
+    }
+  }, [appkitDisconnect, open]);
+
   const openWalletPicker = useCallback(async () => {
     setError(null);
     try {
@@ -203,11 +217,12 @@ export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
       error,
       connect,
       disconnect,
+      changeWallet,
       openWalletPicker,
       signMessage,
       signAndSendTransaction,
     }),
-    [state, error, connect, disconnect, openWalletPicker, signMessage, signAndSendTransaction]
+    [state, error, connect, disconnect, changeWallet, openWalletPicker, signMessage, signAndSendTransaction]
   );
 
   const value = useMemo<AETERNAWalletContextValue>(() => ({ state, wallet }), [state, wallet]);

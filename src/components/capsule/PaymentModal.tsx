@@ -14,7 +14,7 @@
  * - treat frontend state as authority
  */
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 
 import {
   Dialog,
@@ -154,6 +154,30 @@ export function PaymentModal({
   useEffect(() => {
     walletRef.current = wallet
   }, [wallet])
+
+  const previousAccountRef = useRef<string | null>(null)
+
+  const resetVerificationState = useCallback(() => {
+    setVerifiedCreatorIdentityId(null)
+    setVerificationError(null)
+    setError(null)
+    setIsProcessing(false)
+    setPhase("quote_ready")
+  }, [])
+
+  useEffect(() => {
+    if (!wallet.connected) {
+      resetVerificationState()
+      previousAccountRef.current = null
+      return
+    }
+
+    const previousAccount = previousAccountRef.current
+    if (previousAccount && wallet.account && previousAccount !== wallet.account) {
+      resetVerificationState()
+    }
+    previousAccountRef.current = wallet.account
+  }, [wallet.connected, wallet.account, resetVerificationState])
 
   useEffect(() => {
     if (!open) {
@@ -580,6 +604,8 @@ export function PaymentModal({
               phase === "quote_ready" || phase === "error" || phase === "wallet_verified"
                 ? phase === "wallet_verified"
                   ? confirmAndVerify
+                  : wallet.connected && (creatorIdentityId || verifiedCreatorIdentityId)
+                  ? wallet.changeWallet
                   : connectWallet
                 : connectWallet
             }
@@ -589,7 +615,7 @@ export function PaymentModal({
             {phase === "quoting" && "Requesting quote..."}
             {phase === "quote_ready" && !wallet.connected && "Connect Wallet"}
             {phase === "quote_ready" && wallet.connected && !creatorIdentityId && !verifiedCreatorIdentityId && "Verify your wallet"}
-            {phase === "quote_ready" && wallet.connected && (creatorIdentityId || verifiedCreatorIdentityId) && "Confirm $1.00 USDC"}
+            {phase === "quote_ready" && wallet.connected && (creatorIdentityId || verifiedCreatorIdentityId) && "Change Wallet"}
             {phase === "connecting_wallet" && "Connecting..."}
             {phase === "verifying_identity" && (
               <span>
