@@ -536,7 +536,7 @@ export function PaymentModal({
           <Button
             disabled={
               !protocolAccepted ||
-              (!creatorIdentityId && !wallet.connected) ||
+              (wallet.connected && !creatorIdentityId) ||
               isProcessing ||
               phase === "quoting" ||
               phase === "available" ||
