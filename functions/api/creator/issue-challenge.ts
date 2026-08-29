@@ -19,6 +19,8 @@ const ALLOWED_ORIGINS = [
 const CHALLENGE_TTL_SEC = 5 * 60;
 const CHALLENGE_PREFIX = "creator:challenge:";
 
+const challengeKey = (id: string) => `${CHALLENGE_PREFIX}${id}`;
+
 function baseHeaders(origin: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
