@@ -5,6 +5,7 @@
  * - AppKit singleton lifecycle
  * - Solana adapter initialization
  * - normalized wallet state for business UI
+ * - explicit user disconnect marker
  *
  * Business components must use this context only.
  */
@@ -12,14 +13,19 @@
 import React, { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   useAppKit,
-  useAppKitAccount,
-  useAppKitConnections,
   useDisconnect,
   useAppKitProvider,
+  useAppKitAccount,
+  useAppKitConnections,
   useWalletInfo,
 } from '@reown/appkit/react';
 import type { Provider as SolanaProvider } from '@reown/appkit-utils/solana';
 import { getReownAppKitInstance } from '@/lib/wallet/reownSolana';
+import {
+  clearExplicitDisconnectMarker,
+  hasExplicitDisconnectMarker,
+  setExplicitDisconnectMarker,
+} from './walletDisconnectMarker';
 
 export interface AeternaWalletState {
   walletId: string | null;
@@ -100,6 +106,7 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
   const connect = useCallback(async () => {
     try {
       setError(null);
+      clearExplicitDisconnectMarker();
       await open();
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown wallet connection error';
@@ -111,7 +118,16 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
   const disconnect = useCallback(async () => {
     try {
       setError(null);
+      setExplicitDisconnectMarker();
       await appkitDisconnect({ namespace: 'solana' });
+      try {
+        const appKit = getReownAppKitInstance();
+        appKit.resetWcConnection?.();
+        appKit.resetUri?.();
+        appKit.resetConnectingWallet?.();
+      } catch {
+        // ignore public reactive reset failures
+      }
       setState(initialState);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown wallet disconnect error';
@@ -123,7 +139,16 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
   const changeWallet = useCallback(async () => {
     try {
       setError(null);
+      clearExplicitDisconnectMarker();
       await appkitDisconnect({ namespace: 'solana' });
+      try {
+        const appKit = getReownAppKitInstance();
+        appKit.resetWcConnection?.();
+        appKit.resetUri?.();
+        appKit.resetConnectingWallet?.();
+      } catch {
+        // ignore public reactive reset failures
+      }
       await open();
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown wallet change error';
@@ -136,6 +161,7 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
   const openWalletPicker = useCallback(async () => {
     setError(null);
     try {
+      clearExplicitDisconnectMarker();
       await open();
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown wallet picker error';
