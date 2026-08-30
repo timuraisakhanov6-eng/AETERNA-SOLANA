@@ -36,6 +36,7 @@ function createAeternaAppKit(): AppKit {
     adapters: [adapter],
     networks: [network],
     defaultNetwork: network,
+    allWallets: 'ONLY_MOBILE',
     metadata: {
       name: 'AETERNA',
       description: 'AETERNA Solana Capsule Protocol',
