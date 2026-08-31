@@ -16,31 +16,31 @@ id = "f29a1eb7845e4ca890d050ef381d8354"
 
 [[kv_namespaces]]
 binding = "CAPSULE_MANIFESTS"
-id = "9c193419de704e769d0002f89ebe2044"
+id = "ad6926bc7fc545ca83bfff4f48b5bdfe"
 
 [[kv_namespaces]]
 binding = "VERIFIED_PAYMENTS"
-id = "c159390f0ded41b2aa6d085ea8aa271d"
+id = "224a9dbafef9425181bb7a3d4efe1f53"
 
 [[kv_namespaces]]
 binding = "UPLOAD_TOKENS"
-id = "a7e702e6e0ed4a49b2381bbcff6f945c"
+id = "d43b2adf5c8a413bb9e299712ae20083"
 
 [[kv_namespaces]]
 binding = "AUTHORITY_TOKENS"
-id = "293d219be56c49d9b34d6b687c196b74"
+id = "54b21fb4b79e48a9bda67cc069f5da33"
 
 [[kv_namespaces]]
 binding = "HEARTBEAT_CONFIRMATIONS"
-id = "5afdf31a37d643cfb05755005a73d44d"
+id = "05dc8276cb974b56b34b2255dc1bd313"
 
 [[kv_namespaces]]
 binding = "BUSINESS_QUOTES"
-id = "1a5ad159b85b4497bc93c1c54e7d697b"
+id = "9f84994c357c4d26a20355d56ce381f8"
 
 [[kv_namespaces]]
 binding = "CHUNK_POINTER_REGISTRY"
-id = "36ff68968c164b2aa0929a87779e5199"
+id = "2c6c52e757684757baf6584637cde6f1"
 
 [[kv_namespaces]]
 binding = "STORAGE_QUOTES"
@@ -102,7 +102,7 @@ script_name = "aeterna-credit-coordinator"
 
 [[env.production.kv_namespaces]]
 binding = "CAPSULE_MANIFESTS"
-id = "9c193419de704e769d0002f89ebe2044"
+id = "ad6926bc7fc545ca83bfff4f48b5bdfe"
 
 # ─────────────────────────────────────────────
 # Payment Verification Cache
@@ -110,7 +110,7 @@ id = "9c193419de704e769d0002f89ebe2044"
 
 [[env.production.kv_namespaces]]
 binding = "VERIFIED_PAYMENTS"
-id = "c159390f0ded41b2aa6d085ea8aa271d"
+id = "224a9dbafef9425181bb7a3d4efe1f53"
 
 # ─────────────────────────────────────────────
 # Upload Token Gating Layer
@@ -118,7 +118,7 @@ id = "c159390f0ded41b2aa6d085ea8aa271d"
 
 [[env.production.kv_namespaces]]
 binding = "UPLOAD_TOKENS"
-id = "a7e702e6e0ed4a49b2381bbcff6f945c"
+id = "d43b2adf5c8a413bb9e299712ae20083"
 
 # ─────────────────────────────────────────────
 # Creator Authority Capability Storage
@@ -126,7 +126,7 @@ id = "a7e702e6e0ed4a49b2381bbcff6f945c"
 
 [[env.production.kv_namespaces]]
 binding = "AUTHORITY_TOKENS"
-id = "293d219be56c49d9b34d6b687c196b74"
+id = "54b21fb4b79e48a9bda67cc069f5da33"
 
 # ─────────────────────────────────────────────
 # Heartbeat Rolling Release Model (v1.3)
@@ -134,7 +134,7 @@ id = "293d219be56c49d9b34d6b687c196b74"
 
 [[env.production.kv_namespaces]]
 binding = "HEARTBEAT_CONFIRMATIONS"
-id = "5afdf31a37d643cfb05755005a73d44d"
+id = "05dc8276cb974b56b34b2255dc1bd313"
 
 # ─────────────────────────────────────────────
 # Canonical Business Authority
@@ -142,11 +142,11 @@ id = "5afdf31a37d643cfb05755005a73d44d"
 
 [[env.production.kv_namespaces]]
 binding = "BUSINESS_QUOTES"
-id = "1a5ad159b85b4497bc93c1c54e7d697b"
+id = "9f84994c357c4d26a20355d56ce381f8"
 
 [[env.production.kv_namespaces]]
 binding = "CHUNK_POINTER_REGISTRY"
-id = "36ff68968c164b2aa0929a87779e5199"
+id = "2c6c52e757684757baf6584637cde6f1"
 
 [[env.production.kv_namespaces]]
 binding = "STORAGE_QUOTES"
