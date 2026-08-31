@@ -49,6 +49,7 @@ function createAeternaAppKit(): AppKit {
       email: false,
       socials: false,
     },
+    enableReconnect: false,
   });
 
   return cachedAppKit;
