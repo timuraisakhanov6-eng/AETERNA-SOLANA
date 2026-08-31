@@ -319,9 +319,39 @@ export async function sendSolanaUSDCPayment({
     )
   )
 
+  const blockhashRes = await fetch("/api/solana/blockhash", {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+
+  if (!blockhashRes.ok) {
+    const errorPayload = (await blockhashRes.json().catch(() => ({}))) as { error?: string };
+
+    throw new Error(
+      typeof errorPayload?.error === "string"
+        ? errorPayload.error
+        : `Blockhash fetch failed: HTTP ${blockhashRes.status}`
+    );
+  }
+
+  const blockhashData = (await blockhashRes.json()) as {
+    ok?: boolean;
+    blockhash?: string;
+    lastValidBlockHeight?: number | null;
+  };
+
+  if (!blockhashData?.ok || typeof blockhashData.blockhash !== "string" || blockhashData.blockhash.length === 0) {
+    throw new Error("Invalid blockhash response.")
+  }
+
   const transaction = new Transaction().add(...instructions as never[])
   transaction.feePayer = payer
-  transaction.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash
+  transaction.recentBlockhash = blockhashData.blockhash
+
+  if (typeof blockhashData.lastValidBlockHeight === "number") {
+    transaction.lastValidBlockHeight = blockhashData.lastValidBlockHeight
+  }
 
   if (signAndSendOption) {
     const result = await signAndSendOption(transaction)
