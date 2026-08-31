@@ -13,7 +13,7 @@
  * Payment authority remains /api/service-payment/verify.
  */
 
-import { solanaJsonRpc } from "./../lib/solana/rpc";
+import { solanaJsonRpc } from "../../lib/solana/rpc";
 
 export interface SolanaBlockhashEnv {
   SOLANA_MAINNET_RPC_URL?: string;
