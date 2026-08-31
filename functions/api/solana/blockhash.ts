@@ -16,8 +16,7 @@
 import { solanaJsonRpc } from "./../lib/solana/rpc";
 
 export interface SolanaBlockhashEnv {
-  ALCHEMY_BASE_RPC_URL?: string;
-  CHAINSTACK_BASE_RPC_URL?: string;
+  SOLANA_MAINNET_RPC_URL?: string;
 }
 
 export async function onRequestGet(
@@ -27,11 +26,9 @@ export async function onRequestGet(
 ): Promise<Response> {
   try {
     const url =
-      typeof _context.env.ALCHEMY_BASE_RPC_URL === "string"
-        ? _context.env.ALCHEMY_BASE_RPC_URL
-        : typeof _context.env.CHAINSTACK_BASE_RPC_URL === "string"
-          ? _context.env.CHAINSTACK_BASE_RPC_URL
-          : "";
+      typeof _context.env.SOLANA_MAINNET_RPC_URL === "string"
+        ? _context.env.SOLANA_MAINNET_RPC_URL
+        : "";
 
     if (!url) {
       return new Response(
@@ -42,7 +39,7 @@ export async function onRequestGet(
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
           },
-        }
+        },
       );
     }
 
