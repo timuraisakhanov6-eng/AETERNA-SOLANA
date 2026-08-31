@@ -8,7 +8,7 @@ import {
 
 const storageKeys: Record<string, string> = {};
 
-function mockSessionStorage(keys: Record<string, string> = {}) {
+function mockLocalStorage(keys: Record<string, string> = {}) {
   return {
     getItem: (key: string) => storageKeys[key] ?? keys[key] ?? null,
     setItem: (key: string, value: string) => {
@@ -77,16 +77,16 @@ vi.mock('@/lib/wallet/reownSolana', () => ({
 
 import { getReownAppKitInstance, ensureReownAppKitInstance } from '@/lib/wallet/reownSolana';
 
-function renderTestProvider(sessionStorageState: Record<string, string> = {}) {
+function renderTestProvider(localStorageState: Record<string, string> = {}) {
   Object.keys(storageKeys).forEach((key) => delete storageKeys[key]);
-  Object.entries(sessionStorageState).forEach(([key, value]) => {
+  Object.entries(localStorageState).forEach(([key, value]) => {
     storageKeys[key] = value;
   });
 
-  const originalSessionStorage = global.sessionStorage;
+  const originalLocalStorage = global.localStorage;
 
-  Object.defineProperty(global, 'sessionStorage', {
-    value: mockSessionStorage(sessionStorageState),
+  Object.defineProperty(global, 'localStorage', {
+    value: mockLocalStorage(localStorageState),
     writable: true,
     configurable: true,
   });
@@ -99,9 +99,9 @@ function renderTestProvider(sessionStorageState: Record<string, string> = {}) {
 
   return {
     result,
-    restoreSessionStorage: () => {
-      Object.defineProperty(global, 'sessionStorage', {
-        value: originalSessionStorage,
+    restoreLocalStorage: () => {
+      Object.defineProperty(global, 'localStorage', {
+        value: originalLocalStorage,
         writable: true,
         configurable: true,
       });
@@ -151,7 +151,7 @@ describe('AETERNAWalletProvider explicit actions', () => {
 
     await act(() => result.current.wallet.connect());
 
-    expect(global.sessionStorage.getItem('aeterna-wallet-disconnected')).toBeNull();
+    expect(global.localStorage.getItem('aeterna-wallet-disconnected')).toBeNull();
     expect(ensureReownAppKitInstance).toHaveBeenCalledTimes(1);
     expect(appKit.open).toHaveBeenCalledTimes(1);
   });
@@ -165,7 +165,7 @@ describe('AETERNAWalletProvider explicit actions', () => {
 
     await act(() => result.current.wallet.changeWallet());
 
-    expect(global.sessionStorage.getItem('aeterna-wallet-disconnected')).toBeNull();
+    expect(global.localStorage.getItem('aeterna-wallet-disconnected')).toBeNull();
     expect(ensureReownAppKitInstance).toHaveBeenCalledTimes(1);
     expect(appKit.disconnect).toHaveBeenCalledWith({ namespace: 'solana' });
     expect(appKit.open).toHaveBeenCalledTimes(1);
@@ -181,7 +181,7 @@ describe('AETERNAWalletProvider explicit actions', () => {
 
     await act(() => result.current.wallet.disconnect());
 
-    expect(global.sessionStorage.getItem('aeterna-wallet-disconnected')).toBe('1');
+    expect(global.localStorage.getItem('aeterna-wallet-disconnected')).toBe('1');
     expect(appKit.disconnect).toHaveBeenCalledWith({ namespace: 'solana' });
     expect(appKit.resetWcConnection).toHaveBeenCalled();
     expect(result.current.state.connected).toBe(false);
@@ -190,7 +190,7 @@ describe('AETERNAWalletProvider explicit actions', () => {
 });
 
 describe('AETERNAWalletContext marker safety', () => {
-  it('does not use localStorage for disconnect marker', async () => {
+  it('uses localStorage for disconnect marker and preserves marker across simulated reload', async () => {
     const setItemSpy = vi.spyOn(global.localStorage, 'setItem');
 
     const appKit = createMockAppKit();
@@ -199,7 +199,13 @@ describe('AETERNAWalletContext marker safety', () => {
     const { result } = renderTestProvider({});
     await act(() => result.current.wallet.disconnect());
 
-    expect(setItemSpy).not.toHaveBeenCalled();
+    expect(setItemSpy).toHaveBeenCalledWith('aeterna-wallet-disconnected', '1');
     setItemSpy.mockRestore();
+
+    const reloadRender = renderTestProvider({
+      'aeterna-wallet-disconnected': global.localStorage.getItem('aeterna-wallet-disconnected') ?? '1',
+    });
+    expect(getReownAppKitInstance).not.toHaveBeenCalled();
+    expect(reloadRender.result.current.wallet.connect()).rejects.toThrow('Wallet is initializing');
   });
 });

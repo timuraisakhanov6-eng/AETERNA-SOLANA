@@ -7,12 +7,12 @@
 
 const MARKER_KEY = 'aeterna-wallet-disconnected';
 
-function isSessionStorageAvailable(): boolean {
+function isLocalStorageAvailable(): boolean {
   if (typeof window === 'undefined') return false;
   try {
     const testKey = '__aeterna_storage_test__';
-    sessionStorage.setItem(testKey, testKey);
-    sessionStorage.removeItem(testKey);
+    localStorage.setItem(testKey, testKey);
+    localStorage.removeItem(testKey);
     return true;
   } catch {
     return false;
@@ -20,27 +20,27 @@ function isSessionStorageAvailable(): boolean {
 }
 
 export function setExplicitDisconnectMarker(): void {
-  if (!isSessionStorageAvailable()) return;
+  if (!isLocalStorageAvailable()) return;
   try {
-    sessionStorage.setItem(MARKER_KEY, '1');
+    localStorage.setItem(MARKER_KEY, '1');
   } catch {
     // ignore storage errors
   }
 }
 
 export function clearExplicitDisconnectMarker(): void {
-  if (!isSessionStorageAvailable()) return;
+  if (!isLocalStorageAvailable()) return;
   try {
-    sessionStorage.removeItem(MARKER_KEY);
+    localStorage.removeItem(MARKER_KEY);
   } catch {
     // ignore storage errors
   }
 }
 
 export function hasExplicitDisconnectMarker(): boolean {
-  if (!isSessionStorageAvailable()) return false;
+  if (!isLocalStorageAvailable()) return false;
   try {
-    return sessionStorage.getItem(MARKER_KEY) === '1';
+    return localStorage.getItem(MARKER_KEY) === '1';
   } catch {
     return false;
   }
