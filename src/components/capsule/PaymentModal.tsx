@@ -301,7 +301,8 @@ export function PaymentModal({
   }
 
   const verifyIdentity = async () => {
-    if (!wallet.account) {
+    const currentAccount = walletRef.current.account
+    if (!currentAccount) {
       setError("Wallet account is required for verification.")
       setPhase("error")
       return
@@ -313,18 +314,18 @@ export function PaymentModal({
     setIsProcessing(true)
 
     try {
-      const { challengeId, message } = await issueChallenge(wallet.account)
+      const { challengeId, message } = await issueChallenge(currentAccount)
 
       const encoded =
         typeof message === "string" ? new TextEncoder().encode(message) : message
 
-      if (!wallet.account) {
+      if (!walletRef.current.account) {
         throw new Error("Wallet account changed during verification.")
       }
 
-      const { signature } = await wallet.signMessage(encoded)
+      const { signature } = await walletRef.current.signMessage(encoded)
 
-      if (!wallet.account) {
+      if (!walletRef.current.account) {
         throw new Error("Wallet account changed after signing.")
       }
 
@@ -336,7 +337,7 @@ export function PaymentModal({
       const { creatorIdentityId } = await verifyProof({
         challengeId,
         network: "solana",
-        account: wallet.account,
+        account: currentAccount,
         signature: base64Signature,
       })
 
@@ -372,15 +373,16 @@ export function PaymentModal({
     setIsProcessing(true)
 
     try {
-      if (!wallet.account) {
+      const currentAccount = walletRef.current.account
+      if (!currentAccount) {
         throw new Error("Wallet account is required for payment.")
       }
 
       const txHash = await sendSolanaUSDCPayment({
         destination: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
         amountAtomic: "1000000",
-        publicKey: wallet.account,
-        signAndSendTransaction: wallet.signAndSendTransaction,
+        publicKey: currentAccount,
+        signAndSendTransaction: walletRef.current.signAndSendTransaction,
       })
 
       if (!txHash) {

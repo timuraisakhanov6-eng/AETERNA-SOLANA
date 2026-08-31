@@ -8,6 +8,7 @@
 
 import { render, screen, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 
 import { PaymentModal } from "@/components/capsule/PaymentModal";
 import { AETERNAWalletContext } from "@/context/AETERNAWalletContext";
@@ -87,10 +88,79 @@ describe("PaymentModal Reown wallet integration", () => {
   });
 
   it("shows Change Wallet and Verify this wallet when connected but unverified", async () => {
-    const wallet = createMockWallet({ connected: true, account: "MockAccount1111111111111111111111111111111111" });
-    renderPaymentModal(wallet, { protocolAccepted: true, creatorIdentityId: null });
-    expect(await screen.findByText("Change Wallet")).toBeDefined();
-    expect(await screen.findByText("Verify this wallet")).toBeDefined();
-    expect(wallet.changeWallet).not.toHaveBeenCalled();
-  });
+    const wallet = createMockWallet({ connected: true, account: "MockAccount1111111111111111111111111111111111" })
+    renderPaymentModal(wallet, { protocolAccepted: true, creatorIdentityId: null })
+    expect(await screen.findByText("Change Wallet")).toBeDefined()
+    expect(await screen.findByText("Verify this wallet")).toBeDefined()
+    expect(wallet.changeWallet).not.toHaveBeenCalled()
+  })
+
+  it("uses walletRef.current.account for verification after wallet account updates", async () => {
+    const wallet = createMockWallet({ connected: true, account: null })
+    const issueChallengeMock = vi.fn().mockResolvedValue({
+      challengeId: "challenge-1",
+      message: "Sign this message",
+      expiresAt: Date.now() + 60000,
+    })
+    const verifyProofMock = vi.fn().mockResolvedValue({ ok: true, creatorIdentityId: "identity-1", account: "MockAccount1111111111111111111111111111111111" })
+    const signMessageMock = vi.fn().mockResolvedValue({ signature: new Uint8Array(64) })
+
+    const updatedWallet = createMockWallet({
+      connected: true,
+      account: "MockAccount1111111111111111111111111111111111",
+      signMessage: signMessageMock,
+    })
+
+    const Wrapper = () => {
+      const [currentWallet, setCurrentWallet] = useState(wallet)
+      return (
+        <AETERNAWalletContext.Provider value={{ state: currentWallet, wallet: currentWallet }}>
+          <PaymentModal
+            open
+            onClose={() => {}}
+            protocolAccepted
+            creatorIdentityId={null}
+            unlockAt={null}
+            onCreditReady={() => {}}
+            onReserveReady={() => {}}
+          />
+          <button data-testid="update-wallet" onClick={() => setCurrentWallet({ ...updatedWallet, signMessage: signMessageMock })}>Update Wallet</button>
+        </AETERNAWalletContext.Provider>
+      )
+    }
+
+    render(<Wrapper />)
+
+    const mockFetch = global.fetch as unknown as typeof vi.fn
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ok: true, paymentIntentId: "pi-1", expectedAmount: 1, currency: "USD", expiresAt: Date.now() + 60000 }),
+      })
+    )
+    mockFetch.mockImplementationOnce((url: string) => {
+      if (url.includes("issue-challenge")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ok: true, id: "challenge-1", challengeId: "challenge-1", challenge: "Sign this message", message: "Sign this message", expiresAt: Date.now() + 60000 }),
+        })
+      }
+      if (url.includes("verify-proof")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ok: true, creatorIdentityId: "identity-1", account: "MockAccount1111111111111111111111111111111111" }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    })
+
+    const updateButton = await screen.findByTestId("update-wallet")
+    updateButton.click()
+
+    const verifyButton = await screen.findByText("Verify this wallet")
+    verifyButton.click()
+
+    expect(signMessageMock).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText("Wallet account is required for verification.")).toBeNull()
+  })
 });
