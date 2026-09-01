@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2026-03-13"
 compatibility_flags = ["nodejs_compat"]
 
+[[kv_namespaces]]
+binding = "CREATOR_CREDITS"
+id = "d79dd0c22b7049bf9986f3911168ce15"
+
 [durable_objects]
 bindings = [
   { name = "CREDIT_OP_COORDINATOR", class_name = "CreditOperationCoordinator" }

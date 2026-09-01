@@ -8,47 +8,47 @@ pages_build_output_dir = "dist"
 
 [[kv_namespaces]]
 binding = "CREATOR_IDENTITIES"
-id = "c4a3d81d345847cba09676727aecf003"
+id = "a49f2c6d3ee44754a0ec6e4aa7ad0e13"
 
 [[kv_namespaces]]
 binding = "CREATOR_CREDITS"
-id = "f29a1eb7845e4ca890d050ef381d8354"
+id = "d79dd0c22b7049bf9986f3911168ce15"
 
 [[kv_namespaces]]
 binding = "CAPSULE_MANIFESTS"
-id = "ad6926bc7fc545ca83bfff4f48b5bdfe"
+id = "9a292f3a246540a28564024df66cbb2c"
 
 [[kv_namespaces]]
 binding = "VERIFIED_PAYMENTS"
-id = "224a9dbafef9425181bb7a3d4efe1f53"
+id = "43d3341f33274d379d1e0086506f2f0c"
 
 [[kv_namespaces]]
 binding = "UPLOAD_TOKENS"
-id = "d43b2adf5c8a413bb9e299712ae20083"
+id = "7296e7d6073f410f9ba75c2cd1abb453"
 
 [[kv_namespaces]]
 binding = "AUTHORITY_TOKENS"
-id = "54b21fb4b79e48a9bda67cc069f5da33"
+id = "d81813c2bc7f42738bd016580cdde8b8"
 
 [[kv_namespaces]]
 binding = "HEARTBEAT_CONFIRMATIONS"
-id = "05dc8276cb974b56b34b2255dc1bd313"
+id = "9642efb5707340139e185c8e8b684b97"
 
 [[kv_namespaces]]
 binding = "BUSINESS_QUOTES"
-id = "9f84994c357c4d26a20355d56ce381f8"
+id = "191738700d9a477fa24e5239f0b18d7e"
 
 [[kv_namespaces]]
 binding = "CHUNK_POINTER_REGISTRY"
-id = "2c6c52e757684757baf6584637cde6f1"
+id = "297d02eecad244d0b0749bbaac71b754"
 
 [[kv_namespaces]]
 binding = "STORAGE_QUOTES"
-id = "b4b24e8ef17346f1a2354c64196e8bb3"
+id = "2a3a051a0e2a4935a941b24d838e8762"
 
 [[kv_namespaces]]
 binding = "PREPARED_PROJECTIONS"
-id = "549cfafce8ca49ba8d77af5c32e20ca6"
+id = "cdf53f4586574d7b9285c55565c45d58"
 
 # ─────────────────────────────────────────────
 # Credit Operation Coordinator (Durable Object)
@@ -102,7 +102,7 @@ script_name = "aeterna-credit-coordinator"
 
 [[env.production.kv_namespaces]]
 binding = "CAPSULE_MANIFESTS"
-id = "ad6926bc7fc545ca83bfff4f48b5bdfe"
+id = "9a292f3a246540a28564024df66cbb2c"
 
 # ─────────────────────────────────────────────
 # Payment Verification Cache
@@ -110,7 +110,7 @@ id = "ad6926bc7fc545ca83bfff4f48b5bdfe"
 
 [[env.production.kv_namespaces]]
 binding = "VERIFIED_PAYMENTS"
-id = "224a9dbafef9425181bb7a3d4efe1f53"
+id = "43d3341f33274d379d1e0086506f2f0c"
 
 # ─────────────────────────────────────────────
 # Upload Token Gating Layer
@@ -118,7 +118,7 @@ id = "224a9dbafef9425181bb7a3d4efe1f53"
 
 [[env.production.kv_namespaces]]
 binding = "UPLOAD_TOKENS"
-id = "d43b2adf5c8a413bb9e299712ae20083"
+id = "7296e7d6073f410f9ba75c2cd1abb453"
 
 # ─────────────────────────────────────────────
 # Creator Authority Capability Storage
@@ -126,47 +126,35 @@ id = "d43b2adf5c8a413bb9e299712ae20083"
 
 [[env.production.kv_namespaces]]
 binding = "AUTHORITY_TOKENS"
-id = "54b21fb4b79e48a9bda67cc069f5da33"
-
-# ─────────────────────────────────────────────
-# Heartbeat Rolling Release Model (v1.3)
-# ─────────────────────────────────────────────
+id = "d81813c2bc7f42738bd016580cdde8b8"
 
 [[env.production.kv_namespaces]]
 binding = "HEARTBEAT_CONFIRMATIONS"
-id = "05dc8276cb974b56b34b2255dc1bd313"
-
-# ─────────────────────────────────────────────
-# Canonical Business Authority
-# ─────────────────────────────────────────────
+id = "9642efb5707340139e185c8e8b684b97"
 
 [[env.production.kv_namespaces]]
 binding = "BUSINESS_QUOTES"
-id = "9f84994c357c4d26a20355d56ce381f8"
+id = "191738700d9a477fa24e5239f0b18d7e"
 
 [[env.production.kv_namespaces]]
 binding = "CHUNK_POINTER_REGISTRY"
-id = "2c6c52e757684757baf6584637cde6f1"
+id = "297d02eecad244d0b0749bbaac71b754"
 
 [[env.production.kv_namespaces]]
 binding = "STORAGE_QUOTES"
-id = "b4b24e8ef17346f1a2354c64196e8bb3"
+id = "2a3a051a0e2a4935a941b24d838e8762"
 
 [[env.production.kv_namespaces]]
 binding = "PREPARED_PROJECTIONS"
-id = "549cfafce8ca49ba8d77af5c32e20ca6"
-
-# ─────────────────────────────────────────────
-# Creator Identity / Credit Authority
-# ─────────────────────────────────────────────
+id = "cdf53f4586574d7b9285c55565c45d58"
 
 [[env.production.kv_namespaces]]
 binding = "CREATOR_IDENTITIES"
-id = "c4a3d81d345847cba09676727aecf003"
+id = "a49f2c6d3ee44754a0ec6e4aa7ad0e13"
 
 [[env.production.kv_namespaces]]
 binding = "CREATOR_CREDITS"
-id = "f29a1eb7845e4ca890d050ef381d8354"
+id = "d79dd0c22b7049bf9986f3911168ce15"
 
 # ─────────────────────────────────────────────
 # Executor Hot (Publication Authority)
