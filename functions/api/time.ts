@@ -38,7 +38,7 @@ const MAX_TIME =
 const ALLOWED_ORIGINS = [
   "https://aeternacapsule.com",
   "https://www.aeternacapsule.com",
-  "https://aeterna-capsule.pages.dev",
+  "https://aeterna-solana.pages.dev",
 ];
 
 

@@ -37,18 +37,16 @@ interface GrantCreditEnv {
 const ALLOWED_ORIGINS = [
   "https://aeternacapsule.com",
   "https://www.aeternacapsule.com",
-  "https://aeterna-capsule.pages.dev",
-  "https://aeterna-solana-btt.pages.dev",
+  "https://aeterna-solana.pages.dev",
 ];
 
 const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-const NEW_PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-solana-btt\.pages\.dev$/;
 
 function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && (PAGES_PREVIEW_REGEX.test(url.hostname) || NEW_PAGES_PREVIEW_REGEX.test(url.hostname))) return true;
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname)) return true;
   } catch {
     // ignore
   }

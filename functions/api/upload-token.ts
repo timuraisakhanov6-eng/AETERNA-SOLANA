@@ -23,8 +23,7 @@ import {
 const ALLOWED_ORIGINS = [
   "https://aeternacapsule.com",
   "https://www.aeternacapsule.com",
-  "https://aeterna-capsule.pages.dev",
-  "https://aeterna-solana-btt.pages.dev",
+  "https://aeterna-solana.pages.dev",
   ...(process.env.NODE_ENV === "development"
     ? ["http://localhost:5173", "http://127.0.0.1:5173"]
     : []),

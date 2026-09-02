@@ -48,7 +48,7 @@ interface PreparedEnv {
 const ALLOWED_ORIGINS = [
   "https://aeternacapsule.com",
   "https://www.aeternacapsule.com",
-  "https://aeterna-capsule.pages.dev",
+  "https://aeterna-solana.pages.dev",
 ];
 
 const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;

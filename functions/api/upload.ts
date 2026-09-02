@@ -61,7 +61,7 @@ interface UploadEnv extends ExecutorEnv {
 const ALLOWED_ORIGINS = [
   "https://aeternacapsule.com",
   "https://www.aeternacapsule.com",
-  "https://aeterna-capsule.pages.dev",
+  "https://aeterna-solana.pages.dev",
 ];
 
 /* ================= SCHEMA WHITELIST (Section 2 + Section 4.4) ================= */

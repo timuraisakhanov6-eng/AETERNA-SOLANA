@@ -24,12 +24,10 @@ import type { StoragePayment } from "../../../src/types/storagePayment";
 const ALLOWED_ORIGINS = [
   "https://aeternacapsule.com",
   "https://www.aeternacapsule.com",
-  "https://aeterna-capsule.pages.dev",
-  "https://aeterna-solana-btt.pages.dev",
+  "https://aeterna-solana.pages.dev",
 ];
 
 const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-const NEW_PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-solana-btt\.pages\.dev$/;
 const LOCALHOST_REGEX = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
 
 function isAllowedOrigin(origin: string): boolean {
@@ -38,7 +36,7 @@ function isAllowedOrigin(origin: string): boolean {
     const url = new URL(origin);
     if (
       url.protocol === "https:" &&
-      (PAGES_PREVIEW_REGEX.test(url.hostname) || NEW_PAGES_PREVIEW_REGEX.test(url.hostname))
+      PAGES_PREVIEW_REGEX.test(url.hostname)
     )
       return true;
     if (LOCALHOST_REGEX.test(origin)) return true;
