@@ -82,6 +82,9 @@ const MIN_CONFIRMATIONS = 1n;
 
 const RPC_TIMEOUT_MS = 10_000;
 
+const SOLANA_SERVICE_SETTLEMENT_ADDRESS = "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu";
+const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
 /* ================= SOLANA HELPERS ================= */
 
 function isBase58Address(value: string): boolean {
@@ -146,9 +149,9 @@ async function verifySolanaPayment(
   const destinationEntry = postBalances.find(
     (balance) =>
       typeof balance.owner === "string" &&
-      balance.owner === SOLANA_SERVICE_SETTLEMENT_ADDRESS &&
+      balance.owner === "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu" &&
       typeof balance.mint === "string" &&
-      balance.mint === SOLANA_USDC_MINT
+      balance.mint === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
   );
 
   if (!destinationEntry) {
@@ -671,9 +674,13 @@ async function resolveCreatorIdentity(
   /* ================= PAYMENT EVIDENCE ================= */
 
   const txHash =
-    typeof transactionId === "string" && transactionId.length === 66 && transactionId.startsWith("0x")
+    typeof transactionId === "string" &&
+    (transactionId.length === 66 && transactionId.startsWith("0x") ||
+      /^[A-Za-z0-9]{64,88}$/.test(transactionId) && !transactionId.startsWith("0x"))
       ? transactionId
-      : typeof body.txHash === "string" && body.txHash.length === 66 && body.txHash.startsWith("0x")
+      : typeof body.txHash === "string" &&
+        (body.txHash.length === 66 && body.txHash.startsWith("0x") ||
+          /^[A-Za-z0-9]{64,88}$/.test(body.txHash) && !body.txHash.startsWith("0x"))
         ? body.txHash
         : "";
 

@@ -25,7 +25,7 @@ const EVIDENCE_ID = "ev-1";
 const TX_HASH = "0x" + "a".repeat(64);
 
 const CREATOR_IDENTITY_NETWORK = "solana";
-const CREATOR_IDENTITY_ACCOUNT = "account123";
+const CREATOR_IDENTITY_ACCOUNT = "123456789ABCDEF";
 
 function createFakeCreatorIdentityKV() {
   const store = new Map<string, string>();
@@ -379,6 +379,147 @@ describe("Payment authorization / replay protection invariants", () => {
       const res = await servicePaymentVerifyPost(context);
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe("INVALID_TX_HASH");
+    });
+
+    it("ACCEPTS: Solana base58 signature in transactionId", async () => {
+      const env = {
+        BUSINESS_QUOTES: {
+          get: async () =>
+            JSON.stringify({
+              paymentIntentId: PAYMENT_INTENT_ID,
+              expectedAmount: 1,
+              currency: "USD",
+              expiresAt: Date.now() + 60_000,
+            }),
+        },
+        CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
+        VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
+        SOLANA_MAINNET_RPC_URL: "https://solana-rpc.example.com",
+      };
+
+      const original = await import("./../lib/solana/rpc");
+      const mockGetSolanaTransaction = vi.fn().mockResolvedValue({
+        slot: 123,
+        blockTime: Date.now(),
+        transaction: {
+          message: {
+            accountKeys: [
+              { pubkey: "123456789ABCDEF", signer: true },
+            ],
+          },
+        },
+        meta: {
+          postTokenBalances: [
+            {
+              owner: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
+              mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              uiTokenAmount: { uiAmount: 1, decimals: 6 },
+            },
+            {
+              owner: "123456789ABCDEF",
+              mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              uiTokenAmount: { uiAmount: 0, decimals: 6 },
+            },
+          ],
+          preTokenBalances: [
+            {
+              owner: "123456789ABCDEF",
+              mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              uiTokenAmount: { uiAmount: 1, decimals: 6 },
+            },
+          ],
+        },
+      });
+
+      const descriptor = Object.getOwnPropertyDescriptor(original, "getSolanaTransaction");
+      Object.defineProperty(original, "getSolanaTransaction", {
+        value: mockGetSolanaTransaction,
+        writable: true,
+        configurable: true,
+      });
+
+      const request = createFakeRequest({
+        headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
+        body: {
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
+          evidenceId: "ev-solana",
+          transactionId: "Base58SignatureForSolanaTransaction1234567890ABCDEF1234567890ABCDEF",
+        },
+      });
+
+      const context = makeEventContext({ request, env });
+      const res = await servicePaymentVerifyPost(context);
+      expect(res.status).toBe(200);
+      expect((await res.json()).status).toBe("VERIFIED");
+
+      vi.restoreAllMocks();
+    });
+
+    it("ACCEPTS: EVM txHash in txHash fallback field", async () => {
+      const env = {
+        BUSINESS_QUOTES: {
+          get: async () =>
+            JSON.stringify({
+              paymentIntentId: PAYMENT_INTENT_ID,
+              expectedAmount: 1,
+              currency: "USD",
+              expiresAt: Date.now() + 60_000,
+            }),
+        },
+        CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
+        VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
+        ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
+      };
+
+      const fakeFetch = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ result: "0x2105" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            result: {
+              status: "0x1",
+              blockNumber: "0x10",
+              logs: [
+                {
+                  address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+                  topics: [
+                    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                    "0x000000000000000000000000" + "0".repeat(40),
+                    "0x" + "0".repeat(24) + "b0d9e5d93c1fecfa78479f23d283eaa652ee3755",
+                  ],
+                  data: "0x" + "0".repeat(59) + "f4240",
+                },
+              ],
+            },
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ result: "0x11" }),
+        });
+
+      vi.stubGlobal("fetch", fakeFetch);
+
+      const request = createFakeRequest({
+        headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
+        body: {
+          paymentIntentId: PAYMENT_INTENT_ID,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
+          evidenceId: "ev-evm-fallback",
+          txHash: TX_HASH,
+        },
+      });
+
+      const context = makeEventContext({ request, env });
+      const res = await servicePaymentVerifyPost(context);
+      expect(res.status).toBe(200);
+      expect((await res.json()).status).toBe("VERIFIED");
+
+      vi.unstubAllGlobals();
     });
 
     it("FAIL-CLOSED: rejects when both providers are unavailable", async () => {
