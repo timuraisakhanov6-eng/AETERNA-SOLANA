@@ -17,6 +17,7 @@
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
+import { getSolanaTransaction } from "../../lib/solana/rpc";
 import {
   getBusinessQuote,
 } from "../../lib/business/businessQuoteStore";
@@ -43,6 +44,7 @@ export interface ServicePaymentVerifyEnv {
   CHAINSTACK_BASE_RPC_URL?: string;
   CHAINSTACK_BASE_RPC_USERNAME?: string;
   CHAINSTACK_BASE_RPC_PASSWORD?: string;
+  SOLANA_MAINNET_RPC_URL?: string;
 }
 
 /* ================= CONSTANTS ================= */
@@ -82,101 +84,12 @@ const RPC_TIMEOUT_MS = 10_000;
 
 /* ================= SOLANA HELPERS ================= */
 
-const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-function base58Decode(input: string): Uint8Array {
-  const lookup = new Map<string, number>();
-  for (let i = 0; i < BASE58_ALPHABET.length; i++) {
-    lookup.set(BASE58_ALPHABET[i]!, i);
-  }
-
-  const bytes: number[] = [];
-  for (const char of input) {
-    const value = lookup.get(char);
-    if (value === undefined) {
-      throw new Error("Invalid base58");
-    }
-
-    let carry = value;
-    for (let i = 0; i < bytes.length; i++) {
-      carry += bytes[i] * 58;
-      bytes[i] = carry & 0xff;
-      carry >>>= 8;
-    }
-    while (carry > 0) {
-      bytes.push(carry & 0xff);
-      carry >>>= 8;
-    }
-  }
-
-  let leadingZeros = 0;
-  for (const char of input) {
-    if (char === "1") {
-      leadingZeros++;
-    } else {
-      break;
-    }
-  }
-
-  const result = new Uint8Array(leadingZeros + bytes.length);
-  for (let i = 0; i < leadingZeros; i++) {
-    result[i] = 0;
-  }
-  for (let i = 0; i < bytes.length; i++) {
-    result[leadingZeros + bytes.length - 1 - i] = bytes[i];
-  }
-
-  return result;
-}
-
-async function solanaRpcCall(method: string, params: unknown[]): Promise<unknown> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
-
-  try {
-    const res = await fetch(SOLANA_RPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      throw new Error(`RPC HTTP error ${res.status}`);
-    }
-
-    const json = (await res.json()) as {
-      result?: unknown;
-      error?: { message?: string };
-    };
-
-    if (json.error) {
-      throw new Error(json.error.message ?? "RPC error");
-    }
-
-    return json.result;
-  } catch (err) {
-    if (
-      err instanceof Error &&
-      err.name === "AbortError"
-    ) {
-      throw new Error("RPC_TIMEOUT");
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 function isBase58Address(value: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]+$/.test(value);
 }
 
-function deriveSolanaATA(walletAddress: string, mint: string): string {
-  return `${walletAddress}-ata-${mint}`;
-}
-
 async function verifySolanaPayment(
+  env: ServicePaymentVerifyEnv,
   txHash: string,
   expectedPayer: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -188,10 +101,10 @@ async function verifySolanaPayment(
     return { ok: false as const, error: "INVALID_PAYER" };
   }
 
-  const info = (await solanaRpcCall("getTransaction", [
-    txHash,
-    { encoding: "jsonParsed", commitment: "confirmed" },
-  ])) as {
+  const info = (await getSolanaTransaction(
+    env.SOLANA_MAINNET_RPC_URL as string,
+    txHash
+  )) as {
     slot?: number;
     blockTime?: number;
     transaction?: {
@@ -849,7 +762,7 @@ async function resolveCreatorIdentity(
       return fail(origin, 202, "PENDING");
     }
   } else if (isSolanaSignature) {
-    const solanaVerification = await verifySolanaPayment(txHash, expectedPayer);
+    const solanaVerification = await verifySolanaPayment(env, txHash, expectedPayer);
     if (!solanaVerification.ok) {
       return fail(origin, 402, solanaVerification.error);
     }
