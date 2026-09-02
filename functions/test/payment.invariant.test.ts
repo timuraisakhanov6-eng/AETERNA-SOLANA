@@ -24,6 +24,33 @@ const CREATOR_IDENTITY_ID = "creator-1";
 const EVIDENCE_ID = "ev-1";
 const TX_HASH = "0x" + "a".repeat(64);
 
+const CREATOR_IDENTITY_NETWORK = "solana";
+const CREATOR_IDENTITY_ACCOUNT = "account123";
+
+function createFakeCreatorIdentityKV() {
+  const store = new Map<string, string>();
+
+  store.set(
+    `creator:identity:id:${CREATOR_IDENTITY_ID}`,
+    `${CREATOR_IDENTITY_NETWORK}:${CREATOR_IDENTITY_ACCOUNT}`
+  );
+
+  store.set(
+    `creator:identity:${CREATOR_IDENTITY_NETWORK}:${CREATOR_IDENTITY_ACCOUNT}`,
+    JSON.stringify({
+      id: CREATOR_IDENTITY_ID,
+      network: CREATOR_IDENTITY_NETWORK,
+      account: CREATOR_IDENTITY_ACCOUNT,
+    })
+  );
+
+  return {
+    get: async (key: string) => store.get(key) ?? null,
+    put: async () => {},
+    delete: async () => {},
+  };
+}
+
 async function seedBusinessQuote(
   kv: ReturnType<typeof createFakeKV>,
   paymentIntentId = PAYMENT_INTENT_ID
@@ -303,9 +330,7 @@ describe("Payment authorization / replay protection invariants", () => {
               expiresAt: Date.now() + 60_000,
             }),
         },
-        CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
-        },
+        CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
       };
 
@@ -336,9 +361,7 @@ describe("Payment authorization / replay protection invariants", () => {
               expiresAt: Date.now() + 60_000,
             }),
         },
-        CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
-        },
+        CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
       };
 
@@ -369,9 +392,7 @@ describe("Payment authorization / replay protection invariants", () => {
               expiresAt: Date.now() + 60_000,
             }),
         },
-        CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
-        },
+        CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
       };
 
@@ -402,9 +423,7 @@ describe("Payment authorization / replay protection invariants", () => {
               expiresAt: Date.now() + 60_000,
             }),
         },
-        CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
-        },
+        CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
         ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
         CHAINSTACK_BASE_RPC_URL: "https://chainstack.example.com",
@@ -479,9 +498,7 @@ describe("Payment authorization / replay protection invariants", () => {
               expiresAt: Date.now() + 60_000,
             }),
         },
-        CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
-        },
+        CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async (k: string) => k === `verified-payment:${PAYMENT_INTENT_ID}:${EVIDENCE_ID}` ? existing : null, put: async () => {} },
       };
 
@@ -524,9 +541,7 @@ describe("Payment authorization / replay protection invariants", () => {
               expiresAt: Date.now() + 60_000,
             }),
         },
-        CREATOR_IDENTITIES: {
-          get: async () => JSON.stringify({ id: CREATOR_IDENTITY_ID, account: CREATOR_IDENTITY_ID }),
-        },
+        CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async (k: string) => k === `verified-payment:${PAYMENT_INTENT_ID}:${EVIDENCE_ID}` ? existing : null, put: async () => {} },
       };
 

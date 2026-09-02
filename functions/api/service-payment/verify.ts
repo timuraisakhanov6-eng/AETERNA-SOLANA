@@ -659,26 +659,64 @@ export async function onRequestPost(
 
   /* ================= CREATOR IDENTITY ================= */
 
-  let identityOk = true;
-  if (env?.CREATOR_IDENTITIES) {
-    const identityRaw = await env.CREATOR_IDENTITIES.get(
-      `creator:identity:${creatorIdentityId}`
-    );
-    if (!identityRaw) {
-      identityOk = false;
-    } else {
-      try {
-        const identity = JSON.parse(identityRaw) as Record<string, unknown>;
-        if (
-          typeof identity.id !== "string" ||
-          identity.id !== creatorIdentityId
-        ) {
-          identityOk = false;
-        }
-      } catch {
-        identityOk = false;
-      }
+async function resolveCreatorIdentity(
+  env: ServicePaymentVerifyEnv,
+  creatorIdentityId: string
+): Promise<{ id: string; network: string; account: string } | null> {
+  const indexKey = `creator:identity:id:${creatorIdentityId}`;
+  const indexRaw = env?.CREATOR_IDENTITIES?.get
+    ? await env.CREATOR_IDENTITIES.get(indexKey)
+    : null;
+
+  if (!indexRaw || typeof indexRaw !== "string") {
+    return null;
+  }
+
+  const separatorIndex = indexRaw.indexOf(":");
+  if (separatorIndex < 0) {
+    return null;
+  }
+
+  const network = indexRaw.slice(0, separatorIndex);
+  const account = indexRaw.slice(separatorIndex + 1);
+
+  if (!network || !account) {
+    return null;
+  }
+
+  const identityRaw = env?.CREATOR_IDENTITIES?.get
+    ? await env.CREATOR_IDENTITIES.get(`creator:identity:${network}:${account}`)
+    : null;
+
+  if (!identityRaw || typeof identityRaw !== "string") {
+    return null;
+  }
+
+  try {
+    const identity = JSON.parse(identityRaw) as Record<string, unknown>;
+    if (
+      typeof identity.id === "string" &&
+      identity.id === creatorIdentityId &&
+      typeof identity.network === "string" &&
+      typeof identity.account === "string"
+    ) {
+      return {
+        id: identity.id,
+        network: identity.network,
+        account: identity.account,
+      };
     }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+  let identityOk = true;
+  const resolvedIdentity = await resolveCreatorIdentity(env, creatorIdentityId);
+  if (!resolvedIdentity) {
+    identityOk = false;
   }
 
   if (!identityOk) {
@@ -734,28 +772,7 @@ export async function onRequestPost(
     return fail(origin, 402, "QUOTE_NOT_1_USD");
   }
 
-  const expectedPayer = await (async () => {
-    const identityRaw = env?.CREATOR_IDENTITIES?.get
-      ? await env.CREATOR_IDENTITIES.get(`creator:identity:${creatorIdentityId}`)
-      : null;
-
-    if (!identityRaw) {
-      return null;
-    }
-
-    let identity: Record<string, unknown>;
-    try {
-      identity = JSON.parse(identityRaw) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-
-    if (typeof identity.account !== "string") {
-      return null;
-    }
-
-    return identity.account;
-  })();
+  const expectedPayer = resolvedIdentity ? resolvedIdentity.account : null;
 
   if (!expectedPayer) {
     return fail(origin, 403, "CREATOR_IDENTITY_NOT_FOUND");
