@@ -12,21 +12,6 @@ function buildSignAndSendTransaction() {
   });
 }
 
-vi.mock("@solana/spl-token", async () => {
-  const actual = await vi.importActual<typeof import("@solana/spl-token")>("@solana/spl-token");
-  return {
-    ...actual,
-    getAccount: vi.fn().mockResolvedValue({
-      amount: 1000000n,
-      state: 1,
-      isNative: false,
-      delegate: null,
-      delegatedAmount: 0n,
-      closeAuthority: null,
-    }),
-  };
-});
-
 describe("sendSolanaUSDCPayment", () => {
   beforeEach(() => {
     vi.useFakeTimers();

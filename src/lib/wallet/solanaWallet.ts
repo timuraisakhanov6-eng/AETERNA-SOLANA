@@ -258,11 +258,8 @@ export async function sendSolanaUSDCPayment({
   const spl = await import("@solana/spl-token")
   const {
     getAssociatedTokenAddressSync,
-    createAssociatedTokenAccountInstruction,
-    getAccount,
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID,
     createTransferInstruction,
+    TOKEN_PROGRAM_ID,
   } = spl
 
   const connection = new Connection(SOLANA_MAINNET_RPC, "confirmed")
@@ -291,27 +288,7 @@ export async function sendSolanaUSDCPayment({
   const sourceAta = getAssociatedTokenAddressSync(mint, payer, false)
   const destinationAta = getAssociatedTokenAddressSync(mint, destinationWallet, false)
 
-  const instructions: unknown[] = []
-
-  try {
-    await getAccount(connection, destinationAta)
-  } catch (error) {
-    if (!(error instanceof spl.TokenAccountNotFoundError)) {
-      throw error
-    }
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        payer,
-        destinationAta,
-        destinationWallet,
-        mint,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    )
-  }
-
-  instructions.push(
+  const instructions: unknown[] = [
     createTransferInstruction(
       sourceAta,
       destinationAta,
@@ -320,7 +297,7 @@ export async function sendSolanaUSDCPayment({
       [payer],
       TOKEN_PROGRAM_ID
     )
-  )
+  ]
 
   const blockhashRes = await fetch("/api/solana/blockhash", {
     method: "GET",
