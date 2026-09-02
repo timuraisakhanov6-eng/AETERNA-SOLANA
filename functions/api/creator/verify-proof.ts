@@ -267,8 +267,9 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   await env.CREATOR_IDENTITIES.delete(`${CHALLENGE_PREFIX}${challengeId}`);
 
-  const lowerAccount = account.toLowerCase();
-  const existing = await getCreatorIdentity(env, network, lowerAccount);
+  const isSolana = network === "solana";
+  const canonicalAccount = isSolana ? account : account.toLowerCase();
+  const existing = await getCreatorIdentity(env, network, canonicalAccount);
   let identity: { id: string; network: string; account: string; firstVerifiedAt: number; lastVerifiedAt: number };
 
   if (existing) {
@@ -277,7 +278,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
       lastVerifiedAt: now,
     };
     await env.CREATOR_IDENTITIES.put(
-      `creator:identity:${network}:${lowerAccount}`,
+      `creator:identity:${network}:${canonicalAccount}`,
       JSON.stringify(identity)
     );
   } else {
@@ -285,7 +286,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     identity = {
       id,
       network,
-      account: lowerAccount,
+      account: canonicalAccount,
       firstVerifiedAt: now,
       lastVerifiedAt: now,
     };

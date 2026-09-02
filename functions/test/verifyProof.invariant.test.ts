@@ -140,4 +140,49 @@ describe("POST /api/creator/verify-proof", () => {
     expect(second.status).toBe(401);
     expect(second.payload.error).toBe("CHALLENGE_NOT_FOUND");
   });
+
+  it("valid EVM account persists lowercase normalization", async () => {
+    const env = buildEnv();
+    seedChallenge(env, "challenge-valid", Date.now() + 60_000);
+
+    const mixedCaseAccount = "0xD5a9291fA9018b2168F9c5c785e4B7BbeCA51a7f";
+    const res = await postVerifyProof(env, validPayload({ account: mixedCaseAccount }));
+
+    expect(res.status).toBe(200);
+    expect(res.payload).toEqual(
+      expect.objectContaining({ ok: true, account: mixedCaseAccount.toLowerCase() })
+    );
+
+    const stored = env.CREATOR_IDENTITIES.data.get(
+      `creator:identity:eip155:8453:${mixedCaseAccount.toLowerCase()}`
+    );
+    expect(stored).toBeDefined();
+    const parsed = JSON.parse(stored as string) as Record<string, unknown>;
+    expect(parsed.account).toBe(mixedCaseAccount.toLowerCase());
+  });
+
+  it("invalid EVM account is rejected", async () => {
+    const env = buildEnv();
+    seedChallenge(env, "challenge-valid", Date.now() + 60_000);
+
+    const res = await postVerifyProof(env, validPayload({ account: "0x" + "ab".repeat(19) + "zz" }));
+
+    expect(res.status).toBe(400);
+    expect(res.payload.error).toBe("INVALID_ACCOUNT");
+  });
+
+  it("invalid Solana account is rejected before persistence", async () => {
+    const env = buildEnv();
+    seedChallenge(env, "challenge-valid-solana", Date.now() + 60_000, "solana");
+
+    const res = await postVerifyProof(env, {
+      challengeId: "challenge-valid-solana",
+      network: "solana",
+      account: "not-valid-base58",
+      signature: "0x" + "ab".repeat(32),
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.payload.error).toBe("INVALID_ACCOUNT");
+  });
 });
