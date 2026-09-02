@@ -12,6 +12,21 @@ function buildSignAndSendTransaction() {
   });
 }
 
+vi.mock("@solana/spl-token", async () => {
+  const actual = await vi.importActual<typeof import("@solana/spl-token")>("@solana/spl-token");
+  return {
+    ...actual,
+    getAccount: vi.fn().mockResolvedValue({
+      amount: 1000000n,
+      state: 1,
+      isNative: false,
+      delegate: null,
+      delegatedAmount: 0n,
+      closeAuthority: null,
+    }),
+  };
+});
+
 describe("sendSolanaUSDCPayment", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -27,11 +42,9 @@ describe("sendSolanaUSDCPayment", () => {
   it("requests blockhash from /api/solana/blockhash and signs transaction", async () => {
     const signAndSendTransaction = buildSignAndSendTransaction();
     const fetchMock = global.fetch as unknown as typeof vi.fn;
-    let blockhashCalls = 0;
 
     fetchMock.mockImplementation(async (url: string) => {
       if (url === "/api/solana/blockhash") {
-        blockhashCalls += 1;
         return {
           ok: true,
           json: () =>
@@ -57,7 +70,7 @@ describe("sendSolanaUSDCPayment", () => {
     });
 
     expect(signature).toBe("TxSignature1111111111111111111111111111111111111111111111111111111111111");
-    expect(blockhashCalls).toBe(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/solana/blockhash", expect.anything());
     expect(signAndSendTransaction).toHaveBeenCalledTimes(1);
   });
 

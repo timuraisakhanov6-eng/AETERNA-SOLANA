@@ -295,7 +295,10 @@ export async function sendSolanaUSDCPayment({
 
   try {
     await getAccount(connection, destinationAta)
-  } catch {
+  } catch (error) {
+    if (!(error instanceof spl.TokenAccountNotFoundError)) {
+      throw error
+    }
     instructions.push(
       createAssociatedTokenAccountInstruction(
         payer,
