@@ -240,11 +240,65 @@ const AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS = "6Ku9wGoYBwGDBAK3D7XxoXMYosDBt
 const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const SOLANA_MAINNET_RPC = "https://api.mainnet-beta.solana.com";
 
+const SOLANA_CONFIRM_POLL_INTERVAL_MS = 500
+const SOLANA_CONFIRM_TIMEOUT_MS = 15000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForSignatureStatus(
+  signature: string,
+  getStatus: (signature: string) => Promise<{ err?: unknown; confirmationStatus?: string } | null>,
+  timeoutMs = SOLANA_CONFIRM_TIMEOUT_MS
+): Promise<void> {
+  const maxAttempts = Math.ceil(timeoutMs / SOLANA_CONFIRM_POLL_INTERVAL_MS) + 1
+  let attempt = 0
+  while (attempt < maxAttempts) {
+    attempt++
+    let status: { err?: unknown; confirmationStatus?: string } | null = null
+    try {
+      status = await getStatus(signature)
+    } catch {
+      throw new Error("Transaction status lookup failed.")
+    }
+
+    if (!status) {
+      await sleep(SOLANA_CONFIRM_POLL_INTERVAL_MS)
+      continue
+    }
+
+    if (status.err) {
+      const message =
+        typeof status.err === "string"
+          ? status.err
+          : JSON.stringify(status.err)
+      throw new Error(`Transaction failed: ${message}`)
+    }
+
+    if (
+      status.confirmationStatus === "confirmed" ||
+      status.confirmationStatus === "finalized"
+    ) {
+      return
+    }
+
+    await sleep(SOLANA_CONFIRM_POLL_INTERVAL_MS)
+  }
+
+  throw new Error("Transaction confirmation timed out.")
+}
+
 export interface SendSolanaUSDCPaymentOptions {
-  readonly destination?: string;
-  readonly amountAtomic?: string;
-  readonly publicKey?: string;
-  readonly signAndSendTransaction?: (transaction: import('@solana/web3.js').Transaction | import('@solana/web3.js').VersionedTransaction) => Promise<{ signature: string }>;
+  readonly destination?: string
+  readonly amountAtomic?: string
+  readonly publicKey?: string
+  readonly signAndSendTransaction?: (
+    transaction: import("@solana/web3.js").Transaction | import("@solana/web3.js").VersionedTransaction
+  ) => Promise<{ signature: string }>
+  readonly getSignatureStatus?: (
+    signature: string
+  ) => Promise<{ err?: unknown; confirmationStatus?: string } | null>
 }
 
 export async function sendSolanaUSDCPayment({
@@ -252,17 +306,16 @@ export async function sendSolanaUSDCPayment({
   amountAtomic = "1000000",
   publicKey: publicKeyOption,
   signAndSendTransaction: signAndSendOption,
+  getSignatureStatus: getSignatureStatusOption,
 }: SendSolanaUSDCPaymentOptions = {}): Promise<string> {
   const web3 = await import("@solana/web3.js")
-  const { Connection, Transaction, PublicKey } = web3
+  const { Transaction, PublicKey } = web3
   const spl = await import("@solana/spl-token")
   const {
     getAssociatedTokenAddressSync,
     createTransferInstruction,
     TOKEN_PROGRAM_ID,
   } = spl
-
-  const connection = new Connection(SOLANA_MAINNET_RPC, "confirmed")
 
   let publicKey = publicKeyOption
   if (!publicKey && signAndSendOption) {
@@ -296,30 +349,30 @@ export async function sendSolanaUSDCPayment({
       BigInt(amountAtomic),
       [payer],
       TOKEN_PROGRAM_ID
-    )
+    ),
   ]
 
   const blockhashRes = await fetch("/api/solana/blockhash", {
     method: "GET",
     headers: { Accept: "application/json" },
     cache: "no-store",
-  });
+  })
 
   if (!blockhashRes.ok) {
-    const errorPayload = (await blockhashRes.json().catch(() => ({}))) as { error?: string };
+    const errorPayload = (await blockhashRes.json().catch(() => ({}))) as { error?: string }
 
     throw new Error(
       typeof errorPayload?.error === "string"
         ? errorPayload.error
         : `Blockhash fetch failed: HTTP ${blockhashRes.status}`
-    );
+    )
   }
 
   const blockhashData = (await blockhashRes.json()) as {
-    ok?: boolean;
-    blockhash?: string;
-    lastValidBlockHeight?: number | null;
-  };
+    ok?: boolean
+    blockhash?: string
+    lastValidBlockHeight?: number | null
+  }
 
   if (!blockhashData?.ok || typeof blockhashData.blockhash !== "string" || blockhashData.blockhash.length === 0) {
     throw new Error("Invalid blockhash response.")
@@ -338,6 +391,9 @@ export async function sendSolanaUSDCPayment({
     if (!result?.signature) {
       throw new Error("No transaction signature from wallet.")
     }
+
+    await waitForSignatureStatus(result.signature, getSignatureStatusOption)
+
     return result.signature
   }
 
