@@ -141,6 +141,7 @@ export function PaymentModal({
   const [error, setError] = useState<string | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [verifiedCreatorIdentityId, setVerifiedCreatorIdentityId] = useState<string | null>(null)
+  const [verifiedCreatorAccount, setVerifiedCreatorAccount] = useState<string | null>(null)
   const [verificationError, setVerificationError] = useState<string | null>(null)
 
   const mountedRef = useRef(true)
@@ -161,6 +162,7 @@ export function PaymentModal({
 
   const resetVerificationState = useCallback(() => {
     setVerifiedCreatorIdentityId(null)
+    setVerifiedCreatorAccount(null)
     setVerificationError(null)
     setError(null)
     setIsProcessing(false)
@@ -188,6 +190,7 @@ export function PaymentModal({
       setError(null)
       setIsProcessing(false)
       setVerifiedCreatorIdentityId(null)
+      setVerifiedCreatorAccount(null)
       setVerificationError(null)
     }
   }, [open])
@@ -334,7 +337,7 @@ export function PaymentModal({
         String.fromCharCode(...uint8)
       )
 
-      const { creatorIdentityId } = await verifyProof({
+      const { creatorIdentityId, account } = await verifyProof({
         challengeId,
         network: "solana",
         account: currentAccount,
@@ -342,6 +345,7 @@ export function PaymentModal({
       })
 
       setVerifiedCreatorIdentityId(creatorIdentityId)
+      setVerifiedCreatorAccount(account)
       setPhase("wallet_verified")
     } catch (err) {
       const message =
@@ -365,6 +369,25 @@ export function PaymentModal({
       )
       setPhase("error")
       setIsProcessing(false)
+      return
+    }
+
+    const currentAccount = walletRef.current.account
+    if (!currentAccount) {
+      setError("Wallet account is required for payment.")
+      setPhase("error")
+      setIsProcessing(false)
+      return
+    }
+
+    if (
+      verifiedCreatorIdentityId &&
+      verifiedCreatorAccount &&
+      currentAccount !== verifiedCreatorAccount
+    ) {
+      resetVerificationState()
+      setError("Wallet account changed after verification. Please verify again.")
+      setPhase("error")
       return
     }
 
