@@ -392,7 +392,9 @@ export async function sendSolanaUSDCPayment({
       throw new Error("No transaction signature from wallet.")
     }
 
-    await waitForSignatureStatus(result.signature, getSignatureStatusOption)
+    if (getSignatureStatusOption) {
+      await waitForSignatureStatus(result.signature, getSignatureStatusOption)
+    }
 
     return result.signature
   }

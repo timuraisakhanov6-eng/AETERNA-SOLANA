@@ -192,4 +192,29 @@ describe("sendSolanaUSDCPayment", () => {
       })
     ).rejects.toThrow("Transaction status lookup failed.");
   });
+
+  it("returns exact signature when getSignatureStatus is absent", async () => {
+    const signAndSendTransaction = buildSignAndSendTransaction();
+    const fetchMock = global.fetch as unknown as typeof vi.fn;
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          ok: true,
+          blockhash: FIXED_BLOCKHASH,
+          lastValidBlockHeight: FIXED_LAST_VALID_BLOCK_HEIGHT,
+        }),
+    } as unknown as Response);
+
+    const signature = await sendSolanaUSDCPayment({
+      destination: FIXED_DESTINATION,
+      amountAtomic: "1000000",
+      publicKey: FIXED_PUBLIC_KEY,
+      signAndSendTransaction,
+    });
+
+    expect(signature).toBe(FIXED_SIGNATURE);
+    expect(signAndSendTransaction).toHaveBeenCalledTimes(1);
+  });
 });
