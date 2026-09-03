@@ -231,4 +231,16 @@ describe("PaymentModal Reown wallet integration", () => {
     expect(signMessageMock).toHaveBeenCalledTimes(1)
     expect(screen.queryByText("Wallet account is required for verification.")).toBeNull()
   })
+
+  it("blocks payment when creatorIdentityId is present but verifiedCreatorAccount is missing", async () => {
+    const wallet = createMockWallet({ connected: true, account: "MockAccount1111111111111111111111111111111111" })
+    renderPaymentModal(wallet, { creatorIdentityId: "identity-1" })
+
+    await screen.findByText("Confirm $1.00 USDC")
+    const confirmButton = screen.getByText("Confirm $1.00 USDC")
+    confirmButton.click()
+
+    expect(wallet.signAndSendTransaction).not.toHaveBeenCalled()
+    expect(await screen.findByText("Wallet verification is required before payment.")).toBeDefined()
+  })
 });

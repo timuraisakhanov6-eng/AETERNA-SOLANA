@@ -380,6 +380,13 @@ export function PaymentModal({
       return
     }
 
+    if (effectiveCreatorIdentityId && !verifiedCreatorAccount) {
+      resetVerificationState()
+      setError("Wallet verification is required before payment.")
+      setPhase("error")
+      return
+    }
+
     if (
       verifiedCreatorIdentityId &&
       verifiedCreatorAccount &&
