@@ -10,6 +10,7 @@ import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
 import { verifyMessage } from "ethers";
+import { getCreatorIdentity } from "../../../src/lib/creator/creatorIdentityStore";
 
 interface CreditStatusEnv {
   CREATOR_CREDITS: {
@@ -154,19 +155,12 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   /* ================= Creator identity resolution ================= */
 
-  const identityRaw = await context.env.CREATOR_IDENTITIES.get(`creator:identity:${network}:${account.toLowerCase()}`);
-  if (!identityRaw) {
+  const identityRecord = await getCreatorIdentity(context.env, network, account);
+  if (!identityRecord) {
     return fail(origin, 403, "CREATOR_IDENTITY_NOT_FOUND");
   }
 
-  let identityRecord: Record<string, unknown>;
-  try {
-    identityRecord = JSON.parse(identityRaw) as Record<string, unknown>;
-  } catch {
-    return fail(origin, 500, "CREATOR_IDENTITY_CORRUPT");
-  }
-
-  const authenticatedCreatorIdentityId = identityRecord.id as string;
+  const authenticatedCreatorIdentityId = identityRecord.id;
 
   /* ================= Creator Credit lookup ================= */
 

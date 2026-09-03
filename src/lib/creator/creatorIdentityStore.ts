@@ -22,7 +22,9 @@ export interface CreatorIdentityKVNamespace {
 const IDENTITY_PREFIX = "creator:identity:";
 
 function identityKey(network: string, account: string): string {
-  return `${IDENTITY_PREFIX}${network}:${account.toLowerCase()}`;
+  const normalized =
+    network === "solana" ? account : account.toLowerCase();
+  return `${IDENTITY_PREFIX}${network}:${normalized}`;
 }
 
 export async function getCreatorIdentity(
