@@ -164,8 +164,16 @@ During landing payment:
 - Never document synthetic/fake capsule IDs.
 
 Canonical sequence:
-- paymentIntentId -> immutable service quote -> payment verification -> Creator Credit -> entitlement -> /create
+- paymentIntentId -> immutable service quote -> payment verification
+-> Creator Credit
+-> return to prepared /create workspace
+-> final CREATE CAPSULE
+-> lifecycle reservation.
 - real capsuleId exists only after actual capsule creation begins.
+
+Wallet binding rule:
+- the same verified creator wallet/identity that paid MUST be used for final CREATE CAPSULE;
+- wallet mismatch MUST fail closed.
 
 ## 9. IRYS BOUNDARY
 

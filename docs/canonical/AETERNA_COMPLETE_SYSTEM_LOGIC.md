@@ -8,6 +8,7 @@ AETERNA is not a messenger.
 AETERNA is a cryptographic time capsule.
 The creator builds the capsule. The contents are encrypted locally. No one can open the capsule until the opening conditions are met. Even the AETERNA server cannot read the contents.
 
+
 Core Entities
 Four objects in total.
 1. Vault
@@ -101,15 +102,20 @@ Verified Payment
 ↓
 Creator Credit
 ↓
-one capsule creation entitlement
+one capsule creation entitlement.
+
+Return to the same prepared /create workspace.
 ↓
-/create unlocked
+User performs final CREATE CAPSULE.
+↓
+Creator Credit is consumed.
+↓
+Lifecycle reservation.
 
-/create is the capsule creation workspace.
-It MUST NOT be presented as an unrestricted entry point before entitlement verification.
-
-Payment occurs BEFORE /create.
-There is NO second AETERNA Service Payment inside /create.
+/create is a preparation workspace.
+It MUST NOT auto-trigger wallet connection, signing, or service payment on mount.
+Payment occurs on the first explicit creation action from /create.
+There is NO second AETERNA Service Payment before final CREATE CAPSULE.
 
 The creator pays for AETERNA creation entitlement and separately pays the storage cost of each capsule.
 
@@ -135,14 +141,6 @@ Creation Pipeline
 
 Landing
 ↓
-CREATE CAPSULE
-↓
-AETERNA Service Payment
-↓
-Verified Payment
-↓
-Creator Credit
-↓
 /create
 ↓
 Add Content
@@ -154,6 +152,22 @@ Prepare Vault
 Prepare Encrypted Capsule
 ↓
 PREPARED
+↓
+First explicit creation action
+↓
+AETERNA Service Payment
+↓
+Verified Payment
+↓
+Creator Credit
+↓
+Return to prepared /create workspace
+↓
+CREATE CAPSULE
+↓
+Creator Credit consumed
+↓
+Lifecycle reservation
 ↓
 Calculate Billable Storage
 ↓
@@ -177,7 +191,7 @@ Manifest
 ↓
 SEALED
 Capacity is calculated after PREPARED according to the canonical Business Authority rules.
-Payment and entitlement verification MUST occur before the creator enters the /create workspace. An upload token may be requested only after successful payment verification.
+Payment and entitlement verification are required before final CREATE CAPSULE, not before opening the /create preparation workspace. An upload token may be requested only after successful payment verification.
 
 Capability Generation
 Capability generators run before media encryption and before prepareVault().
@@ -770,7 +784,7 @@ If an implementation contradicts the business protocol, the implementation must 
 Payment Failure Law
 A. Service Payment failure
 - No Creator Credit.
-- No /create entitlement.
+- No final CREATE CAPSULE entitlement.
 
 B. Storage Payment failure
 - No permanent storage settlement.

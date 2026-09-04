@@ -1,8 +1,8 @@
 # AETERNA — Multi-Rail Service Payment Policy Specification
 
-Status: Canonical  
-Authority: Business Layer  
-Version: 1.0  
+Status: Canonical
+Authority: Business Layer
+Version: 1.0
 Reference:
 - AETERNA_CREATOR_CREDIT_SPEC.md
 - AETERNA_CREATOR_CREDIT_CONSUMPTION_AND_CAPSULE_CREATION_INTERFACE_SPEC.md
@@ -140,20 +140,18 @@ Verified Payment
 Creator Credit
 ↓
 one capsule creation entitlement
-↓
-/create unlocked
 
 Requirements:
 - CREATE CAPSULE MUST open the service-payment gate;
-- payment MUST occur BEFORE /create;
-- /create MUST NOT be presented as an unrestricted entry point before entitlement verification;
-- there is NO second AETERNA Service Payment inside /create.
+- first explicit creation action starts service payment if no valid Creator Credit is available for final creation;
+- /create MUST NOT auto-trigger wallet/signature/payment on mount;
+- there is NO second AETERNA Service Payment before final CREATE CAPSULE.
 
 ---
 
 ## 8. /CREATE BUSINESS SEMANTICS
 
-/create is the capsule creation workspace.
+/create is the capsule preparation workspace.
 
 Inside /create the user:
 - adds text;

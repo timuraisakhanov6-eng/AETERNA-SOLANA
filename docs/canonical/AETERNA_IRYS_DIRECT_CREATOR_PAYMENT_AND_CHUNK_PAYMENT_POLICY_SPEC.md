@@ -124,7 +124,8 @@ Rules:
 ## 7. SERVICE PAYMENT IDENTITY CHAIN
 
 Canonical chain:
-- paymentIntentId -> immutable Service Quote -> payment verification -> Verified Payment -> Creator Credit -> entitlement -> /create -> capsule creation -> real capsuleId.
+- paymentIntentId -> immutable Service Quote -> payment verification -> Verified Payment -> Creator Credit -> return to prepared /create workspace -> final CREATE CAPSULE -> capsule creation -> real capsuleId.
+- This sequence supersedes prior shortcut listings.
 
 Forbidden:
 - using capsuleId="landing";

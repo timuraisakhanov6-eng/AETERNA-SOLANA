@@ -318,19 +318,20 @@ flow.
 The canonical human-readable flow is:
 
 1. User opens AETERNA.
-2. Protocol Rules are available before payment.
-3. User clicks CREATE CAPSULE.
-4. If no AVAILABLE Creator Credit, payment modal appears.
+2. User enters /create and prepares the capsule.
+3. User clicks the first-stage creation action.
+4. If no valid AETERNA Creator Credit is available for the creator's final creation action, the AETERNA Service Payment flow appears.
 5. User sees fixed $1 AETERNA service fee.
 6. System displays exact amount in selected supported asset.
 7. User confirms in wallet.
 8. AETERNA verifies payment.
 9. Creator Credit becomes AVAILABLE.
-10. User can create a capsule without a time limit.
-11. Irys publication happens separately when capsule is ready.
-12. Irys determines its actual publication/storage cost.
-13. User completes the Irys publication flow.
-14. Successful publication + Seal consumes the Credit.
+10. User returns to the same prepared /create workspace.
+11. Final CREATE CAPSULE consumes the existing Creator Credit.
+12. Irys publication happens separately when capsule is ready.
+13. Irys determines its actual publication/storage cost.
+14. User completes the Irys publication flow.
+15. Successful publication + Seal consumes the Credit.
 
 This document does NOT promise:
 

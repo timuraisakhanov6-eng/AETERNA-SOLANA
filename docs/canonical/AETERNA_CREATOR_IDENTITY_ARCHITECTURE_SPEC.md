@@ -366,9 +366,12 @@ AETERNA service payment flow:
    - exact atomic amount;
    - immutable quote.
 4. Wallet confirms payment in the selected network/asset.
-5. AETERNA server verifies payment against the immutable quote.
-6. Creator Credit is granted to the Creator Identity.
-7. Creator Credit becomes AVAILABLE.
+6. AETERNA server verifies payment against the immutable quote.
+7. Creator Credit is granted to the Creator Identity.
+8. Creator Credit becomes AVAILABLE.
+9. After successful payment, the user returns to the same prepared /create workspace.
+10. Final CREATE CAPSULE requires the same verified creator wallet/account used for the service payment.
+11. If the current connected account or creator identity does not match the verified payment identity, creation MUST fail closed.
 
 Key rule:
 
@@ -387,11 +390,12 @@ Irys publication flow:
 5. If the Irys asset/network requires additional proof of account control,
    the server MUST verify it and bind it to the existing Creator Identity
    before or during the Irys flow.
-6. Irys determines actual publication/storage cost.
-7. Creator pays Irys through the supported Irys flow.
-8. Irys publication succeeds.
-9. Seal succeeds.
-10. Creator Credit becomes CONSUMED.
+6. If the wallet changes after AETERNA service payment but before final CREATE CAPSULE, the existing AVAILABLE Creator Credit MUST NOT be consumed by the new identity.
+7. Irys determines actual publication/storage cost.
+8. Creator pays Irys through the supported Irys flow.
+9. Irys publication succeeds.
+10. Seal succeeds.
+11. Creator Credit becomes CONSUMED.
 
 Key rule:
 
