@@ -96,14 +96,32 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
     const walletId = connection?.connectorId ?? null;
     const walletName = walletInfo?.name ?? connection?.name ?? null;
 
-    setState((prev) => ({
-      ...prev,
-      walletId,
-      walletName,
-      account,
-      connected: Boolean(account),
-      ready: true,
-    }));
+    setState((prev) => {
+      const nextWalletId = walletId;
+      const nextWalletName = walletName;
+      const nextAccount = account;
+      const nextConnected = Boolean(nextAccount);
+      const nextReady = true;
+
+      if (
+        prev.walletId === nextWalletId &&
+        prev.walletName === nextWalletName &&
+        prev.account === nextAccount &&
+        prev.connected === nextConnected &&
+        prev.ready === nextReady
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        walletId: nextWalletId,
+        walletName: nextWalletName,
+        account: nextAccount,
+        connected: nextConnected,
+        ready: nextReady,
+      };
+    });
   }, [accountState.address, connectionsState.connections, walletInfo]);
 
   const connect = useCallback(async () => {

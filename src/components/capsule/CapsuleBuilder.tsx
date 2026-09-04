@@ -1,4 +1,4 @@
-import { useState, useRef, useContext } from "react";
+import { useState, useRef, useContext, useEffect, useCallback } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Lock, Loader2 } from "lucide-react";
@@ -675,6 +675,12 @@ export default function CapsuleBuilder({
       sealingRef.current = false;
     }
   };
+
+  const canSeal =
+    items.length > 0 &&
+    typeof unlockAt === "number" &&
+    isConfirmed &&
+    sealPhase === "idle";
 
   const isCreateDisabled =
     servicePaymentState === "ready"
