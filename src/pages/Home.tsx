@@ -1,10 +1,9 @@
 import { motion } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Link, useNavigate } from "react-router-dom"
-import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext"
 
 const Home = () => {
-  const { openLandingPaymentModal } = useLandingPaymentGate()
+  const navigate = useNavigate()
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 pb-28 sm:pb-24 md:pb-20 relative overflow-hidden">
@@ -188,17 +187,11 @@ const Home = () => {
                   hover:scale-x-[1.04]
                   hover:shadow-[0_0_32px_rgba(255,180,90,0.45),inset_0_0_16px_rgba(255,180,90,0.1)]
                 "
-                onClick={openLandingPaymentModal}
+                onClick={() => navigate("/create")}
               >
                 CREATE CAPSULE
               </Button>
             </motion.div>
-
-            {import.meta.env.DEV && (
-              <div className="w-full max-w-[220px] sm:max-w-[240px] xl:max-w-[260px] mt-3">
-                <DevBypassButton />
-              </div>
-            )}
 
             {/* Small text */}
             <motion.p
@@ -314,52 +307,5 @@ const Home = () => {
     </div>
   );
 };
-
-function DevBypassButton() {
-  const navigate = useNavigate()
-
-  const handleClick = () => {
-    try {
-      sessionStorage.setItem("aeterna-dev-bypass", "1")
-    } catch {
-      // ignore
-    }
-
-    navigate("/create")
-  }
-
-  return (
-    <Button
-      type="button"
-      onClick={handleClick}
-      className="
-        w-full
-        h-9
-        sm:h-10
-        xl:h-10
-        bg-[hsl(220,35%,9%)]
-        text-amber-300
-        border
-        border-amber-400/50
-        text-[10px]
-        sm:text-[11px]
-        xl:text-[12px]
-        font-medium
-        tracking-[0.18em]
-        shadow-[0_0_18px_rgba(255,180,90,0.25),inset_0_0_12px_rgba(255,180,90,0.06)]
-        transition-all
-        duration-300
-        ease-out
-        hover:bg-[hsl(220,35%,11%)]
-        hover:text-amber-200
-        hover:border-amber-300/70
-        hover:scale-x-[1.04]
-        hover:shadow-[0_0_32px_rgba(255,180,90,0.45),inset_0_0_16px_rgba(255,180,90,0.1)]
-      "
-    >
-      DEV — BYPASS PAYMENT
-    </Button>
-  )
-}
 
 export default Home;
