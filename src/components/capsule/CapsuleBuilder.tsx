@@ -1,9 +1,10 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useContext } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Lock, Loader2 } from "lucide-react";
 import { useCapsule } from "../../context/CapsuleContext";
 import { useCreatorIdentity } from "@/context/CreatorRuntimeContext";
+import { AETERNAWalletContext } from "@/context/AETERNAWalletContext";
 import ActionMenu from "./ActionMenu";
 import MediaCapture from "./MediaCapture";
 import CapsuleInput from "./CapsuleInput";
@@ -285,7 +286,9 @@ function restorePreparedFromSession(
 
 /* ================= COMPONENT ================= */
 
-export default function CapsuleBuilder() {
+export default function CapsuleBuilder({
+  onOpenServicePayment,
+}: CapsuleBuilderProps) {
   const navigate = useNavigate();
 
   const {
@@ -302,6 +305,11 @@ export default function CapsuleBuilder() {
   } = useCapsule();
 
   const { creatorIdentityId } = useCreatorIdentity();
+  const wallet = useContext(AETERNAWalletContext);
+  const walletRef = useRef(wallet);
+  useEffect(() => {
+    walletRef.current = wallet;
+  }, [wallet]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -322,6 +330,14 @@ export default function CapsuleBuilder() {
 
   // 🛡️ StrictMode / double-click guard
   const sealingRef = useRef(false);
+
+  /* ================= SERVICE PAYMENT STATE ================= */
+
+  const [servicePaymentState, setServicePaymentState] =
+    useState<ServicePaymentState>("ready");
+  const [servicePaymentResult, setServicePaymentResult] =
+    useState<ServicePaymentResult | null>(null);
+  const [servicePaymentError, setServicePaymentError] = useState<string | null>(null);
 
   /* ================= MEDIA ================= */
 
@@ -739,6 +755,193 @@ export default function CapsuleBuilder() {
   const isPreparing = sealPhase === "preparing";
   const isBusy = isPreparing;
 
+  const handleFirstCreateClick = () => {
+    if (servicePaymentState !== "ready") return;
+    setServicePaymentState("payment_in_progress");
+    setServicePaymentError(null);
+    onOpenServicePayment();
+  };
+
+  const handlePaymentCreditReady = useCallback(
+    (result: ServicePaymentResult) => {
+      setServicePaymentResult(result);
+      setServicePaymentState("paid");
+      setServicePaymentError(null);
+    },
+    [setServicePaymentResult, setServicePaymentState]
+  );
+
+  const handlePaymentCancel = useCallback(() => {
+    setServicePaymentState("ready");
+    setServicePaymentError(null);
+  }, []);
+
+  const walletMatch = useCallback(() => {
+    const account = walletRef.current?.account;
+    const accountValid =
+      servicePaymentResult === null ||
+      servicePaymentResult.account === account;
+
+    const identityValid =
+      servicePaymentResult === null ||
+      servicePaymentResult.creatorIdentityId === creatorIdentityId;
+
+    return Boolean(accountValid && identityValid);
+  }, [creatorIdentityId, servicePaymentResult]);
+
+  const handleFinalCreateClick = async () => {
+    if (servicePaymentState !== "paid" || !servicePaymentResult) return;
+    if (sealPhase !== "idle" || sealingRef.current) return;
+    if (!walletMatch()) {
+      setServicePaymentState("ready");
+      setServicePaymentResult(null);
+      setServicePaymentError("Wallet or identity mismatch. Please repeat payment.");
+      return;
+    }
+
+    sealingRef.current = true;
+    setSealError(null);
+    setSealPhase("preparing");
+
+    try {
+      const snapshotItems = [...items];
+      const fingerprint = buildPreparationFingerprint(
+        snapshotItems,
+        unlockAt
+      );
+
+      if (preparedRef.current) {
+        if (preparedInputsRef.current === fingerprint) {
+          preparedRef.current = {
+            ...preparedRef.current,
+            description: description ?? "",
+          };
+          setSealPhase("idle");
+          void handleReserveReady({ creatorCreditId: servicePaymentResult.creatorCreditId });
+          return;
+        }
+
+        resetCapsule();
+        preparedRef.current = null;
+        preparedInputsRef.current = null;
+
+        try {
+          sessionStorage.removeItem("aeterna-prepared-capsule");
+        } catch {
+          // non-fatal
+        }
+
+        setSealPhase("idle");
+        setSealError(
+          "Capsule contents changed after preparation. " +
+          "A new capsule has been started — please rebuild it and continue."
+        );
+        return;
+      }
+
+      const restored = restorePreparedFromSession(
+        capsuleId,
+        unlockAt,
+        fingerprint,
+        snapshotItems
+      );
+
+      if (restored !== null) {
+        if (restored === "stale") {
+          resetCapsule();
+          try {
+            sessionStorage.removeItem("aeterna-prepared-capsule");
+          } catch {
+            // non-fatal
+          }
+          setSealPhase("idle");
+          setSealError(
+            "Capsule contents changed after preparation. " +
+            "A new capsule has been started — please rebuild it and continue."
+          );
+          return;
+        }
+
+        preparedRef.current = restored;
+        preparedInputsRef.current = fingerprint;
+        setSealPhase("idle");
+        void handleReserveReady({ creatorCreditId: servicePaymentResult.creatorCreditId });
+        return;
+      }
+
+      const preparedCapsule = await preparePreparedCapsule({
+        capsuleId,
+        items: snapshotItems,
+        getMediaFile,
+        openAt: unlockAt,
+      });
+
+      preparedRef.current = {
+        prepared: preparedCapsule,
+        billableSizeBytes: 0,
+        expectedAmount: 1.0,
+        openAt: unlockAt as OpenAtUtc,
+        description: description ?? "",
+        itemIds: snapshotItems.map((i) => i.id),
+        creatorAuthority: preparedCapsule.creatorAuthority,
+      };
+
+      const holdState = preparedRef.current;
+      if (!holdState) {
+        throw new Error("HOLD_STATE_MISSING");
+      }
+
+      preparedInputsRef.current = fingerprint;
+      try {
+        const sessionData = {
+          billableSizeBytes: holdState.billableSizeBytes,
+          expectedAmount: holdState.expectedAmount,
+          openAt: holdState.openAt,
+          ...(typeof holdState.description === "string" ? { description: holdState.description } : {}),
+          inputsFingerprint: fingerprint,
+          capsuleId: holdState.prepared.capsuleId,
+          itemIds: holdState.itemIds,
+          encryptedVaultPointer: holdState.prepared.encryptedVaultPointer,
+          encryptedSizeBytes: holdState.prepared.encryptedSizeBytes,
+          vaultSha256: holdState.prepared.vaultSha256,
+          saltBase: holdState.prepared.saltBase,
+          recipientSecret: holdState.prepared.recipientSecret,
+          creatorAuthority: holdState.prepared.creatorAuthority,
+          chunkMetadata: holdState.prepared.chunkMetadata,
+        };
+        sessionStorage.setItem(
+          "aeterna-prepared-capsule",
+          JSON.stringify(sessionData)
+        );
+      } catch {
+        // non-fatal
+      }
+
+      setSealPhase("idle");
+      void handleReserveReady({ creatorCreditId: servicePaymentResult.creatorCreditId });
+    } catch (err) {
+      preparedRef.current = null;
+      setSealPhase("idle");
+      setSealError(
+        err instanceof Error ? err.message : "Capsule creation failed"
+      );
+    } finally {
+      sealingRef.current = false;
+    }
+  };
+
+  const isCreateDisabled =
+    servicePaymentState === "ready"
+      ? !canSeal || servicePaymentState !== "ready"
+      : servicePaymentState === "paid"
+      ? !canSeal || sealPhase !== "idle"
+      : true;
+
+  const primaryButtonLabel =
+    servicePaymentState === "paid"
+      ? "CREATE CAPSULE"
+      : "Pay $1 & Create Capsule";
+
   return (
     <div className="min-h-screen bg-background relative">
 
@@ -839,17 +1042,27 @@ export default function CapsuleBuilder() {
                   {sealError}
                 </div>
               )}
+
+              {servicePaymentError && (
+                <div className="p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
+                  {servicePaymentError}
+                </div>
+              )}
             </div>
 
             <div className="space-y-3">
               <Button
-                disabled={!canSeal}
-                onClick={handleSealClick}
+                disabled={isCreateDisabled}
+                onClick={
+                  servicePaymentState === "paid"
+                    ? handleFinalCreateClick
+                    : handleFirstCreateClick
+                }
                 className={[
                   "w-full h-14 text-lg font-display tracking-widest transition-all active:scale-[0.98]",
-                  canSeal
-                    ? "bg-emerald-600 hover:bg-emerald-500 text-white"
-                    : "bg-muted text-muted-foreground cursor-not-allowed",
+                  isCreateDisabled
+                    ? "bg-muted text-muted-foreground cursor-not-allowed"
+                    : "bg-emerald-600 hover:bg-emerald-500 text-white",
                 ].join(" ")}
               >
                 {isPreparing ? (
@@ -859,7 +1072,7 @@ export default function CapsuleBuilder() {
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    CREATE CAPSULE
+                    {primaryButtonLabel}
                   </div>
                 )}
               </Button>

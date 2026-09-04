@@ -5,7 +5,10 @@
  *
  * Active flow:
  *   paymentIntentId -> immutable quote -> Solana USDC payment
- *   -> server verification -> Creator Credit -> entitlement -> /create
+ *   -> server verification -> Creator Credit -> grant-credit
+ *
+ * When stopAfterCredit=true, the modal stops after grant-credit and
+ * returns control to the caller without reserving lifecycle.
  *
  * This modal MUST NOT:
  * - calculate authoritative price
@@ -78,9 +81,12 @@ interface PaymentModalProps {
   unlockAt: number | null
   protocolAccepted: boolean
   creatorIdentityId?: string | null
+  stopAfterCredit?: boolean
   onCreditReady?: (result: {
     status: string
+    creatorIdentityId?: string
     creatorCreditId?: string
+    account?: string
     paymentIntentId?: string
   }) => void
   onReserveReady?: (result: {
@@ -127,6 +133,7 @@ export function PaymentModal({
   unlockAt,
   protocolAccepted,
   creatorIdentityId,
+  stopAfterCredit = false,
   onCreditReady,
   onReserveReady,
 }: PaymentModalProps) {
@@ -462,11 +469,18 @@ export function PaymentModal({
       setIsProcessing(false)
       onCreditReady?.({
         status,
+        creatorIdentityId: effectiveCreatorIdentityId,
         creatorCreditId: grantData.creatorCreditId,
+        account: currentAccount,
         paymentIntentId: quote.paymentIntentId,
       })
 
       if (status !== "available" || !grantData.creatorCreditId) {
+        return
+      }
+
+      if (stopAfterCredit) {
+        setPhase("available")
         return
       }
 
@@ -609,6 +623,8 @@ export function PaymentModal({
               {phase === "quoting" && "Requesting service quote..."}
               {phase === "quote_ready" && "Quote ready"}
               {phase === "connecting_wallet" && "Connecting wallet..."}
+              {phase === "verifying_identity" && "Verifying wallet..."}
+              {phase === "wallet_verified" && "Wallet verified"}
               {phase === "confirming" && "Awaiting wallet confirmation..."}
               {phase === "verifying" && "Verifying payment..."}
               {phase === "available" && "Creator Credit AVAILABLE"}

@@ -58,6 +58,7 @@ export function LandingPaymentGateProvider({
         unlockAt={null}
         protocolAccepted={true}
         creatorIdentityId={null}
+        stopAfterCredit
         onCreditReady={({ paymentIntentId }) => {
           if (paymentIntentId) {
             onEntitlementReady?.(paymentIntentId)
