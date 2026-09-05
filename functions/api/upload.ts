@@ -51,7 +51,7 @@ interface UploadEnv extends ExecutorEnv {
     get(key: string): Promise<string | null>;
     put(key: string, value: string): Promise<void>;
   };
-  CREDIT_OPERATION_COORDINATOR: {
+  CREDIT_OP_COORDINATOR: {
     fetch(request: Request): Promise<Response>;
   };
 }
@@ -199,7 +199,7 @@ export const onRequestPost = async (
     return fail(origin, 503, "STORAGE_UNAVAILABLE");
   }
 
-  if (!env?.PUBLICATION_VERIFICATIONS || !env?.CREDIT_OPERATION_COORDINATOR) {
+  if (!env?.PUBLICATION_VERIFICATIONS || !env?.CREDIT_OP_COORDINATOR) {
     return fail(origin, 503, "STORAGE_UNAVAILABLE");
   }
 
@@ -432,7 +432,7 @@ export const onRequestPost = async (
 
     let claimResult: { ok: boolean; outcome: string; status: string; creatorCreditId: string; lifecycleId: string | null; revision: number };
     try {
-      const claimResponse = await env.CREDIT_OPERATION_COORDINATOR.fetch(
+      const claimResponse = await env.CREDIT_OP_COORDINATOR.fetch(
         new Request("http://localhost", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -622,7 +622,7 @@ export const onRequestPost = async (
 
             if (isExplicitIrysRejection) {
               try {
-                await env.CREDIT_OPERATION_COORDINATOR.fetch(
+                await env.CREDIT_OP_COORDINATOR.fetch(
                   new Request("http://localhost", {
                     method: "POST",
                     headers: { "content-type": "application/json" },

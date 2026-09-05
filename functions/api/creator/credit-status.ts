@@ -210,7 +210,14 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   if (lifecycleId) {
     const lifecycleRaw = await context.env.CREATOR_CREDITS.get(`creator:credit:lifecycle:${authenticatedCreatorIdentityId}:${lifecycleId}`);
     if (lifecycleRaw) {
-      boundLifecycleId = lifecycleRaw;
+      try {
+        const lifecycleRecord = JSON.parse(lifecycleRaw) as { id?: unknown };
+        if (typeof lifecycleRecord.id === "string") {
+          boundLifecycleId = lifecycleRecord.id;
+        }
+      } catch {
+        // fail closed below
+      }
     }
 
     if (!boundLifecycleId || boundLifecycleId !== creatorCreditId) {

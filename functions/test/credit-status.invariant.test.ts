@@ -76,7 +76,16 @@ function seedCredit(
   if (record.lifecycleId) {
     env.CREATOR_CREDITS.put(
       `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:${record.lifecycleId}`,
-      CREATOR_CREDIT_ID
+      JSON.stringify({
+        id: CREATOR_CREDIT_ID,
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        status,
+        capsuleId: "capsule-1",
+        lifecycleId: record.lifecycleId,
+        revision: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
     );
   }
 }
@@ -155,6 +164,47 @@ describe("POST /api/creator/credit-status", () => {
     seedCredit(env, "CONSUMING");
 
     const res = await postCreditStatus(env, validRealSignaturePayload({ lifecycleId: "wrong-lifecycle" }));
+
+    expect(res.status).toBe(403);
+    expect(res.payload.error).toBe("LIFECYCLE_MISMATCH");
+  });
+
+  it("CONSUMING + lifecycle index bound to foreign credit → 403", async () => {
+    const env = buildEnv();
+    seedChallenge(env, "challenge-valid", Date.now() + 60_000);
+    seedIdentity(env, CREATOR_IDENTITY_ID, "0xd5a9291fA9018b2168F9c5c785e4B7BbeCA51a7f");
+    seedCredit(env, "CONSUMING");
+    env.CREATOR_CREDITS.put(
+      `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:${LIFE_CYCLE_ID}`,
+      JSON.stringify({
+        id: "credit-other",
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        status: "CONSUMING",
+        capsuleId: "capsule-1",
+        lifecycleId: LIFE_CYCLE_ID,
+        revision: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+    );
+
+    const res = await postCreditStatus(env, validRealSignaturePayload({ lifecycleId: LIFE_CYCLE_ID }));
+
+    expect(res.status).toBe(403);
+    expect(res.payload.error).toBe("LIFECYCLE_MISMATCH");
+  });
+
+  it("CONSUMING + corrupt lifecycle index payload → 403", async () => {
+    const env = buildEnv();
+    seedChallenge(env, "challenge-valid", Date.now() + 60_000);
+    seedIdentity(env, CREATOR_IDENTITY_ID, "0xd5a9291fA9018b2168F9c5c785e4B7BbeCA51a7f");
+    seedCredit(env, "CONSUMING");
+    env.CREATOR_CREDITS.put(
+      `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:${LIFE_CYCLE_ID}`,
+      "not-json"
+    );
+
+    const res = await postCreditStatus(env, validRealSignaturePayload({ lifecycleId: LIFE_CYCLE_ID }));
 
     expect(res.status).toBe(403);
     expect(res.payload.error).toBe("LIFECYCLE_MISMATCH");

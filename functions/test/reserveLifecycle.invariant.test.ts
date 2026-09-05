@@ -103,7 +103,16 @@ function seedCredit(env: ReserveEnv, status: string) {
   );
   env.CREATOR_CREDITS.put(
     `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:${LIFE_CYCLE_ID}`,
-    CREATOR_CREDIT_ID
+    JSON.stringify({
+      id: CREATOR_CREDIT_ID,
+      creatorIdentityId: CREATOR_IDENTITY_ID,
+      status,
+      capsuleId: CAPSULE_ID,
+      lifecycleId: status === "CONSUMING" ? LIFE_CYCLE_ID : null,
+      revision: 1,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    })
   );
 }
 
@@ -159,7 +168,16 @@ describe("Reserve lifecycle boundary", () => {
     seedCredit(env, "CONSUMING");
     env.CREATOR_CREDITS.put(
       `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:other-lifecycle`,
-      CREATOR_CREDIT_ID
+      JSON.stringify({
+        id: CREATOR_CREDIT_ID,
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        status: "CONSUMING",
+        capsuleId: CAPSULE_ID,
+        lifecycleId: "other-lifecycle",
+        revision: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
     );
     env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: false, outcome: "ALREADY_CONSUMING", httpStatus: 409 });
 
@@ -213,9 +231,43 @@ describe("Reserve lifecycle boundary", () => {
     expect((await res.json()).error).toBe("CREATOR_MISMATCH");
   });
 
-  it("REJECTS forged lifecycleId without binding", async () => {
+  it("REJECTS lifecycle index bound to a foreign credit", async () => {
     const env = buildEnv();
     seedCredit(env, "AVAILABLE");
+    env.CREATOR_CREDITS.put(
+      `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:forged-lifecycle`,
+      JSON.stringify({
+        id: "credit-other",
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        status: "AVAILABLE",
+        capsuleId: CAPSULE_ID,
+        lifecycleId: "forged-lifecycle",
+        revision: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+    );
+
+    const res = await reserveLifecyclePost(
+      buildContext(env, {
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        creatorCreditId: CREATOR_CREDIT_ID,
+        capsuleId: CAPSULE_ID,
+        lifecycleId: "forged-lifecycle",
+      })
+    );
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("LIFECYCLE_MISMATCH");
+  });
+
+  it("REJECTS corrupt lifecycle index payload", async () => {
+    const env = buildEnv();
+    seedCredit(env, "AVAILABLE");
+    env.CREATOR_CREDITS.put(
+      `creator:credit:lifecycle:${CREATOR_IDENTITY_ID}:forged-lifecycle`,
+      "not-json"
+    );
 
     const res = await reserveLifecyclePost(
       buildContext(env, {

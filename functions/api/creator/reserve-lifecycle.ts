@@ -171,8 +171,24 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   }
 
   const lifecycleRaw = await bindings.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
-  if (lifecycleRaw !== null && lifecycleRaw !== creatorCreditId) {
-    return fail(origin, 409, "LIFECYCLE_MISMATCH");
+  if (lifecycleRaw !== null) {
+    let boundCreditId: string | null = null;
+    let boundIdentityId: string | null = null;
+    try {
+      const record = JSON.parse(lifecycleRaw) as { id?: unknown; creatorIdentityId?: unknown };
+      if (typeof record.id === "string") boundCreditId = record.id;
+      if (typeof record.creatorIdentityId === "string") boundIdentityId = record.creatorIdentityId;
+    } catch {
+      // fail closed below
+    }
+    if (
+      boundCreditId === null ||
+      boundCreditId !== creatorCreditId ||
+      boundIdentityId === null ||
+      boundIdentityId !== creatorIdentityId
+    ) {
+      return fail(origin, 409, "LIFECYCLE_MISMATCH");
+    }
   }
 
   if (creditRecord.status === "CONSUMING") {
