@@ -171,7 +171,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   }
 
   const lifecycleRaw = await bindings.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
-  if (!lifecycleRaw || lifecycleRaw !== creatorCreditId) {
+  if (lifecycleRaw !== null && lifecycleRaw !== creatorCreditId) {
     return fail(origin, 409, "LIFECYCLE_MISMATCH");
   }
 
