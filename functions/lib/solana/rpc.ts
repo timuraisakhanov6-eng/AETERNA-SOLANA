@@ -1,21 +1,27 @@
 /**
  * AETERNA — Solana JSON-RPC wrapper
  *
- * Server-only helper for Phase 2B storage-payment verification.
+ * Server-only helper for storage-payment verification.
  *
- * Uses Alchemy Solana Mainnet as the primary RPC provider.
+ * Uses the configured Solana mainnet RPC URL.
+ * getTransaction uses finalized commitment with maxSupportedTransactionVersion = 0.
  */
 
 const RPC_TIMEOUT_MS = 10_000;
+const SOLANA_LOOKUP_RETRY_DELAY_MS = 500;
+const SOLANA_LOOKUP_MAX_ATTEMPTS = 4;
+const SOLANA_LOOKUP_GLOBAL_DEADLINE_MS = 3_000;
+
 let requestId = 1;
 
 export async function solanaJsonRpc<T>(
   url: string,
   method: string,
-  params: unknown[]
+  params: unknown[],
+  timeoutMs = RPC_TIMEOUT_MS
 ): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const res = await fetch(url, {
@@ -58,15 +64,39 @@ export async function solanaJsonRpc<T>(
   }
 }
 
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function getSolanaTransaction(
   url: string,
   signature: string
 ): Promise<unknown> {
-  return solanaJsonRpc(url, "getTransaction", [
-    signature,
-    {
-      commitment: "finalized",
-      maxSupportedTransactionVersion: 0,
-    },
-  ]);
+  const deadline = Date.now() + SOLANA_LOOKUP_GLOBAL_DEADLINE_MS;
+
+  for (let attempt = 0; attempt < SOLANA_LOOKUP_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(SOLANA_LOOKUP_RETRY_DELAY_MS, remaining));
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+
+    const perRequestTimeout = Math.max(0, Math.min(RPC_TIMEOUT_MS, remaining));
+    const result = await solanaJsonRpc(url, "getTransaction", [
+      signature,
+      {
+        commitment: "finalized",
+        maxSupportedTransactionVersion: 0,
+      },
+    ], perRequestTimeout);
+
+    if (result !== null && result !== undefined) {
+      return result;
+    }
+  }
+
+  return null;
 }
