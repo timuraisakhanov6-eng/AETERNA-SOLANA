@@ -26,11 +26,15 @@ function createFakeStorage(): FakeStorage {
 
 interface TestEnv {
   CREATOR_CREDITS: FakeStorage;
+  PUBLICATION_VERIFICATIONS: FakeStorage;
+  SEAL_VERIFICATIONS: FakeStorage;
 }
 
 function createEnv(): TestEnv {
   return {
     CREATOR_CREDITS: createFakeStorage(),
+    PUBLICATION_VERIFICATIONS: createFakeStorage(),
+    SEAL_VERIFICATIONS: createFakeStorage(),
   };
 }
 
@@ -180,5 +184,111 @@ describe("CreditOperationCoordinator", () => {
     expect(result.ok).toBe(true);
     expect(result.outcome).toBe("RETURN_EXISTING");
     expect(result.status).toBe("CONSUMING");
+  });
+
+  it("does not restore a credit whose publication is VERIFIED even when the request claims NOT_VERIFIED", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord({ status: "CONSUMING", lifecycleId: "lifecycle-1" }));
+    await post(coordinator, { op: "reserve", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+
+    env.PUBLICATION_VERIFICATIONS.data.set(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", state: "VERIFIED" })
+    );
+
+    const result = await post(coordinator, { op: "recover", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", publicationState: "NOT_VERIFIED", sealState: "NOT_VERIFIED" });
+    expect(result.ok).toBe(true);
+    expect(result.outcome).toBe("PUBLICATION_VERIFIED_AWAITING_FINALIZATION");
+    expect(result.status).toBe("CONSUMING");
+  });
+
+  it("does not restore a credit whose seal is VERIFIED", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord({ status: "CONSUMING", lifecycleId: "lifecycle-1" }));
+    await post(coordinator, { op: "reserve", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+
+    env.SEAL_VERIFICATIONS.data.set(
+      "creator:seal:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", state: "VERIFIED" })
+    );
+
+    const result = await post(coordinator, { op: "recover", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", publicationState: "NOT_VERIFIED", sealState: "NOT_VERIFIED" });
+    expect(result.ok).toBe(true);
+    expect(result.outcome).toBe("SEAL_VERIFIED_AWAITING_FINALIZATION");
+    expect(result.status).toBe("CONSUMING");
+  });
+
+  it("keeps an in-flight publication claim blocking recovery while publication is PENDING", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord({ status: "CONSUMING", lifecycleId: "lifecycle-1" }));
+    await post(coordinator, { op: "reserve", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+    await post(coordinator, { op: "vault-publication-claim", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+
+    env.PUBLICATION_VERIFICATIONS.data.set(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", state: "PENDING" })
+    );
+
+    const result = await post(coordinator, { op: "recover", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", publicationState: "NOT_VERIFIED", sealState: "NOT_VERIFIED" });
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe("PUBLICATION_CLAIM_IN_FLIGHT");
+    expect(result.status).toBe("CONSUMING");
+  });
+
+  it("restores the credit after an authorized explicit publication failure despite an open claim", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord({ status: "CONSUMING", lifecycleId: "lifecycle-1" }));
+    await post(coordinator, { op: "reserve", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+    await post(coordinator, { op: "vault-publication-claim", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+
+    const failure = await post(coordinator, { op: "vault-publication-claim", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", outcome: "PUBLICATION_EXPLICIT_FAILURE" });
+    expect(failure.ok).toBe(false);
+    expect(failure.outcome).toBe("VAULT_PUBLICATION_EXPLICIT_FAILURE");
+
+    const result = await post(coordinator, { op: "recover", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", publicationState: "NOT_VERIFIED", sealState: "NOT_VERIFIED" });
+    expect(result.ok).toBe(true);
+    expect(result.outcome).toBe("ABORT_AND_RESTORE_AVAILABLE");
+    expect(result.status).toBe("AVAILABLE");
+  });
+
+  it("keeps a claimed credit recoverable once publication reaches VERIFIED (no permanent claim dead-end)", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord({ status: "CONSUMING", lifecycleId: "lifecycle-1" }));
+    await post(coordinator, { op: "reserve", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+    await post(coordinator, { op: "vault-publication-claim", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+
+    // Publication completes AFTER the claim was taken.
+    env.PUBLICATION_VERIFICATIONS.data.set(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", state: "VERIFIED" })
+    );
+
+    const result = await post(coordinator, { op: "recover", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", publicationState: "NOT_VERIFIED", sealState: "NOT_VERIFIED" });
+    expect(result.ok).toBe(true);
+    expect(result.outcome).toBe("PUBLICATION_VERIFIED_AWAITING_FINALIZATION");
+    expect(result.status).toBe("CONSUMING");
+  });
+
+  it("treats corrupt verification records as NOT_VERIFIED and still blocks restore on an in-flight claim", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord({ status: "CONSUMING", lifecycleId: "lifecycle-1" }));
+    await post(coordinator, { op: "reserve", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+    await post(coordinator, { op: "vault-publication-claim", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+
+    env.PUBLICATION_VERIFICATIONS.data.set("creator:publication:lifecycle-1", "not-json");
+
+    const result = await post(coordinator, { op: "recover", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", publicationState: "VERIFIED", sealState: "VERIFIED" });
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe("PUBLICATION_CLAIM_IN_FLIGHT");
+  });
+
+  it("does not mark an explicit publication failure without passing binding checks", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord({ status: "CONSUMING", lifecycleId: "lifecycle-1" }));
+    await post(coordinator, { op: "reserve", creatorCreditId: "credit-1", creatorIdentityId: "identity-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" });
+
+    const result = await post(coordinator, { op: "vault-publication-claim", creatorCreditId: "credit-1", creatorIdentityId: "identity-2", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", outcome: "PUBLICATION_EXPLICIT_FAILURE" });
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe("LIFECYCLE_NOT_FOUND");
   });
 });

@@ -7,6 +7,15 @@ compatibility_flags = ["nodejs_compat"]
 binding = "CREATOR_CREDITS"
 id = "d79dd0c22b7049bf9986f3911168ce15"
 
+# Authoritative verification state read inside recovery decisions
+[[kv_namespaces]]
+binding = "PUBLICATION_VERIFICATIONS"
+id = "556eff4319894b58b3fac0638950ec71"
+
+[[kv_namespaces]]
+binding = "SEAL_VERIFICATIONS"
+id = "7e0a1295d9e54b8393e081586363ee43"
+
 [durable_objects]
 bindings = [
   { name = "CREDIT_OP_COORDINATOR", class_name = "CreditOperationCoordinator" }

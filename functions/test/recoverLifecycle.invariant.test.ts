@@ -32,13 +32,19 @@ function buildEnv(overrides?: Partial<RecoverEnv>): RecoverEnv {
 
 function createFakeCoordinator() {
   const outcomes = new Map<string, { ok: boolean; outcome?: string; httpStatus?: number }>();
+  const lastRequestBody: Record<string, unknown> = {};
   return {
     idFromName(_name: string): { id: string } {
       return { id: "coordinator-1" };
     },
     get(_binding: { id: string }) {
       return {
-        async fetch(_request: Request) {
+        async fetch(request: Request) {
+          try {
+            Object.assign(lastRequestBody, (await request.json()) as Record<string, unknown>);
+          } catch {
+            // ignore parse errors in fake coordinator
+          }
           const configured = outcomes.get("default");
           if (!configured) {
             return new Response(JSON.stringify({ ok: false, error: "NO_OUTCOME" }), { status: 500 });
@@ -64,6 +70,7 @@ function createFakeCoordinator() {
         outcomes.set("default", outcome);
       }
     },
+    lastRequestBody,
   };
 }
 
@@ -178,5 +185,29 @@ describe("Recovery authority", () => {
     const recovery = await res.json();
     expect(recovery.outcome).toBe("ABORT_AND_RESTORE_AVAILABLE");
     expect(recovery.status).toBe("ABORT_AND_RESTORE_AVAILABLE");
+  });
+
+  it("does not send client-derived publication/seal state to the coordinator", async () => {
+    const env = buildEnv();
+    seedLifecycle(env, "CONSUMING");
+    env.CREDIT_OP_COORDINATOR.setOutcome("default", { ok: true, outcome: "RESUME", httpStatus: 200 });
+
+    await recoverPost(
+      buildContext(env, {
+        creatorIdentityId: "creator-1",
+        lifecycleId: "lifecycle-1",
+        capsuleId: "capsule-1",
+        publicationState: "VERIFIED",
+        sealState: "VERIFIED",
+      })
+    );
+
+    const sent = env.CREDIT_OP_COORDINATOR.lastRequestBody;
+    expect("publicationState" in sent).toBe(false);
+    expect("sealState" in sent).toBe(false);
+    expect(sent.op).toBe("recover");
+    expect(sent.creatorIdentityId).toBe("creator-1");
+    expect(sent.lifecycleId).toBe("lifecycle-1");
+    expect(sent.capsuleId).toBe("capsule-1");
   });
 });

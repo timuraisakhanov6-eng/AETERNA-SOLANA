@@ -40,7 +40,7 @@ type Operation =
   | { op: "reserve"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string }
   | { op: "finalize"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationVerified: boolean; sealVerified: boolean }
   | { op: "recover"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationState: string; sealState: string }
-  | { op: "vault-publication-claim"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string }
+  | { op: "vault-publication-claim"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; outcome?: string }
   | { op: "read"; creatorCreditId: string };
 
 interface CoordinatorEnv {
@@ -48,6 +48,12 @@ interface CoordinatorEnv {
     get(key: string): Promise<string | null>;
     put(key: string, value: string): Promise<void>;
     delete(key: string): Promise<void>;
+  };
+  PUBLICATION_VERIFICATIONS: {
+    get(key: string): Promise<string | null>;
+  };
+  SEAL_VERIFICATIONS: {
+    get(key: string): Promise<string | null>;
   };
 }
 
@@ -246,14 +252,47 @@ async function handleReserve(state: DurableObjectState, env: CoordinatorEnv, req
   });
 }
 
+/**
+ * Authoritative verification state is read inside the Durable Object
+ * immediately before any recovery mutation. Corrupt/unparseable
+ * records fail closed to NOT_VERIFIED — they must never enable a
+ * restore.
+ */
+async function readAuthoritativeState(
+  env: CoordinatorEnv,
+  lifecycleId: string
+): Promise<{ publicationState: string; sealState: string }> {
+  const resolve = async (raw: string | null): Promise<string> => {
+    if (!raw) return "NOT_VERIFIED";
+    try {
+      const record = JSON.parse(raw) as { state?: unknown };
+      if (record.state === "VERIFIED") return "VERIFIED";
+      if (record.state === "PENDING") return "PENDING";
+      return "NOT_VERIFIED";
+    } catch {
+      return "NOT_VERIFIED";
+    }
+  };
+
+  const [publicationState, sealState] = await Promise.all([
+    resolve(await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${lifecycleId}`)),
+    resolve(await env.SEAL_VERIFICATIONS.get(`creator:seal:${lifecycleId}`)),
+  ]);
+
+  return { publicationState, sealState };
+}
+
 async function handleVaultPublicationClaim(state: DurableObjectState, env: CoordinatorEnv, request: Operation & { op: "vault-publication-claim" }): Promise<Response> {
   const { creatorCreditId, creatorIdentityId, lifecycleId, capsuleId } = request;
+  const explicitFailure = request.outcome === "PUBLICATION_EXPLICIT_FAILURE";
 
   const idempotencyKey = opKey(creatorCreditId, "vault-publication-claim", lifecycleId);
   const existing = await getOpResult(state, idempotencyKey);
 
   if (existing && existing.creatorCreditId === creatorCreditId && existing.lifecycleId === lifecycleId) {
-    if (existing.outcome === "VAULT_PUBLICATION_EXPLICIT_FAILURE") {
+    if (explicitFailure && existing.outcome !== "VAULT_PUBLICATION_EXPLICIT_FAILURE") {
+      // fall through: authorized explicit failure overwrites the open claim
+    } else if (existing.outcome === "VAULT_PUBLICATION_EXPLICIT_FAILURE") {
       return failureResponse(
         existing.outcome,
         409,
@@ -262,16 +301,16 @@ async function handleVaultPublicationClaim(state: DurableObjectState, env: Coord
         existing.status,
         existing.revision
       );
+    } else {
+      return successResponse({
+        ok: true,
+        outcome: existing.outcome,
+        status: existing.status,
+        creatorCreditId,
+        lifecycleId,
+        revision: existing.revision,
+      });
     }
-
-    return successResponse({
-      ok: true,
-      outcome: existing.outcome,
-      status: existing.status,
-      creatorCreditId,
-      lifecycleId,
-      revision: existing.revision,
-    });
   }
 
   const credit = await getCreditRecord(state, creatorCreditId);
@@ -313,6 +352,19 @@ async function handleVaultPublicationClaim(state: DurableObjectState, env: Coord
       revision: credit.revision,
     });
     return failureResponse("CAPSULE_MISMATCH", 409, creatorCreditId, null, credit.status, credit.revision);
+  }
+
+  if (explicitFailure) {
+    const claim: OpResult = {
+      ok: false,
+      outcome: "VAULT_PUBLICATION_EXPLICIT_FAILURE",
+      status: credit.status,
+      creatorCreditId,
+      lifecycleId,
+      revision: credit.revision,
+    };
+    await setOpResult(state, idempotencyKey, claim);
+    return failureResponse("VAULT_PUBLICATION_EXPLICIT_FAILURE", 409, creatorCreditId, lifecycleId, credit.status, credit.revision);
   }
 
   const claim: OpResult = {
@@ -455,7 +507,7 @@ async function handleFinalize(state: DurableObjectState, env: CoordinatorEnv, re
 }
 
 async function handleRecover(state: DurableObjectState, env: CoordinatorEnv, request: Operation & { op: "recover" }): Promise<Response> {
-  const { creatorCreditId, creatorIdentityId, lifecycleId, capsuleId, publicationState, sealState } = request;
+  const { creatorCreditId, creatorIdentityId, lifecycleId, capsuleId } = request;
 
   const credit = await getCreditRecord(state, creatorCreditId);
   if (!credit) {
@@ -513,10 +565,21 @@ async function handleRecover(state: DurableObjectState, env: CoordinatorEnv, req
     });
   }
 
-  if (publicationState === "VERIFIED" && sealState === "VERIFIED") {
+  /**
+   * Authoritative verification state is read INSIDE the DO, immediately
+   * before the recovery decision. Request-supplied publication/seal
+   * states are never authority (canonical §11.2, §7.1): reading here
+   * closes the race where verification completes between an
+   * endpoint-side read and this mutation.
+   */
+  const authoritative = await readAuthoritativeState(env, lifecycleId);
+
+  // A VERIFIED publication/seal owns the credit toward finalization:
+  // recovery MUST NOT restore it to AVAILABLE (canonical §7.1).
+  if (authoritative.publicationState === "VERIFIED") {
     await setOpResult(state, idempotencyKey, {
       ok: true,
-      outcome: "RETURN_EXISTING",
+      outcome: "PUBLICATION_VERIFIED_AWAITING_FINALIZATION",
       status: credit.status,
       creatorCreditId,
       lifecycleId,
@@ -524,7 +587,26 @@ async function handleRecover(state: DurableObjectState, env: CoordinatorEnv, req
     });
     return successResponse({
       ok: true,
-      outcome: "RETURN_EXISTING",
+      outcome: "PUBLICATION_VERIFIED_AWAITING_FINALIZATION",
+      status: credit.status,
+      creatorCreditId,
+      lifecycleId,
+      revision: credit.revision,
+    });
+  }
+
+  if (authoritative.sealState === "VERIFIED") {
+    await setOpResult(state, idempotencyKey, {
+      ok: true,
+      outcome: "SEAL_VERIFIED_AWAITING_FINALIZATION",
+      status: credit.status,
+      creatorCreditId,
+      lifecycleId,
+      revision: credit.revision,
+    });
+    return successResponse({
+      ok: true,
+      outcome: "SEAL_VERIFIED_AWAITING_FINALIZATION",
       status: credit.status,
       creatorCreditId,
       lifecycleId,

@@ -19,12 +19,6 @@ interface RecoverLifecycleEnv {
   CREATOR_CREDITS: {
     get(key: string): Promise<string | null>;
   };
-  PUBLICATION_VERIFICATIONS: {
-    get(key: string): Promise<string | null>;
-  };
-  SEAL_VERIFICATIONS: {
-    get(key: string): Promise<string | null>;
-  };
   CREDIT_OP_COORDINATOR: {
     idFromName(name: string): { id: string };
     get(binding: { id: string }): DurableObjectStub;
@@ -128,8 +122,6 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   const bindings = env as {
     CREATOR_CREDITS: { get(key: string): Promise<string | null> };
-    PUBLICATION_VERIFICATIONS: { get(key: string): Promise<string | null> };
-    SEAL_VERIFICATIONS: { get(key: string): Promise<string | null> };
     CREDIT_OP_COORDINATOR: {
       idFromName(name: string): { id: string };
       get(binding: { id: string }): DurableObjectStub;
@@ -142,10 +134,12 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   }
   const lifecycle = JSON.parse(lifecycleRaw) as { id: string; status: string };
 
-  const publicationRaw = await bindings.PUBLICATION_VERIFICATIONS.get(`creator:publication:${lifecycleId}`);
-  const publication = publicationRaw ? (JSON.parse(publicationRaw) as { state: string }) : { state: "NOT_VERIFIED" };
-  const sealRaw = await bindings.SEAL_VERIFICATIONS.get(`creator:seal:${lifecycleId}`);
-  const seal = sealRaw ? (JSON.parse(sealRaw) as { state: string }) : { state: "NOT_VERIFIED" };
+  /**
+   * Authoritative publication/seal state is established INSIDE the
+   * Durable Object immediately before the recovery decision. The
+   * endpoint deliberately does NOT pre-read verification state or
+   * accept client-derived state as authority.
+   */
 
   const coordinatorId = bindings.CREDIT_OP_COORDINATOR.idFromName(lifecycle.id);
   const coordinator = bindings.CREDIT_OP_COORDINATOR.get(coordinatorId);
@@ -160,8 +154,6 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
         creatorIdentityId,
         lifecycleId,
         capsuleId,
-        publicationState: publication.state,
-        sealState: seal.state,
       }),
     })
   );
