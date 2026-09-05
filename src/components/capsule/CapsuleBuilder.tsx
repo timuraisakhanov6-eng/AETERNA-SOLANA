@@ -423,12 +423,17 @@ export default function CapsuleBuilder({
       throw new Error("Creator identity is required to reserve lifecycle.");
     }
 
+    if (!creatorCreditId) {
+      throw new Error("Creator credit is required to reserve lifecycle.");
+    }
+
     const response = await fetch("/api/creator/reserve-lifecycle", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        capsuleId: prepared.prepared.capsuleId,
         creatorIdentityId,
+        creatorCreditId,
+        capsuleId: prepared.prepared.capsuleId,
         lifecycleId: candidateLifecycleId,
       }),
     })
