@@ -18,6 +18,7 @@
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../lib/rateLimit";
+import { sha256 } from "../lib/sha256";
 import { getTrustedTime } from "./time";
 import {
   CAPSULE_ID_REGEX,
@@ -502,6 +503,35 @@ export const onRequestPost = async (
 
     if (computedHex !== vaultSha256) {
       return fail(origin, 400, "VAULT_HASH_MISMATCH");
+    }
+  }
+
+  /* 10.5 Chunk duplicate recognition — BEFORE any publication.
+     chunkId is the SHA-256 of the chunk ciphertext (content-addressed),
+     so a re-submission after a lost response can be served idempotently
+     from the Chunk Pointer Registry: same digest → same content →
+     return the existing pointer without publishing again. A different
+     digest under an existing chunkId is a substitution attempt and
+     fails closed. Ownership/token/capsule checks above already passed;
+     the registry is keyed by the token-resolved capsuleId, so no
+     cross-capsule access is possible here. */
+  if (chunkId !== undefined) {
+    const existingChunkPointers = await getChunkPointerMap(env, resolvedCapsuleId);
+    const existingPointer = existingChunkPointers[chunkId];
+
+    if (existingPointer !== undefined) {
+      const duplicateDigest = await sha256(bytes);
+
+      if (duplicateDigest !== chunkId) {
+        return fail(origin, 409, "CHUNK_CONTENT_MISMATCH");
+      }
+
+      assertStoragePointer(existingPointer);
+
+      return new Response(JSON.stringify({ ok: true, storagePointer: existingPointer }), {
+        status: 200,
+        headers: baseHeaders(origin),
+      });
     }
   }
 
