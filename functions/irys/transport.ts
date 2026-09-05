@@ -42,7 +42,7 @@ import type { IrysRuntime, AtomicAmountLike, UploadTag, UploadReceipt } from "./
 // not pass this through createExecutorTransport()'s arguments (its
 // own IRYS_NODE_URL constant is dead code left over from the SDK
 // migration), so the transport owns it directly.
-const IRYS_NODE_URL = "https://node1.irys.xyz";
+export const IRYS_NODE_URL = "https://node1.irys.xyz";
 
 // Irys uploads for AETERNA are funded via Base Mainnet ETH — matches
 // wrangler.toml and the RPC/chain choice already made in executorHot.ts.

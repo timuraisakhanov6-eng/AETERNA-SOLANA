@@ -14,6 +14,7 @@
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
+import { IRYS_NODE_URL } from "../../irys/transport";
 import { getTrustedTime } from "../time";
 
 /* ================= ENV ================= */
@@ -142,6 +143,72 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
     .join("");
 }
 
+/* ================= IRYS NODE (PRIMARY AUTHORITY) =================
+ *
+ * Canonical §3.2/§5: the Irys Node/API is the primary authoritative
+ * source; gateways may only act as a secondary availability/content
+ * signal. Node confirmation here establishes:
+ *   - exact publication identifier confirmed by the authoritative
+ *     Irys source (the node is queried for the server-owned
+ *     expectedTxId, never for a client-supplied value);
+ *   - correct Irys network (node1.irys.xyz is the canonical mainnet
+ *     node constant already used by the project transport);
+ *   - artifact existence on the node.
+ * Gateways remain responsible for byte retrieval and the
+ * expectedVaultSha256 availability/hash signal.
+ * ================================================================ */
+
+type IrysNodeConfirmation = "CONFIRMED" | "ABSENT" | "UNAVAILABLE";
+
+const IRYS_NODE_TIMEOUT_MS = 8000;
+
+async function confirmTxOnIrysNode(expectedTxId: string): Promise<IrysNodeConfirmation> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), IRYS_NODE_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`${IRYS_NODE_URL}/tx/${expectedTxId}`, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+  } catch {
+    return "UNAVAILABLE";
+  }
+
+  if (res.status === 404) {
+    return "ABSENT";
+  }
+
+  if (!res.ok) {
+    return "UNAVAILABLE";
+  }
+
+  // If the node exposes the identifier in the response body, it must
+  // match the server-owned expectedTxId. A mismatched body is a
+  // protocol anomaly: fail closed as UNAVAILABLE (PENDING/retry),
+  // never as VERIFIED. Absence of an id field in the body is not
+  // treated as authoritative — the node-addressed 200 already
+  // confirms the exact identifier via the request path.
+  try {
+    const body = (await res.json()) as Record<string, unknown> | null;
+    if (
+      body &&
+      typeof body === "object" &&
+      typeof body["id"] === "string" &&
+      body["id"] !== expectedTxId
+    ) {
+      return "UNAVAILABLE";
+    }
+  } catch {
+    // Non-JSON body: the path-addressed 200 remains the confirmation.
+  }
+
+  return "CONFIRMED";
+}
+
 /* ================= ENDPOINT ================= */
 
 export async function onRequestOptions(context: EventContext<Record<string, unknown>, string, PublicationVerifyEnv>): Promise<Response> {
@@ -230,6 +297,47 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   if (clientPublicationId && clientPublicationId !== authoritativeTxId) {
     return fail(origin, 409, "PUBLICATION_ID_MISMATCH");
+  }
+
+  /* Primary authority: the Irys Node/API must confirm the exact
+     server-owned transaction before any gateway signal is consulted.
+     ABSENT → terminal REJECTED (fail-closed); UNAVAILABLE → PENDING
+     retryable 502. Gateways alone can never establish VERIFIED. */
+  const nodeConfirmation = await confirmTxOnIrysNode(authoritativeTxId);
+
+  if (nodeConfirmation === "ABSENT") {
+    const now = Date.now();
+    const rejected: PublicationVerificationRecord = {
+      lifecycleId,
+      capsuleId,
+      creatorIdentityId,
+      state: "REJECTED",
+      expectedTxId: authoritativeTxId,
+      expectedVaultSha256: null,
+      evidenceIds: record?.evidenceIds ?? [authoritativeTxId],
+      createdAt: record?.createdAt ?? now,
+      updatedAt: now,
+      rejectedAt: now,
+    };
+    await env.PUBLICATION_VERIFICATIONS.put(key, JSON.stringify(rejected));
+    return fail(origin, 409, "PUBLICATION_NOT_CONFIRMED");
+  }
+
+  if (nodeConfirmation === "UNAVAILABLE") {
+    const now = Date.now();
+    const updated: PublicationVerificationRecord = {
+      lifecycleId,
+      capsuleId,
+      creatorIdentityId,
+      state: "PENDING",
+      expectedTxId: authoritativeTxId,
+      expectedVaultSha256: record?.expectedVaultSha256 ?? null,
+      evidenceIds: record?.evidenceIds ?? [authoritativeTxId],
+      createdAt: record?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await env.PUBLICATION_VERIFICATIONS.put(key, JSON.stringify(updated));
+    return fail(origin, 502, "PUBLICATION_NODE_UNAVAILABLE");
   }
 
   let fetchedBytes: Uint8Array;

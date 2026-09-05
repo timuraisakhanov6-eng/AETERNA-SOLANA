@@ -33,6 +33,31 @@ function buildContext(env: PublicationVerifyEnv, body: unknown) {
   return makeEventContext({ request, env });
 }
 
+
+type NodeRoute = { status: number; body?: Record<string, unknown>; reject?: Error };
+
+/**
+ * Routes stubbed fetch: node1.irys.xyz requests hit the configured
+ * Node response; every other URL (gateways) falls through to the
+ * gateway mock.
+ */
+function stubNodeAndGateway(
+  mock: ReturnType<typeof vi.fn>,
+  node: NodeRoute,
+): void {
+  const routing = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).startsWith("https://node1.irys.xyz/")) {
+      if (node.reject) throw node.reject;
+      return new Response(JSON.stringify(node.body ?? { id: "authoritative-tx-1" }), {
+        status: node.status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return mock(input as RequestInfo, init);
+  });
+  vi.stubGlobal("fetch", routing);
+}
+
 describe("Publication verification boundary", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -74,7 +99,7 @@ describe("Publication verification boundary", () => {
     );
 
     const mock = vi.fn().mockRejectedValue(new Error("gateway unreachable"));
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200, reject: new Error("node unreachable") });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -120,7 +145,7 @@ describe("Publication verification boundary", () => {
     );
 
     const mock = vi.fn().mockRejectedValue(new Error("gateway unreachable"));
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200, reject: new Error("node unreachable") });
 
     const body = {
       creatorIdentityId: "creator-1",
@@ -240,7 +265,7 @@ describe("Publication verification boundary", () => {
         headers: { "content-length": String(payloadBytes.byteLength) },
       })
     );
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -299,7 +324,7 @@ describe("Publication verification boundary", () => {
         headers: { "content-length": "10" },
       })
     );
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -342,7 +367,7 @@ describe("Publication verification boundary", () => {
     );
 
     const mock = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -389,7 +414,7 @@ describe("Publication verification boundary", () => {
     );
 
     const mock = vi.fn().mockRejectedValue(new Error("network timeout"));
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -436,7 +461,7 @@ describe("Publication verification boundary", () => {
     );
 
     const mock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -488,7 +513,7 @@ describe("Publication verification boundary", () => {
         headers: { "content-length": "0" },
       })
     );
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -536,7 +561,7 @@ describe("Publication verification boundary", () => {
     );
 
     const mock = vi.fn();
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -586,7 +611,7 @@ describe("Publication verification boundary", () => {
     );
 
     const mock = vi.fn();
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -643,7 +668,7 @@ describe("Publication verification boundary", () => {
         headers: { "content-length": String(knownPayload.byteLength) },
       })
     );
-    vi.stubGlobal("fetch", mock);
+    stubNodeAndGateway(mock, { status: 200 });
 
     const context = buildContext(env, {
       creatorIdentityId: "creator-1",
@@ -661,5 +686,146 @@ describe("Publication verification boundary", () => {
     const storedRaw = await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:lifecycle-1`);
     const stored = JSON.parse(storedRaw!) as { expectedVaultSha256: string };
     expect(stored.expectedVaultSha256).toBe(expectedHash);
+  });
+
+  it("Node 404 marks the publication REJECTED without consulting gateways", async () => {
+    const env = buildEnv();
+    await env.CREATOR_CREDITS.put(
+      "creator:credit:lifecycle:creator-1:lifecycle-1",
+      JSON.stringify({ id: "credit-1", status: "CONSUMING", creatorIdentityId: "creator-1", capsuleId: "capsule-1" })
+    );
+    const now = Date.now();
+    await env.PUBLICATION_VERIFICATIONS.put(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", creatorIdentityId: "creator-1", state: "PENDING", expectedTxId: "authoritative-tx-1", expectedVaultSha256: null, evidenceIds: ["authoritative-tx-1"], createdAt: now, updatedAt: now })
+    );
+
+    const gatewayMock = vi.fn();
+    stubNodeAndGateway(gatewayMock, { status: 404 });
+
+    const res = await publicationVerifyPost(buildContext(env, { creatorIdentityId: "creator-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" }));
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("PUBLICATION_NOT_CONFIRMED");
+    expect(gatewayMock).not.toHaveBeenCalled();
+    const stored = JSON.parse((await env.PUBLICATION_VERIFICATIONS.get("creator:publication:lifecycle-1"))!) as { state: string };
+    expect(stored.state).toBe("REJECTED");
+  });
+
+  it("Node 5xx keeps PENDING and returns retryable 502", async () => {
+    const env = buildEnv();
+    await env.CREATOR_CREDITS.put(
+      "creator:credit:lifecycle:creator-1:lifecycle-1",
+      JSON.stringify({ id: "credit-1", status: "CONSUMING", creatorIdentityId: "creator-1", capsuleId: "capsule-1" })
+    );
+    const now = Date.now();
+    await env.PUBLICATION_VERIFICATIONS.put(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", creatorIdentityId: "creator-1", state: "PENDING", expectedTxId: "authoritative-tx-1", expectedVaultSha256: null, evidenceIds: ["authoritative-tx-1"], createdAt: now, updatedAt: now })
+    );
+
+    stubNodeAndGateway(vi.fn(), { status: 503 });
+
+    const res = await publicationVerifyPost(buildContext(env, { creatorIdentityId: "creator-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" }));
+
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toBe("PUBLICATION_NODE_UNAVAILABLE");
+    const stored = JSON.parse((await env.PUBLICATION_VERIFICATIONS.get("creator:publication:lifecycle-1"))!) as { state: string };
+    expect(stored.state).toBe("PENDING");
+  });
+
+  it("Node network failure keeps PENDING and returns retryable 502", async () => {
+    const env = buildEnv();
+    await env.CREATOR_CREDITS.put(
+      "creator:credit:lifecycle:creator-1:lifecycle-1",
+      JSON.stringify({ id: "credit-1", status: "CONSUMING", creatorIdentityId: "creator-1", capsuleId: "capsule-1" })
+    );
+    const now = Date.now();
+    await env.PUBLICATION_VERIFICATIONS.put(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", creatorIdentityId: "creator-1", state: "PENDING", expectedTxId: "authoritative-tx-1", expectedVaultSha256: null, evidenceIds: ["authoritative-tx-1"], createdAt: now, updatedAt: now })
+    );
+
+    stubNodeAndGateway(vi.fn(), { status: 200, reject: new Error("node unreachable") });
+
+    const res = await publicationVerifyPost(buildContext(env, { creatorIdentityId: "creator-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" }));
+
+    expect(res.status).toBe(502);
+    const stored = JSON.parse((await env.PUBLICATION_VERIFICATIONS.get("creator:publication:lifecycle-1"))!) as { state: string };
+    expect(stored.state).toBe("PENDING");
+  });
+
+  it("Node body id mismatch fails closed as UNAVAILABLE (never VERIFIED)", async () => {
+    const env = buildEnv();
+    await env.CREATOR_CREDITS.put(
+      "creator:credit:lifecycle:creator-1:lifecycle-1",
+      JSON.stringify({ id: "credit-1", status: "CONSUMING", creatorIdentityId: "creator-1", capsuleId: "capsule-1" })
+    );
+    const now = Date.now();
+    await env.PUBLICATION_VERIFICATIONS.put(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", creatorIdentityId: "creator-1", state: "PENDING", expectedTxId: "authoritative-tx-1", expectedVaultSha256: null, evidenceIds: ["authoritative-tx-1"], createdAt: now, updatedAt: now })
+    );
+
+    stubNodeAndGateway(vi.fn(), { status: 200, body: { id: "some-other-tx" } });
+
+    const res = await publicationVerifyPost(buildContext(env, { creatorIdentityId: "creator-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" }));
+
+    expect(res.status).toBe(502);
+    const stored = JSON.parse((await env.PUBLICATION_VERIFICATIONS.get("creator:publication:lifecycle-1"))!) as { state: string };
+    expect(stored.state).toBe("PENDING");
+    expect(stored.expectedVaultSha256).toBeNull();
+  });
+
+  it("Node-confirmed tx with gateways unavailable stays PENDING (gateway cannot be skipped)", async () => {
+    const env = buildEnv();
+    await env.CREATOR_CREDITS.put(
+      "creator:credit:lifecycle:creator-1:lifecycle-1",
+      JSON.stringify({ id: "credit-1", status: "CONSUMING", creatorIdentityId: "creator-1", capsuleId: "capsule-1" })
+    );
+    const now = Date.now();
+    await env.PUBLICATION_VERIFICATIONS.put(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", creatorIdentityId: "creator-1", state: "PENDING", expectedTxId: "authoritative-tx-1", expectedVaultSha256: null, evidenceIds: ["authoritative-tx-1"], createdAt: now, updatedAt: now })
+    );
+
+    const mock = vi.fn().mockRejectedValue(new Error("gateway unreachable"));
+    stubNodeAndGateway(mock, { status: 200 });
+
+    const res = await publicationVerifyPost(buildContext(env, { creatorIdentityId: "creator-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1" }));
+
+    expect(res.status).toBe(502);
+    const stored = JSON.parse((await env.PUBLICATION_VERIFICATIONS.get("creator:publication:lifecycle-1"))!) as { state: string };
+    expect(stored.state).toBe("PENDING");
+  });
+
+  it("forged client txId never reaches Node lookup as authority (409 before Node)", async () => {
+    const env = buildEnv();
+    await env.CREATOR_CREDITS.put(
+      "creator:credit:lifecycle:creator-1:lifecycle-1",
+      JSON.stringify({ id: "credit-1", status: "CONSUMING", creatorIdentityId: "creator-1", capsuleId: "capsule-1" })
+    );
+    const now = Date.now();
+    await env.PUBLICATION_VERIFICATIONS.put(
+      "creator:publication:lifecycle-1",
+      JSON.stringify({ lifecycleId: "lifecycle-1", capsuleId: "capsule-1", creatorIdentityId: "creator-1", state: "PENDING", expectedTxId: "authoritative-tx-1", expectedVaultSha256: null, evidenceIds: ["authoritative-tx-1"], createdAt: now, updatedAt: now })
+    );
+
+    const mock = vi.fn();
+    const routing = vi.fn(async (input: RequestInfo | URL) => {
+      // Even if the node WOULD confirm the forged tx, the lookup must
+      // use the server-owned expectedTxId — assert that here.
+      if (String(input).startsWith("https://node1.irys.xyz/")) {
+        expect(String(input)).toBe("https://node1.irys.xyz/tx/authoritative-tx-1");
+        return new Response(JSON.stringify({ id: "authoritative-tx-1" }), { status: 200 });
+      }
+      return mock(input as RequestInfo);
+    });
+    vi.stubGlobal("fetch", routing);
+
+    const res = await publicationVerifyPost(buildContext(env, { creatorIdentityId: "creator-1", lifecycleId: "lifecycle-1", capsuleId: "capsule-1", publicationId: "forged-tx" }));
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("PUBLICATION_ID_MISMATCH");
   });
 });
