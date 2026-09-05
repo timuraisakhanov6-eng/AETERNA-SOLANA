@@ -76,6 +76,7 @@ type LocationState = Readonly<{
   holdState: CapsuleHoldState;
   correlationTransactionId?: string | null;
   canonicalLifecycleId?: string | null;
+  creatorIdentityId?: string | null;
 }>;
 
 
@@ -231,6 +232,9 @@ export default function CapsuleHold() {
     params.get("lifecycleId") ??
     null;
 
+  const creatorIdentityId =
+    locationState?.creatorIdentityId ?? null;
+
 
   const holdStateRef =
     useRef<CapsuleHoldState | null | undefined>(undefined);
@@ -296,7 +300,8 @@ export default function CapsuleHold() {
 
     if (
       !holdState ||
-      !canonicalLifecycleId
+      !canonicalLifecycleId ||
+      !creatorIdentityId
     ) {
 
       navigate(
@@ -309,6 +314,7 @@ export default function CapsuleHold() {
   }, [
     holdState,
     canonicalLifecycleId,
+    creatorIdentityId,
     navigate,
   ]);
 
@@ -414,6 +420,7 @@ export default function CapsuleHold() {
     if (
       !holdState ||
       !canonicalLifecycleId ||
+      !creatorIdentityId ||
       startedRef.current ||
       error
     ) {
@@ -656,6 +663,10 @@ export default function CapsuleHold() {
 
                     uploadToken,
 
+                    canonicalLifecycleId,
+
+                    creatorIdentityId,
+
                     runtime,
 
                     chunkMetadata:
@@ -712,24 +723,48 @@ export default function CapsuleHold() {
             );
 
 
-          try {
+          // While finalization is pending, the prepared capsule and
+          // seal lock must survive: re-entry resolves holdState from
+          // sessionStorage and reaches the persisted-manifest reuse
+          // path, whose idempotent seal/verify + finalize completes
+          // the credit. Full success keeps the existing cleanup.
+          if (!result.finalizationPending) {
 
-            sessionStorage.removeItem(
-              "aeterna-prepared-capsule"
-            );
+            try {
 
-            sessionStorage.removeItem(
-              sealLockKey
-            );
+              sessionStorage.removeItem(
+                "aeterna-prepared-capsule"
+              );
 
-          } catch {
+              sessionStorage.removeItem(
+                sealLockKey
+              );
+
+            } catch {
         // ignore
       }
+
+          }
 
 
           /* ── STEP 7: redirect ── */
 
           setSealed(true);
+
+          // Finalization is idempotent server-side. A pending finalize
+          // after a successful seal never blocks the user: the credit
+          // completes on the next idempotent retry (re-entry or a later
+          // session) — never a failure screen for the sealed capsule.
+          if (result.finalizationPending) {
+            try {
+              sessionStorage.setItem(
+                `aeterna-finalize-pending:${result.capsuleId}`,
+                canonicalLifecycleId
+              );
+            } catch {
+              // Intentional no-op: marker is best-effort.
+            }
+          }
 
           // Post-seal lifecycle: the next capsule created in this tab must
           // receive a fresh capsuleId. resetCapsule() regenerates the
@@ -805,6 +840,7 @@ export default function CapsuleHold() {
   }, [
   holdState,
   canonicalLifecycleId,
+  creatorIdentityId,
   correlationTransactionId,
   navigate,
   error,

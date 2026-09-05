@@ -492,6 +492,7 @@ export default function CapsuleBuilder({
           holdState: structuredClone(prepared),
           correlationTransactionId: null,
           canonicalLifecycleId: reserved.lifecycleId,
+          creatorIdentityId,
         },
       })
     } catch (err) {

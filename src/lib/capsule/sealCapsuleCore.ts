@@ -12,14 +12,16 @@ import {
   MANIFEST_VERSION
 } from "@/types/manifest";
 
-import type {
-  ManifestV1,
+import {
+  type ManifestV1,
   OpenAtUtc,
   SealedAtUtc,
   CapsuleId,
   SaltBaseHex,
   Sha256Hex,
-  HeartbeatInterval
+  HeartbeatInterval,
+  ArweaveTxId,
+  assertArweaveTxId
 } from "@/types/manifest";
 
 import type {
@@ -65,6 +67,10 @@ export interface SealCapsuleResult {
 
   confirmationLink: string;
 
+  finalized: boolean;
+
+  finalizationPending: boolean;
+
 }
 
 const SEALED_ERROR =
@@ -73,6 +79,240 @@ const SEALED_ERROR =
 function sealedError(): never {
 
   throw SEALED_ERROR;
+
+}
+
+/* ── Finalization wiring ──────────────────────────────────────────
+ *
+ * Canonical order (publication/seal/finalization spec §6.5):
+ *   upload → publication verify → seal → seal verify → finalize.
+ *
+ * The client only initiates server checks and passes identifiers.
+ * expectedTxId / expectedVaultSha256 / publication state / seal
+ * state are established server-side and are never inputs here.
+ * Every call below is idempotent server-side, so a lost response
+ * can be retried safely (repeat calls return the existing state).
+ * ──────────────────────────────────────────────────────────────── */
+
+const FINALIZATION_MAX_ATTEMPTS = 3;
+
+/**
+ * Lost-response retry cache for the vault upload. A cached value is
+ * accepted only if it is a structurally valid txId; anything missing
+ * or malformed falls back to a normal upload. The cache is evidence
+ * only — the server-side PENDING record remains authoritative.
+ */
+function readCachedVaultTxId(capsuleId: string): ArweaveTxId | null {
+
+  try {
+
+    const cached = sessionStorage.getItem(`aeterna-vault-txid:${capsuleId}`);
+
+    if (typeof cached !== "string" || cached.length === 0) {
+      return null;
+    }
+
+    assertArweaveTxId(cached);
+
+    return cached;
+
+  } catch {
+
+    return null;
+
+  }
+
+}
+
+function finalizationDelay(attempt: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+}
+
+async function postJson(
+  url: string,
+  body: Record<string, unknown>
+): Promise<{ status: number; json: Record<string, unknown> | null }> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  return { status: res.status, json };
+}
+
+/**
+ * Server-authoritative publication verification. Retryable while the
+ * server reports a transient fetch/hash state (502); any other
+ * non-VERIFIED outcome (REJECTED, mismatch, unreserved lifecycle)
+ * is terminal and must NOT proceed to the irreversible seal.
+ */
+async function verifyPublicationOrThrow(
+  creatorIdentityId: string,
+  canonicalLifecycleId: string,
+  capsuleId: string,
+  publicationId: string
+): Promise<void> {
+
+  for (let attempt = 1; ; attempt++) {
+
+    let res: { status: number; json: Record<string, unknown> | null };
+
+    try {
+
+      res = await postJson(
+        "/api/publication/verify",
+        {
+          creatorIdentityId,
+          lifecycleId: canonicalLifecycleId,
+          capsuleId,
+          publicationId,
+        }
+      );
+
+    } catch {
+
+      if (attempt >= FINALIZATION_MAX_ATTEMPTS) sealedError();
+      await finalizationDelay(attempt);
+      continue;
+
+    }
+
+    if (
+      res.status === 200 &&
+      res.json?.['ok'] === true &&
+      res.json['state'] === "VERIFIED"
+    ) {
+      return;
+    }
+
+    if (res.status === 502 && attempt < FINALIZATION_MAX_ATTEMPTS) {
+      await finalizationDelay(attempt);
+      continue;
+    }
+
+    sealedError();
+
+  }
+
+}
+
+async function verifySealOrThrow(
+  creatorIdentityId: string,
+  canonicalLifecycleId: string,
+  capsuleId: string,
+  manifest: ManifestV1
+): Promise<void> {
+
+  for (let attempt = 1; ; attempt++) {
+
+    let res: { status: number; json: Record<string, unknown> | null };
+
+    try {
+
+      res = await postJson(
+        "/api/seal/verify",
+        {
+          creatorIdentityId,
+          lifecycleId: canonicalLifecycleId,
+          capsuleId,
+          manifest,
+        }
+      );
+
+    } catch {
+
+      if (attempt >= FINALIZATION_MAX_ATTEMPTS) sealedError();
+      await finalizationDelay(attempt);
+      continue;
+
+    }
+
+    if (
+      res.status === 200 &&
+      res.json?.['ok'] === true &&
+      res.json['state'] === "VERIFIED"
+    ) {
+      return;
+    }
+
+    if (res.status >= 500 && attempt < FINALIZATION_MAX_ATTEMPTS) {
+      await finalizationDelay(attempt);
+      continue;
+    }
+
+    sealedError();
+
+  }
+
+}
+
+/**
+ * Finalization is idempotent (CONSUMED / ALREADY_CONSUMED both count
+ * as success). A retryable failure after a successful seal never
+ * rolls the seal back — the caller receives finalizationPending and
+ * finalization completes on a later idempotent retry. Terminal
+ * binding mismatches fail closed.
+ */
+async function finalizeCreditOrPending(
+  creatorIdentityId: string,
+  canonicalLifecycleId: string,
+  capsuleId: string
+): Promise<boolean> {
+
+  for (let attempt = 1; ; attempt++) {
+
+    let res: { status: number; json: Record<string, unknown> | null };
+
+    try {
+
+      res = await postJson(
+        "/api/creator/finalize-credit",
+        {
+          creatorIdentityId,
+          lifecycleId: canonicalLifecycleId,
+          capsuleId,
+        }
+      );
+
+    } catch {
+
+      if (attempt >= FINALIZATION_MAX_ATTEMPTS) return false;
+      await finalizationDelay(attempt);
+      continue;
+
+    }
+
+    if (
+      res.status === 200 &&
+      res.json?.["ok"] === true
+    ) {
+      const outcome = res.json['outcome'];
+      if (outcome === "CONSUMED" || outcome === "ALREADY_CONSUMED") {
+        return true;
+      }
+    }
+
+    if (res.status === 409) {
+      const error = String(res.json?.["error"] ?? res.json?.["outcome"] ?? "");
+      if (error === "PUBLICATION_NOT_VERIFIED" || error === "SEAL_NOT_VERIFIED") {
+        if (attempt < FINALIZATION_MAX_ATTEMPTS) {
+          await finalizationDelay(attempt);
+          continue;
+        }
+        return false;
+      }
+      sealedError();
+    }
+
+    if (res.status >= 500 && attempt < FINALIZATION_MAX_ATTEMPTS) {
+      await finalizationDelay(attempt);
+      continue;
+    }
+
+    return false;
+
+  }
 
 }
 
@@ -433,6 +673,10 @@ export async function sealCapsuleCore(
 
     uploadToken: string;
 
+    canonicalLifecycleId: string;
+
+    creatorIdentityId: string;
+
     encryptedVaultPointer:
       string;
 
@@ -458,6 +702,8 @@ export async function sealCapsuleCore(
     saltBase,
     openAt,
     uploadToken,
+    canonicalLifecycleId,
+    creatorIdentityId,
     encryptedVaultPointer,
     encryptedSizeBytes,
     vaultSha256,
@@ -644,16 +890,40 @@ export async function sealCapsuleCore(
 
       }
 
-      // Seal confirmed idempotently — clear the retry caches.
-      try {
-        sessionStorage.removeItem(
-          `aeterna-vault-txid:${capsuleId}`
-        );
-      } catch {
-        // Intentional no-op: cleanup failure must not alter fail-closed path.
-      }
+      // Reuse path: the publication was verified before the original
+      // seal commit — no re-upload, no second publication, no second
+      // manifest. Only the idempotent seal verify + finalize run here.
+      await verifySealOrThrow(
+        creatorIdentityId,
+        canonicalLifecycleId,
+        capsuleId,
+        reusedManifest
+      );
 
-      clearPersistedSealManifest(capsuleId);
+      const finalized =
+        await finalizeCreditOrPending(
+          creatorIdentityId,
+          canonicalLifecycleId,
+          capsuleId
+        );
+
+      // Retry caches are cleared only on full finalization. While
+      // finalization is pending, the persisted manifest and txId
+      // cache must survive so re-entry can reuse the existing
+      // idempotent path instead of starting over.
+      if (finalized) {
+
+        try {
+          sessionStorage.removeItem(
+            `aeterna-vault-txid:${capsuleId}`
+          );
+        } catch {
+          // Intentional no-op: cleanup failure must not alter fail-closed path.
+        }
+
+        clearPersistedSealManifest(capsuleId);
+
+      }
 
       const recipientLink =
         `/capsule/${capsuleId}#${recipientSecret}`;
@@ -666,6 +936,8 @@ export async function sealCapsuleCore(
         manifest: reusedManifest,
         recipientLink,
         confirmationLink,
+        finalized,
+        finalizationPending: !finalized,
       };
 
     }
@@ -720,20 +992,70 @@ export async function sealCapsuleCore(
       ) as HeartbeatInterval;
 
     /**
-     * Compute final manifest BEFORE publication so a failed
-     * publication does not leave dangling local state.
+     * Vault upload with lost-response retry cache.
+     *
+     * A lost upload response leaves a server-side PENDING publication
+     * record the browser does not know about. Re-uploading would be
+     * rejected (PUBLICATION_ALREADY_BOUND). The txId is cached in
+     * sessionStorage immediately after a successful upload and BEFORE
+     * publication verification, so a re-invocation reuses it instead
+     * of re-uploading. The cached txId is evidence only: the server
+     * still compares it against its own authoritative PENDING record,
+     * so a stale/poisoned cache fails closed at verification.
      */
 
-    const vaultTxId =
-      await storage.upload(
-        encryptedPayload,
-        token
+    const cachedTxId =
+      readCachedVaultTxId(
+        capsuleId
       );
 
+    let txId: ArweaveTxId;
+
+    if (cachedTxId !== null) {
+
+      txId = cachedTxId;
+
+    } else {
+
+      const vaultTxId =
+        await storage.upload(
+          encryptedPayload,
+          token
+        );
+
+      txId =
+        asArweaveTxId(
+          vaultTxId.txId
+        );
+
+      try {
+
+        sessionStorage.setItem(
+          `aeterna-vault-txid:${capsuleId}`,
+          txId
+        );
+
+      } catch {
+        // Intentional no-op: cache failure degrades to re-upload on retry.
+      }
+
+    }
+
     const refinedTxId =
-      asArweaveTxId(
-        vaultTxId.txId
-      );
+      txId;
+
+    /**
+     * Canonical order: server-authoritative publication verification
+     * MUST complete before the irreversible seal commit. The txId is
+     * submitted as evidence only — the server verifies against its
+     * own PENDING record from /api/upload.
+     */
+    await verifyPublicationOrThrow(
+      creatorIdentityId,
+      canonicalLifecycleId,
+      capsuleId,
+      txId
+    );
 
     const manifest: ManifestV1 =
       deepFreeze({
@@ -816,6 +1138,20 @@ export async function sealCapsuleCore(
 
     }
 
+    await verifySealOrThrow(
+      creatorIdentityId,
+      canonicalLifecycleId,
+      capsuleId,
+      manifest
+    );
+
+    const finalized =
+      await finalizeCreditOrPending(
+        creatorIdentityId,
+        canonicalLifecycleId,
+        capsuleId
+      );
+
     try {
 
       await runtime.removeVault(
@@ -826,17 +1162,25 @@ export async function sealCapsuleCore(
       // Intentional no-op: cleanup failure must not alter fail-closed path.
     }
 
-    try {
+    // Retry caches are cleared only on full finalization. While
+    // finalization is pending, the persisted manifest and txId cache
+    // must survive so re-entry can reuse the existing idempotent
+    // path instead of starting over.
+    if (finalized) {
 
-      sessionStorage.removeItem(
-        `aeterna-vault-txid:${capsuleId}`
-      );
+      try {
 
-    } catch {
-      // Intentional no-op.
+        sessionStorage.removeItem(
+          `aeterna-vault-txid:${capsuleId}`
+        );
+
+      } catch {
+        // Intentional no-op.
+      }
+
+      clearPersistedSealManifest(capsuleId);
+
     }
-
-    clearPersistedSealManifest(capsuleId);
 
     const recipientLink =
       `/capsule/${capsuleId}#${recipientSecret}`;
@@ -850,6 +1194,8 @@ export async function sealCapsuleCore(
       manifest,
       recipientLink,
       confirmationLink,
+      finalized,
+      finalizationPending: !finalized,
 
     };
 
