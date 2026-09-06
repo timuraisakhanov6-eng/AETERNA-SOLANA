@@ -14,7 +14,7 @@
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
-import { IRYS_NODE_URL } from "../../irys/transport";
+import { confirmTxOnIrysNode, type IrysNodeConfirmation } from "../../lib/irys/node";
 import { getTrustedTime } from "../time";
 
 /* ================= ENV ================= */
@@ -158,56 +158,6 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
  * expectedVaultSha256 availability/hash signal.
  * ================================================================ */
 
-type IrysNodeConfirmation = "CONFIRMED" | "ABSENT" | "UNAVAILABLE";
-
-const IRYS_NODE_TIMEOUT_MS = 8000;
-
-async function confirmTxOnIrysNode(expectedTxId: string): Promise<IrysNodeConfirmation> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), IRYS_NODE_TIMEOUT_MS);
-
-  let res: Response;
-  try {
-    res = await fetch(`${IRYS_NODE_URL}/tx/${expectedTxId}`, {
-      method: "GET",
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-  } catch {
-    return "UNAVAILABLE";
-  }
-
-  if (res.status === 404) {
-    return "ABSENT";
-  }
-
-  if (!res.ok) {
-    return "UNAVAILABLE";
-  }
-
-  // If the node exposes the identifier in the response body, it must
-  // match the server-owned expectedTxId. A mismatched body is a
-  // protocol anomaly: fail closed as UNAVAILABLE (PENDING/retry),
-  // never as VERIFIED. Absence of an id field in the body is not
-  // treated as authoritative — the node-addressed 200 already
-  // confirms the exact identifier via the request path.
-  try {
-    const body = (await res.json()) as Record<string, unknown> | null;
-    if (
-      body &&
-      typeof body === "object" &&
-      typeof body["id"] === "string" &&
-      body["id"] !== expectedTxId
-    ) {
-      return "UNAVAILABLE";
-    }
-  } catch {
-    // Non-JSON body: the path-addressed 200 remains the confirmation.
-  }
-
-  return "CONFIRMED";
-}
 
 /* ================= ENDPOINT ================= */
 
@@ -303,7 +253,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
      server-owned transaction before any gateway signal is consulted.
      ABSENT → terminal REJECTED (fail-closed); UNAVAILABLE → PENDING
      retryable 502. Gateways alone can never establish VERIFIED. */
-  const nodeConfirmation = await confirmTxOnIrysNode(authoritativeTxId);
+  const nodeConfirmation: IrysNodeConfirmation = await confirmTxOnIrysNode(authoritativeTxId);
 
   if (nodeConfirmation === "ABSENT") {
     const now = Date.now();
