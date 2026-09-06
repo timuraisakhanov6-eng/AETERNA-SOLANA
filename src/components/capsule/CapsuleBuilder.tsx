@@ -337,6 +337,22 @@ export default function CapsuleBuilder({
     useState<ServicePaymentState>("ready");
   const [servicePaymentResult, setServicePaymentResult] =
     useState<ServicePaymentResult | null>(null);
+  // Phase B step 1 - storage review state: populated after the capsule
+  // is prepared and the projection + canonical Irys quote are obtained.
+  // While set, the primary action is the creator-paid storage step and
+  // the real storage payment is NOT executed in this step.
+  const [storageReview, setStorageReview] = useState<{
+    displayAmountUSDC: string;
+    storageSizeBytes: number;
+  } | null>(null);
+  // Wallet mismatch during an ACTIVE lifecycle must never reset the
+  // payment state (no second $1): identity spec forbids switching
+  // wallet identity mid-lifecycle - same-wallet reconnect is required.
+  const [walletMismatch, setWalletMismatch] = useState(false);
+  // One lifecycleId per creation attempt - generated once and reused
+  // by the prepared projection, the storage quote, and the reserve.
+  const [pendingLifecycleId, setPendingLifecycleId] = useState<string | null>(null);
+  const [storageReviewLoading, setStorageReviewLoading] = useState(false);
   const [servicePaymentError, setServicePaymentError] = useState<string | null>(null);
 
   /* ================= MEDIA ================= */
@@ -416,8 +432,11 @@ export default function CapsuleBuilder({
 
   /* ================= LIFECYCLE ================= */
 
-  const reserveLifecycle = async (prepared: CapsuleHoldState, creatorCreditId: string) => {
-    const candidateLifecycleId = `lifecycle-${prepared.prepared.capsuleId}-${Date.now()}`
+  const reserveLifecycle = async (
+    prepared: CapsuleHoldState,
+    creatorCreditId: string,
+    candidateLifecycleId: string,
+  ) => {
 
     if (!creatorIdentityId) {
       throw new Error("Creator identity is required to reserve lifecycle.");
@@ -450,14 +469,14 @@ export default function CapsuleBuilder({
     }
   }
 
-  const handleReserveReady = async (result: { creatorCreditId: string }) => {
+  const handleReserveReady = async (result: { creatorCreditId: string; lifecycleId: string }) => {
     if (!preparedRef.current) return
 
     const prepared = preparedRef.current
     preparedRef.current = null
 
     try {
-      const reserved = await reserveLifecycle(prepared, result.creatorCreditId)
+      const reserved = await reserveLifecycle(prepared, result.creatorCreditId, result.lifecycleId)
       const sessionData = {
         ...prepared,
         billableSizeBytes: prepared.billableSizeBytes,
@@ -544,12 +563,16 @@ export default function CapsuleBuilder({
   const handleFinalCreateClick = async () => {
     if (servicePaymentState !== "paid" || !servicePaymentResult) return;
     if (sealPhase !== "idle" || sealingRef.current) return;
-    if (!walletMatch()) {
-      setServicePaymentState("ready");
-      setServicePaymentResult(null);
-      setServicePaymentError("Wallet or identity mismatch. Please repeat payment.");
+    if (!walletMatch() || walletMismatch) {
+      // ACTIVE lifecycle: keep the paid credit and lifecycle binding.
+      // A second $1 would create a duplicate entitlement.
+      setWalletMismatch(true);
+      setServicePaymentError(
+        "Wallet changed during this capsule. Reconnect the same wallet used for the $1 payment to continue."
+      );
       return;
     }
+    setWalletMismatch(false);
 
     sealingRef.current = true;
     setSealError(null);
@@ -561,6 +584,11 @@ export default function CapsuleBuilder({
         snapshotItems,
         unlockAt
       );
+
+      const lifecycleIdForAttempt =
+        pendingLifecycleId ??
+        `lifecycle-${capsuleId}-${Date.now()}`;
+      setPendingLifecycleId(lifecycleIdForAttempt);
 
       if (preparedRef.current) {
         if (preparedInputsRef.current === fingerprint) {
@@ -638,6 +666,65 @@ export default function CapsuleBuilder({
         creatorAuthority: preparedCapsule.creatorAuthority,
       };
 
+      // Phase B step 1 - submit the prepared projection and obtain the
+      // canonical Irys storage quote, then enter the review state. The
+      // real storage payment is NOT executed here.
+      try {
+        setStorageReviewLoading(true);
+        const preparedRes = await fetch("/api/capsule/prepared", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            creatorIdentityId,
+            lifecycleId: lifecycleIdForAttempt,
+            capsuleId: preparedCapsule.capsuleId,
+            encryptedSizeBytes: preparedCapsule.encryptedSizeBytes,
+            vaultSha256: preparedCapsule.vaultSha256,
+            saltBase: preparedCapsule.saltBase,
+            encryptedVaultPointer: preparedCapsule.encryptedVaultPointer,
+            chunkMetadata: preparedCapsule.chunkMetadata,
+          }),
+        });
+        const preparedData = await preparedRes.json().catch(() => null);
+        if (!preparedRes.ok || !preparedData?.ok) {
+          throw new Error(preparedData?.error || "PREPARED_PROJECTION_FAILED");
+        }
+
+        const quoteRes = await fetch("/api/storage/quote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            creatorIdentityId,
+            lifecycleId: lifecycleIdForAttempt,
+            capsuleId: preparedCapsule.capsuleId,
+            preparedProjectionId: preparedData.preparedProjection.preparedProjectionId,
+          }),
+        });
+        const quoteData = await quoteRes.json().catch(() => null);
+        if (!quoteRes.ok || !quoteData?.ok) {
+          throw new Error(quoteData?.error || "STORAGE_QUOTE_FAILED");
+        }
+
+        const quote = quoteData.storagePaymentId ? quoteData : quoteData.quote;
+        setStorageReview({
+          displayAmountUSDC: String(quote.displayAmountUSDC ?? ""),
+          storageSizeBytes: preparedCapsule.encryptedSizeBytes,
+        });
+        setSealPhase("idle");
+        sealingRef.current = false;
+        return; // stay on /create in the storage review state
+      } catch (reviewErr) {
+        preparedRef.current = null;
+        preparedInputsRef.current = null;
+        setPendingLifecycleId(null);
+        setSealPhase("idle");
+        sealingRef.current = false;
+        setSealError(
+          reviewErr instanceof Error ? reviewErr.message : "Storage quote failed"
+        );
+        return;
+      }
+
       const holdState = preparedRef.current;
       if (!holdState) {
         throw new Error("HOLD_STATE_MISSING");
@@ -670,13 +757,53 @@ export default function CapsuleBuilder({
       }
 
       setSealPhase("idle");
-      void handleReserveReady({ creatorCreditId: servicePaymentResult.creatorCreditId });
+      void handleReserveReady({
+        creatorCreditId: servicePaymentResult.creatorCreditId,
+        lifecycleId: lifecycleIdForAttempt,
+      });
     } catch (err) {
       preparedRef.current = null;
       setSealPhase("idle");
       setSealError(
         err instanceof Error ? err.message : "Capsule creation failed"
       );
+    } finally {
+      sealingRef.current = false;
+    }
+  };
+
+  // STATE 3 -> STATE 4: creator confirmed the Irys storage step.
+  // The real storage payment execution belongs to Phase B; this keeps
+  // the lifecycle binding and continues reserve + hold as today.
+  const handleConfirmStoragePayment = async () => {
+    if (servicePaymentState !== "paid" || !servicePaymentResult) return;
+    if (!storageReview || !preparedRef.current) return;
+    if (sealPhase !== "idle" || sealingRef.current) return;
+    if (!walletMatch()) {
+      setWalletMismatch(true);
+      setServicePaymentError(
+        "Wallet changed during this capsule. Reconnect the same wallet used for the $1 payment to continue."
+      );
+      return;
+    }
+    if (!pendingLifecycleId) {
+      setSealError("Lifecycle is not initialised for this creation attempt.");
+      return;
+    }
+    setWalletMismatch(false);
+
+    sealingRef.current = true;
+    setSealError(null);
+    setSealPhase("preparing");
+
+    try {
+      await handleReserveReady({
+        creatorCreditId: servicePaymentResult.creatorCreditId,
+        lifecycleId: pendingLifecycleId,
+      });
+    } catch (err) {
+      setSealPhase("idle");
+      setSealError(err instanceof Error ? err.message : "Capsule creation failed");
     } finally {
       sealingRef.current = false;
     }
@@ -689,15 +816,19 @@ export default function CapsuleBuilder({
     sealPhase === "idle";
 
   const isCreateDisabled =
-    servicePaymentState === "ready"
+    storageReview !== null
+      ? sealPhase !== "idle"
+      : servicePaymentState === "ready"
       ? !canSeal || servicePaymentState !== "ready"
       : servicePaymentState === "paid"
       ? !canSeal || sealPhase !== "idle"
       : true;
 
   const primaryButtonLabel =
-    servicePaymentState === "paid"
-      ? "CREATE CAPSULE"
+    storageReview !== null
+      ? `Pay $${storageReview.displayAmountUSDC} Storage`
+      : servicePaymentState === "paid"
+      ? "Create Capsule"
       : "Pay $1 & Create Capsule";
 
   return (
@@ -810,9 +941,11 @@ export default function CapsuleBuilder({
 
             <div className="space-y-3">
               <Button
-                disabled={isCreateDisabled}
+                disabled={isCreateDisabled || storageReviewLoading || Boolean(walletMismatch)}
                 onClick={
-                  servicePaymentState === "paid"
+                  storageReview !== null
+                    ? handleConfirmStoragePayment
+                    : servicePaymentState === "paid"
                     ? handleFinalCreateClick
                     : handleFirstCreateClick
                 }
@@ -830,7 +963,33 @@ export default function CapsuleBuilder({
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    {primaryButtonLabel}
+              {storageReview !== null && (
+            <section className="mx-auto w-full max-w-[720px] rounded-lg border border-border bg-card p-4 space-y-2">
+              <p className="text-sm font-medium tracking-widest text-muted-foreground uppercase">
+                Review capsule before storage payment
+              </p>
+              {typeof description === "string" && description.length > 0 && (
+                <p className="text-sm">Title: {description}</p>
+              )}
+              {typeof unlockAt === "number" && (
+                <p className="text-sm">
+                  Unlock date: {new Date(unlockAt).toLocaleString()}
+                </p>
+              )}
+              <p className="text-sm">
+                Final storage size: {(storageReview.storageSizeBytes / 1024).toFixed(1)} KB
+              </p>
+              <p className="text-sm">
+                Irys storage price: ${storageReview.displayAmountUSDC} USDC (set by Irys)
+              </p>
+              {walletMismatch && (
+                <p className="text-sm text-destructive">
+                  Reconnect the same wallet used for the $1 payment to continue.
+                </p>
+              )}
+            </section>
+          )}
+                {primaryButtonLabel}
                   </div>
                 )}
               </Button>
