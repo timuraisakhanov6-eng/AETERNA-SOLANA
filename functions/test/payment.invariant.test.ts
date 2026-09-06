@@ -109,6 +109,8 @@ function buildUploadTokenContext(overrides?: {
     CREATOR_CREDITS: createFakeKV(),
     UPLOAD_TOKENS: createFakeKV(),
     VERIFIED_PAYMENTS: createFakeKV(),
+    STORAGE_PAYMENTS: createFakeKV(),
+    STORAGE_QUOTES: createFakeKV(),
     ...overrides?.env,
   };
 
@@ -204,7 +206,30 @@ describe("Payment authorization / replay protection invariants", () => {
         JSON.stringify({
           status: "CONSUMING",
           creatorIdentityId: "creator-1",
+          capsuleId: "a".repeat(64),
           paymentIntentId: "intent-1",
+        })
+      );
+      await env.STORAGE_QUOTES!.put(
+        "storage-quote:creator-1:lifecycle-1:" + "a".repeat(64),
+        JSON.stringify({
+          storagePaymentId: "storage-pay-1",
+          creatorIdentityId: "creator-1",
+          lifecycleId: "lifecycle-1",
+          capsuleId: "a".repeat(64),
+          state: "CREATED",
+        })
+      );
+      await env.STORAGE_PAYMENTS!.put(
+        "storage-payment:storage-pay-1",
+        JSON.stringify({
+          storagePaymentId: "storage-pay-1",
+          state: "PAYMENT_VERIFIED",
+          quote: {
+            creatorIdentityId: "creator-1",
+            lifecycleId: "lifecycle-1",
+            capsuleId: "a".repeat(64),
+          },
         })
       );
 
@@ -271,7 +296,7 @@ describe("Payment authorization / replay protection invariants", () => {
       expect(res.status).toBe(503);
     });
 
-    it("issues upload token for valid entitlement with mocked executor", async () => {
+    it("issues upload token for valid entitlement (creator-paid storage verified)", async () => {
       const { env, context } = buildUploadTokenContext({
         body: {
           canonicalLifecycleId: "lifecycle-1",
@@ -284,7 +309,30 @@ describe("Payment authorization / replay protection invariants", () => {
         JSON.stringify({
           status: "CONSUMING",
           creatorIdentityId: "creator-1",
+          capsuleId: "a".repeat(64),
           paymentIntentId: "intent-1",
+        })
+      );
+      await env.STORAGE_QUOTES!.put(
+        "storage-quote:creator-1:lifecycle-1:" + "a".repeat(64),
+        JSON.stringify({
+          storagePaymentId: "storage-pay-2",
+          creatorIdentityId: "creator-1",
+          lifecycleId: "lifecycle-1",
+          capsuleId: "a".repeat(64),
+          state: "CREATED",
+        })
+      );
+      await env.STORAGE_PAYMENTS!.put(
+        "storage-payment:storage-pay-2",
+        JSON.stringify({
+          storagePaymentId: "storage-pay-2",
+          state: "PAYMENT_VERIFIED",
+          quote: {
+            creatorIdentityId: "creator-1",
+            lifecycleId: "lifecycle-1",
+            capsuleId: "a".repeat(64),
+          },
         })
       );
 

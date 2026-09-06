@@ -13,11 +13,9 @@
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../lib/rateLimit";
 import { getTrustedTime } from "./time";
-import {
-  assertExecutorHasBalance,
-  getExecutorAddress,
-  ExecutorUnavailableError,
-} from "../lib/executorHot";
+import { getStorageQuote } from "../lib/storage/storageQuoteStore";
+import { getStoragePayment } from "../lib/storage/storagePaymentStore";
+
 
 /** Allowed origins */
 const ALLOWED_ORIGINS = [
@@ -79,9 +77,9 @@ function baseHeaders(origin: string): Record<string, string> {
   };
 }
 
-function fail(origin: string, status = 400): Response {
+function fail(origin: string, status = 400, error?: string): Response {
   return new Response(
-    JSON.stringify({ ok: false }),
+    JSON.stringify({ ok: false, ...(error ? { error } : {}) }),
     { status, headers: baseHeaders(origin) }
   );
 }
@@ -209,18 +207,41 @@ export const onRequestPost = async (
     return fail(origin, 403);
   }
 
-  try {
-    const executorAddress = await getExecutorAddress(env);
-    await assertExecutorHasBalance(env, executorAddress, now);
-  } catch (error) {
-    if (error instanceof ExecutorUnavailableError) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "EXECUTOR_TEMPORARILY_UNAVAILABLE" }),
-        { status: 503, headers: baseHeaders(origin) }
-      );
-    }
-    console.error("EXECUTOR_BALANCE_CHECK_FAILED", String(error));
-    return fail(origin, 503);
+  /* ================= STORAGE PAYMENT GATE (Phase D1) =================
+
+     Canonical: the creator pays Irys storage directly. Permanent
+     upload authorization requires a PAYMENT_VERIFIED creator storage
+     payment bound to THIS identity/lifecycle/capsule. The wallet
+     account is server-derived (ed76080); the storage payment state is
+     server-persisted - neither is accepted from the client. */
+  const creditCapsuleId =
+    typeof credit.capsuleId === "string" ? credit.capsuleId : "";
+  if (!creditCapsuleId) {
+    return fail(origin, 409, "STORAGE_PAYMENT_NOT_VERIFIED");
+  }
+
+  const storageQuote = await getStorageQuote(
+    env,
+    creatorIdentityId,
+    canonicalLifecycleId,
+    creditCapsuleId
+  );
+  if (!storageQuote) {
+    return fail(origin, 409, "STORAGE_PAYMENT_NOT_VERIFIED");
+  }
+
+  const storagePayment = await getStoragePayment(
+    env,
+    storageQuote.storagePaymentId
+  );
+  if (
+    !storagePayment ||
+    storagePayment.state !== "PAYMENT_VERIFIED" ||
+    storagePayment.quote?.creatorIdentityId !== creatorIdentityId ||
+    storagePayment.quote?.lifecycleId !== canonicalLifecycleId ||
+    storagePayment.quote?.capsuleId !== creditCapsuleId
+  ) {
+    return fail(origin, 409, "STORAGE_PAYMENT_NOT_VERIFIED");
   }
 
   let uploadToken: string | null = null;
