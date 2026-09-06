@@ -247,6 +247,50 @@ export async function getCreatorIrysDestination(): Promise<string> {
 }
 
 /**
+ * UPLOAD-ONLY creator publication (Phase D2a).
+ *
+ * Uploads already-paid-for encrypted bytes to Irys using the creator
+ * wallet and returns the Irys data-item id. This helper performs NO
+ * payment operations: no getPrice, no getBalance, no fund. The Irys
+ * storage payment must already be PAYMENT_VERIFIED (Phase B) before
+ * this helper is invoked.
+ *
+ * The returned dataTxId is upload EVIDENCE only — the server-side
+ * publication claim (Node confirmation) turns it into authoritative
+ * publication state. The input buffer is passed through without
+ * cloning (whole-vault buffering is inherited from the legacy path
+ * and remains a separate streaming enhancement).
+ */
+export async function uploadCreatorData(
+  data: Uint8Array,
+  wallet: CreatorIrysWallet,
+  rpcUrl?: string
+): Promise<{ dataTxId: string }> {
+  requireWallet(wallet);
+
+  if (!(data instanceof Uint8Array) || data.byteLength === 0) {
+    failClosed("invalid payload");
+  }
+
+  const uploader = await buildCreatorUploader(wallet, rpcUrl);
+
+  try {
+    const receipt = (await uploader.upload(data)) as { id?: unknown };
+    if (!receipt || typeof receipt !== "object") {
+      failClosed("malformed Irys receipt");
+    }
+    const dataTxId = receipt.id;
+    if (typeof dataTxId !== "string" || dataTxId.length === 0) {
+      failClosed("Irys receipt has no data txId");
+    }
+    return { dataTxId };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("[AETERNA] creatorIrys:")) throw error;
+    failClosed(`Irys upload failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
  * Creator-paid upload: ensures the creator's own Irys balance covers
  * the Irys-determined price (one wallet confirmation for the funding
  * transfer when needed), then uploads the bytes and returns the
