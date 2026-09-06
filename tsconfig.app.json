@@ -3,6 +3,8 @@
 
   "compilerOptions": {
 
+    "skipLibCheck": true,
+
     "target": "ES2021",
 
     "useDefineForClassFields": true,
