@@ -10,6 +10,7 @@
 export interface PreparedProjection {
   readonly preparedProjectionId: string;
   readonly creatorIdentityId: string;
+  readonly walletAccount: string;
   readonly lifecycleId: string;
   readonly capsuleId: string;
   readonly encryptedSizeBytes: number;

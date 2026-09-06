@@ -21,6 +21,7 @@ import {
   SHA256_REGEX,
   STORAGE_POINTER_REGEX,
 } from "../../../src/lib/crypto/validators";
+import { getCreatorIdentityById } from "../../../src/lib/creator/creatorIdentityStore";
 import {
   getPreparedProjection,
   putPreparedProjection,
@@ -259,6 +260,20 @@ export async function onRequestPost(
     return fail(origin, 400, "INVALID_FIELDS");
   }
 
+  /* ================= CREATOR IDENTITY (SERVER-SIDE WALLET AUTHORITY) =================
+
+     The wallet address is resolved from the authoritative
+     CreatorIdentityRecord; it is never accepted from the client. */
+
+  const creatorIdentity = await getCreatorIdentityById(env, creatorIdentityId);
+  if (!creatorIdentity) {
+    return fail(origin, 403, "IDENTITY_NOT_FOUND");
+  }
+  if (creatorIdentity.network !== "solana") {
+    return fail(origin, 403, "IDENTITY_NETWORK_UNSUPPORTED");
+  }
+  const walletAccount = creatorIdentity.account;
+
   /* ================= TRUSTED TIME ================= */
 
   const timeSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
@@ -333,6 +348,7 @@ export async function onRequestPost(
   const projection: PreparedProjection = {
     preparedProjectionId,
     creatorIdentityId,
+    walletAccount,
     lifecycleId,
     capsuleId,
     encryptedSizeBytes,

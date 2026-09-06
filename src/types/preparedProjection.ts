@@ -13,6 +13,12 @@ export interface PreparedProjection {
 
   readonly creatorIdentityId: string;
 
+  /**
+   * Solana wallet address of the creator, resolved SERVER-SIDE from
+   * the authoritative CreatorIdentityRecord. Never client-supplied.
+   */
+  readonly walletAccount: string;
+
   readonly lifecycleId: string;
 
   readonly capsuleId: string;

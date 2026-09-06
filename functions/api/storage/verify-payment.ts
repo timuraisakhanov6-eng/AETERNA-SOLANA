@@ -110,6 +110,21 @@ export async function onRequestPost(
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
 
+  /* Idempotent replay: a successfully verified payment must return its
+     existing PAYMENT_VERIFIED record even after the quote is marked
+     EXPIRED (single-use quote semantics). This check therefore runs
+     BEFORE the quote expiry gate. */
+  const existingPayment = await getStoragePayment(
+    env as Parameters<typeof getStoragePayment>[0],
+    storagePaymentId
+  );
+  if (existingPayment && existingPayment.state === "PAYMENT_VERIFIED") {
+    return new Response(
+      JSON.stringify({ ok: true, ...existingPayment }),
+      { status: 200, headers: baseHeaders(origin) }
+    );
+  }
+
   const quote = await getStorageQuoteByPaymentId(
     env as Parameters<typeof getStorageQuoteByPaymentId>[0],
     storagePaymentId
@@ -158,7 +173,7 @@ export async function onRequestPost(
   const verification = await verifySolanaUsdcStoragePayment({
     rpcUrl,
     transactionSignature,
-    expectedPayer: quote.creatorIdentityId,
+    expectedPayer: quote.walletAccount,
     expectedMint: quote.tokenMint,
     expectedAmountAtomic: quote.expectedAmountAtomic,
     expectedDestination: quote.irysDestination,

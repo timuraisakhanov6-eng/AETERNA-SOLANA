@@ -285,6 +285,7 @@ export async function onRequestPost(
     storagePaymentId,
     preparedProjectionId: projection.preparedProjectionId,
     creatorIdentityId: projection.creatorIdentityId,
+    walletAccount: projection.walletAccount,
     lifecycleId: projection.lifecycleId,
     capsuleId: projection.capsuleId,
     billableSizeBytes: projection.encryptedSizeBytes,

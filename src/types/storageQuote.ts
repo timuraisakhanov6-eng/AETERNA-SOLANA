@@ -13,6 +13,13 @@ export interface StorageQuote {
 
   readonly creatorIdentityId: string;
 
+  /**
+   * Server-derived Solana wallet address (resolved from the
+   * authoritative CreatorIdentityRecord via the prepared projection).
+   * Used by verify-payment as the expected on-chain payer.
+   */
+  readonly walletAccount: string;
+
   readonly lifecycleId: string;
 
   readonly capsuleId: string;
