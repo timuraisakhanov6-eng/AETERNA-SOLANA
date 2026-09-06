@@ -18,6 +18,7 @@
  */
 
 import { WebUploader } from "@irys/web-upload";
+import { PublicKey } from "@solana/web3.js";
 
 /** Canonical Irys mainnet node — same constant the server transport uses. */
 const IRYS_NODE_URL = "https://node1.irys.xyz";
@@ -58,6 +59,40 @@ export interface CreatorIrysUploadResult {
   dataTxId: string;
 }
 
+/**
+ * Minimal structural view of the AETERNA wallet context object.
+ * Adapter translation happens in toCreatorIrysWallet(); no wallet
+ * provider internals are imported here.
+ */
+export interface AeternaWalletLike {
+  account: string;
+  signMessage(message: string | Uint8Array): Promise<{ signature: Uint8Array }>;
+  signAndSendTransaction(transaction: unknown): Promise<{ signature: string }>;
+}
+
+/**
+ * Adapter: AETERNA wallet context → CreatorIrysWallet (the injected
+ * provider interface required by @irys/web-upload-solana).
+ *   publicKey       ← new PublicKey(wallet.account)
+ *   signMessage     ← wallet.signMessage(bytes).signature
+ *   sendTransaction ← wallet.signAndSendTransaction(tx).signature
+ * No keys are extracted; every signature is produced by the wallet.
+ */
+export function toCreatorIrysWallet(wallet: AeternaWalletLike): CreatorIrysWallet {
+  if (!wallet.account) failClosed("wallet account is required");
+  if (typeof wallet.signMessage !== "function") failClosed("wallet.signMessage is required");
+  if (typeof wallet.signAndSendTransaction !== "function") {
+    failClosed("wallet.signAndSendTransaction is required");
+  }
+  return {
+    publicKey: new PublicKey(wallet.account),
+    signMessage: async (message: Uint8Array) =>
+      (await wallet.signMessage(message)).signature,
+    sendTransaction: async (transaction: unknown /*, connection */) =>
+      (await wallet.signAndSendTransaction(transaction)).signature,
+  };
+}
+
 function failClosed(reason: string): never {
   throw new Error(`[AETERNA] creatorIrys: ${reason}`);
 }
@@ -80,12 +115,21 @@ async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string):
   fund(amount: { toString(): string }): Promise<unknown>;
   upload(data: Uint8Array): Promise<{ id?: unknown }>;
 }> {
-  const builder = WebUploader({
+  // The @irys factory's published typing is loose (ConstructableWebToken
+  // overload); the runtime factory accepts the node config shown here.
+  const buildUploader = WebUploader as unknown as (config: {
+    url: string;
+    token: string;
+  }) => {
+    withProvider(provider: never): {
+      withRpc(rpcUrl: string): { build(): Promise<unknown> };
+      build(): Promise<unknown>;
+    };
+  };
+  const builder = buildUploader({
     url: IRYS_NODE_URL,
     token: IRYS_TOKEN,
-  })
-    .withProvider(wallet as never)
-    .withRpc(rpcUrl ?? "https://api.mainnet-beta.solana.com");
+  }).withProvider(wallet as never).withRpc(rpcUrl ?? "https://api.mainnet-beta.solana.com");
 
   const uploader = (await builder.build()) as unknown as {
     getPrice(byteLength: number): Promise<{ toString(): string }>;
@@ -103,6 +147,46 @@ async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string):
  * atomic units. The price is fetched from the Irys node; AETERNA
  * never sets or alters it.
  */
+/**
+ * FUND-ONLY storage payment (Phase B): funds the creator's Irys
+ * balance with the EXACT atomic amount from the server-derived
+ * StorageQuote and returns the Solana funding transaction signature.
+ *
+ * The amount is never recalculated client-side — the quote is the
+ * authority. Upload/data-item publication is NOT performed here.
+ */
+export async function fundCreatorPaidStorage(
+  expectedAmountAtomic: string,
+  wallet: CreatorIrysWallet,
+  rpcUrl?: string
+): Promise<{ fundingSignature: string }> {
+  requireWallet(wallet);
+
+  if (!/^[1-9][0-9]*$/.test(expectedAmountAtomic)) {
+    failClosed("expectedAmountAtomic must be a positive integer atomic amount from the server quote");
+  }
+
+  const uploader = await buildCreatorUploader(wallet, rpcUrl);
+
+  try {
+    const fundResult = (await uploader.fund({
+      toString: () => expectedAmountAtomic,
+    })) as { id?: unknown };
+    if (
+      !fundResult ||
+      typeof fundResult !== "object" ||
+      typeof fundResult.id !== "string" ||
+      fundResult.id.length === 0
+    ) {
+      failClosed("Irys funding returned no transaction signature");
+    }
+    return { fundingSignature: fundResult.id };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("[AETERNA] creatorIrys:")) throw error;
+    failClosed(`Irys funding failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export async function getCreatorIrysUploadPrice(
   byteLength: number,
   wallet: CreatorIrysWallet,

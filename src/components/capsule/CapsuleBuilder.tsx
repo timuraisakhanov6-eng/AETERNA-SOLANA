@@ -25,6 +25,10 @@ import type {
 } from "@/types/capsule";
 import type { OpenAtUtc } from "@/types/manifest";
 import type { ChunkMetadata } from "@/types/vault";
+import {
+  fundCreatorPaidStorage,
+  toCreatorIrysWallet,
+} from "@/lib/storage/creatorIrys";
 
 /* 🚨 КРИТИЧЕСКОЕ ПРАВИЛО:
   Импорты streamEncryptUpload и encryptChunk УДАЛЕНЫ.
@@ -342,6 +346,8 @@ export default function CapsuleBuilder({
   // While set, the primary action is the creator-paid storage step and
   // the real storage payment is NOT executed in this step.
   const [storageReview, setStorageReview] = useState<{
+    storagePaymentId: string;
+    expectedAmountAtomic: string;
     displayAmountUSDC: string;
     storageSizeBytes: number;
   } | null>(null);
@@ -560,6 +566,77 @@ export default function CapsuleBuilder({
     return Boolean(accountValid && identityValid);
   }, [creatorIdentityId, servicePaymentResult]);
 
+  // Phase B — single storage-review entry point for ALL creation
+  // paths (fresh prepare, same-fingerprint retry, session restore).
+  // Every path MUST pass through this + handleConfirmStoragePayment:
+  // direct reserve without PAYMENT_VERIFIED is forbidden.
+  const enterStorageReviewForPrepared = async () => {
+    const preparedState = preparedRef.current;
+    if (!preparedState) {
+      setSealError("HOLD_STATE_MISSING");
+      return;
+    }
+
+    try {
+      setStorageReviewLoading(true);
+      const lifecycleIdForAttempt =
+        pendingLifecycleId ?? `lifecycle-${capsuleId}-${Date.now()}`;
+      setPendingLifecycleId(lifecycleIdForAttempt);
+
+      const preparedRes = await fetch("/api/capsule/prepared", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          creatorIdentityId,
+          lifecycleId: lifecycleIdForAttempt,
+          capsuleId: preparedState.prepared.capsuleId,
+          encryptedSizeBytes: preparedState.prepared.encryptedSizeBytes,
+          vaultSha256: preparedState.prepared.vaultSha256,
+          saltBase: preparedState.prepared.saltBase,
+          encryptedVaultPointer: preparedState.prepared.encryptedVaultPointer,
+          chunkMetadata: preparedState.prepared.chunkMetadata,
+        }),
+      });
+      const preparedData = await preparedRes.json().catch(() => null);
+      if (!preparedRes.ok || !preparedData?.ok) {
+        throw new Error(preparedData?.error || "PREPARED_PROJECTION_FAILED");
+      }
+
+      const quoteRes = await fetch("/api/storage/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          creatorIdentityId,
+          lifecycleId: lifecycleIdForAttempt,
+          capsuleId: preparedState.prepared.capsuleId,
+          preparedProjectionId: preparedData.preparedProjection.preparedProjectionId,
+        }),
+      });
+      const quoteData = await quoteRes.json().catch(() => null);
+      if (!quoteRes.ok || !quoteData?.ok) {
+        throw new Error(quoteData?.error || "STORAGE_QUOTE_FAILED");
+      }
+
+      const quote = quoteData.storagePaymentId ? quoteData : quoteData.quote;
+      setStorageReview({
+        storagePaymentId: String(quote.storagePaymentId ?? ""),
+        expectedAmountAtomic: String(quote.expectedAmountAtomic ?? ""),
+        displayAmountUSDC: String(quote.displayAmountUSDC ?? ""),
+        storageSizeBytes: preparedState.prepared.encryptedSizeBytes,
+      });
+      setSealPhase("idle");
+      sealingRef.current = false;
+      return; // remain on /create in the storage review state
+    } catch (reviewErr) {
+      setSealPhase("idle");
+      sealingRef.current = false;
+      setSealError(
+        reviewErr instanceof Error ? reviewErr.message : "Storage quote failed"
+      );
+      return;
+    }
+  };
+
   const handleFinalCreateClick = async () => {
     if (servicePaymentState !== "paid" || !servicePaymentResult) return;
     if (sealPhase !== "idle" || sealingRef.current) return;
@@ -585,10 +662,6 @@ export default function CapsuleBuilder({
         unlockAt
       );
 
-      const lifecycleIdForAttempt =
-        pendingLifecycleId ??
-        `lifecycle-${capsuleId}-${Date.now()}`;
-      setPendingLifecycleId(lifecycleIdForAttempt);
 
       if (preparedRef.current) {
         if (preparedInputsRef.current === fingerprint) {
@@ -597,7 +670,9 @@ export default function CapsuleBuilder({
             description: description ?? "",
           };
           setSealPhase("idle");
-          void handleReserveReady({ creatorCreditId: servicePaymentResult.creatorCreditId });
+          // Retry: same prepared capsule → storage review + payment
+          // gate (direct reserve without PAYMENT_VERIFIED is forbidden).
+          void enterStorageReviewForPrepared();
           return;
         }
 
@@ -645,7 +720,9 @@ export default function CapsuleBuilder({
         preparedRef.current = restored;
         preparedInputsRef.current = fingerprint;
         setSealPhase("idle");
-        void handleReserveReady({ creatorCreditId: servicePaymentResult.creatorCreditId });
+        // Restored session: same prepared capsule/lifecycle continuity
+        // → storage review + payment gate (direct reserve forbidden).
+        void enterStorageReviewForPrepared();
         return;
       }
 
@@ -666,101 +743,10 @@ export default function CapsuleBuilder({
         creatorAuthority: preparedCapsule.creatorAuthority,
       };
 
-      // Phase B step 1 - submit the prepared projection and obtain the
-      // canonical Irys storage quote, then enter the review state. The
-      // real storage payment is NOT executed here.
-      try {
-        setStorageReviewLoading(true);
-        const preparedRes = await fetch("/api/capsule/prepared", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            creatorIdentityId,
-            lifecycleId: lifecycleIdForAttempt,
-            capsuleId: preparedCapsule.capsuleId,
-            encryptedSizeBytes: preparedCapsule.encryptedSizeBytes,
-            vaultSha256: preparedCapsule.vaultSha256,
-            saltBase: preparedCapsule.saltBase,
-            encryptedVaultPointer: preparedCapsule.encryptedVaultPointer,
-            chunkMetadata: preparedCapsule.chunkMetadata,
-          }),
-        });
-        const preparedData = await preparedRes.json().catch(() => null);
-        if (!preparedRes.ok || !preparedData?.ok) {
-          throw new Error(preparedData?.error || "PREPARED_PROJECTION_FAILED");
-        }
-
-        const quoteRes = await fetch("/api/storage/quote", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            creatorIdentityId,
-            lifecycleId: lifecycleIdForAttempt,
-            capsuleId: preparedCapsule.capsuleId,
-            preparedProjectionId: preparedData.preparedProjection.preparedProjectionId,
-          }),
-        });
-        const quoteData = await quoteRes.json().catch(() => null);
-        if (!quoteRes.ok || !quoteData?.ok) {
-          throw new Error(quoteData?.error || "STORAGE_QUOTE_FAILED");
-        }
-
-        const quote = quoteData.storagePaymentId ? quoteData : quoteData.quote;
-        setStorageReview({
-          displayAmountUSDC: String(quote.displayAmountUSDC ?? ""),
-          storageSizeBytes: preparedCapsule.encryptedSizeBytes,
-        });
-        setSealPhase("idle");
-        sealingRef.current = false;
-        return; // stay on /create in the storage review state
-      } catch (reviewErr) {
-        preparedRef.current = null;
-        preparedInputsRef.current = null;
-        setPendingLifecycleId(null);
-        setSealPhase("idle");
-        sealingRef.current = false;
-        setSealError(
-          reviewErr instanceof Error ? reviewErr.message : "Storage quote failed"
-        );
-        return;
-      }
-
-      const holdState = preparedRef.current;
-      if (!holdState) {
-        throw new Error("HOLD_STATE_MISSING");
-      }
-
-      preparedInputsRef.current = fingerprint;
-      try {
-        const sessionData = {
-          billableSizeBytes: holdState.billableSizeBytes,
-          expectedAmount: holdState.expectedAmount,
-          openAt: holdState.openAt,
-          ...(typeof holdState.description === "string" ? { description: holdState.description } : {}),
-          inputsFingerprint: fingerprint,
-          capsuleId: holdState.prepared.capsuleId,
-          itemIds: holdState.itemIds,
-          encryptedVaultPointer: holdState.prepared.encryptedVaultPointer,
-          encryptedSizeBytes: holdState.prepared.encryptedSizeBytes,
-          vaultSha256: holdState.prepared.vaultSha256,
-          saltBase: holdState.prepared.saltBase,
-          recipientSecret: holdState.prepared.recipientSecret,
-          creatorAuthority: holdState.prepared.creatorAuthority,
-          chunkMetadata: holdState.prepared.chunkMetadata,
-        };
-        sessionStorage.setItem(
-          "aeterna-prepared-capsule",
-          JSON.stringify(sessionData)
-        );
-      } catch {
-        // non-fatal
-      }
-
-      setSealPhase("idle");
-      void handleReserveReady({
-        creatorCreditId: servicePaymentResult.creatorCreditId,
-        lifecycleId: lifecycleIdForAttempt,
-      });
+      // Phase B - enter the shared storage review flow (projection +
+      // canonical Irys quote), then wait for the creator to confirm.
+      await enterStorageReviewForPrepared();
+      return;
     } catch (err) {
       preparedRef.current = null;
       setSealPhase("idle");
@@ -797,13 +783,51 @@ export default function CapsuleBuilder({
     setSealPhase("preparing");
 
     try {
+      // Phase B - creator pays Irys directly (FUND-ONLY): the wallet
+      // signs the USDC funding transfer with the EXACT atomic amount
+      // from the server quote. Upload/publication is Phase C/D.
+      const creatorWallet = toCreatorIrysWallet(walletRef.current as never);
+      const { fundingSignature } = await fundCreatorPaidStorage(
+        storageReview.expectedAmountAtomic,
+        creatorWallet
+      );
+
+      const verifyRes = await fetch("/api/storage/verify-payment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          storagePaymentId: storageReview.storagePaymentId,
+          transactionSignature: fundingSignature,
+        }),
+      });
+      const verifyData = await verifyRes.json().catch(() => null);
+      if (!verifyRes.ok || !verifyData?.ok) {
+        const reason =
+          (verifyData?.reason as string | undefined) ??
+          (verifyData?.error as string | undefined) ??
+          "STORAGE_PAYMENT_NOT_VERIFIED";
+        // Stay in the storage payment/review state: the paid $1
+        // entitlement, lifecycle binding, quote and wallet binding are
+        // preserved so the creator can retry the same storage payment.
+        setSealPhase("idle");
+        setSealError(`Irys storage payment not verified: ${reason}`);
+        sealingRef.current = false;
+        return;
+      }
+
       await handleReserveReady({
         creatorCreditId: servicePaymentResult.creatorCreditId,
         lifecycleId: pendingLifecycleId,
       });
     } catch (err) {
+      // Failure path: remain in the storage payment/review state with
+      // paid entitlement, lifecycle and quote binding preserved.
       setSealPhase("idle");
-      setSealError(err instanceof Error ? err.message : "Capsule creation failed");
+      setSealError(
+        err instanceof Error ? err.message : "Storage payment failed"
+      );
+      sealingRef.current = false;
+      return;
     } finally {
       sealingRef.current = false;
     }
