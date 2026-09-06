@@ -43,8 +43,19 @@ export interface CreatorIrysWallet {
 }
 
 export interface CreatorIrysUploadResult {
-  /** Client evidence only — server verifies against the Irys Node. */
-  txId: string;
+  /**
+   * Solana transaction signature of the creator's USDC funding
+   * transfer to the Irys node (returned by `irys.fund()` as
+   * `id`). This is the value /api/storage/verify-payment resolves
+   * through the Solana RPC as `transactionSignature`.
+   */
+  fundingSignature: string;
+
+  /**
+   * Irys upload/data-item identifier (returned by `irys.upload()`
+   * receipt as `id`). NOT a Solana signature.
+   */
+  dataTxId: string;
 }
 
 function failClosed(reason: string): never {
@@ -170,6 +181,7 @@ export async function uploadCreatorPaid(
 
   const uploader = await buildCreatorUploader(wallet, rpcUrl);
 
+  let fundingSignature: string;
   try {
     const price = await uploader.getPrice(data.byteLength);
     const balance = await uploader.getBalance();
@@ -178,28 +190,44 @@ export async function uploadCreatorPaid(
       if (typeof wallet.sendTransaction !== "function") {
         failClosed("wallet does not support sendTransaction required for Irys funding");
       }
-      await uploader.fund(price);
+      // Creator wallet signs and sends the USDC funding transfer to
+      // the Irys node. fund() returns { id } = the Solana transaction
+      // signature (verified against installed package source).
+      const fundResult = (await uploader.fund(price)) as { id?: unknown };
+      if (
+        !fundResult ||
+        typeof fundResult !== "object" ||
+        typeof fundResult.id !== "string" ||
+        fundResult.id.length === 0
+      ) {
+        failClosed("Irys funding returned no transaction signature");
+      }
+      fundingSignature = fundResult.id;
+    } else {
+      failClosed("creator Irys balance already covers the price; funding transaction is required as payment evidence");
     }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("[AETERNA] creatorIrys:")) throw error;
-    failClosed(`Irys funding check failed: ${error instanceof Error ? error.message : String(error)}`);
+    failClosed(`Irys funding failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   let receipt: { id?: unknown } | null = null;
   try {
     receipt = await uploader.upload(data);
   } catch (error) {
-    failClosed(`Irys upload failed: ${error instanceof Error ? error.message : String(error)}`);
+    failClosed(
+      `Irys upload failed (fundingSignature=${fundingSignature}): ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 
   if (!receipt || typeof receipt !== "object") {
-    failClosed("malformed Irys receipt");
+    failClosed(`malformed Irys receipt (fundingSignature=${fundingSignature})`);
   }
 
-  const txId = receipt.id;
-  if (typeof txId !== "string" || txId.length === 0) {
-    failClosed("Irys receipt has no txId");
+  const dataTxId = receipt.id;
+  if (typeof dataTxId !== "string" || dataTxId.length === 0) {
+    failClosed(`Irys receipt has no data txId (fundingSignature=${fundingSignature})`);
   }
 
-  return { txId };
+  return { fundingSignature, dataTxId };
 }
