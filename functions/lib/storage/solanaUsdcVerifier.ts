@@ -179,18 +179,17 @@ export async function verifySolanaUsdcStoragePayment({
   const preTokenBalances = result.meta?.preTokenBalances ?? [];
   const postTokenBalances = result.meta?.postTokenBalances ?? [];
 
-  const postMintIndex = new Map(
-    postTokenBalances.map((item) => [item.mint.toLowerCase(), item])
+  /* Exact destination authority: the on-chain token recipient MUST be
+     the expected Irys destination for the expected mint. No fallback to
+     any other owner/balance holder is permitted — a payment to a
+     different destination must fail closed. */
+  const destinationBalance = postTokenBalances.find(
+    (item) =>
+      typeof item.owner === "string" &&
+      item.owner.toLowerCase() === expectedDestination.toLowerCase() &&
+      typeof item.mint === "string" &&
+      item.mint.toLowerCase() === expectedMint.toLowerCase()
   );
-
-  const destinationBalance =
-    postTokenBalances.find(
-      (item) =>
-        typeof item.owner === "string" &&
-        item.owner.toLowerCase() === expectedDestination.toLowerCase() &&
-        typeof item.mint === "string" &&
-        item.mint.toLowerCase() === expectedMint.toLowerCase()
-    ) ?? postMintIndex.get(expectedMint.toLowerCase());
 
   if (!destinationBalance) {
     return {
