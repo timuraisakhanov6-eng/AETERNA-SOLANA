@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useContext, useEffect, useRef, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Loader2, Lock, AlertTriangle, RefreshCw } from "lucide-react";
 import { sealCapsuleCore } from "@/lib/capsule/sealCapsuleCore";
+import { createCreatorIrysStorage } from "@/lib/storage/creatorIrysStorage";
+import { toCreatorIrysWallet } from "@/lib/storage/creatorIrys";
 import {
   getRuntime,
   destroyRuntime,
 } from "@/lib/runtime/runtimeRegistry";
 import { useCapsule } from "../../context/CapsuleContext";
+import { AETERNAWalletContext } from "../../context/AETERNAWalletContext";
 import {
   CAPSULE_ID_REGEX,
   SECRET_REGEX,
@@ -77,6 +80,7 @@ type LocationState = Readonly<{
   correlationTransactionId?: string | null;
   canonicalLifecycleId?: string | null;
   creatorIdentityId?: string | null;
+  storagePaymentId?: string | null;
 }>;
 
 
@@ -235,6 +239,9 @@ export default function CapsuleHold() {
   const creatorIdentityId =
     locationState?.creatorIdentityId ?? null;
 
+  const connectedWallet = useContext(AETERNAWalletContext);
+  const storagePaymentId = locationState?.storagePaymentId ?? null;
+
 
   const holdStateRef =
     useRef<CapsuleHoldState | null | undefined>(undefined);
@@ -301,7 +308,8 @@ export default function CapsuleHold() {
     if (
       !holdState ||
       !canonicalLifecycleId ||
-      !creatorIdentityId
+      !creatorIdentityId ||
+      !storagePaymentId
     ) {
 
       navigate(
@@ -421,6 +429,7 @@ export default function CapsuleHold() {
       !holdState ||
       !canonicalLifecycleId ||
       !creatorIdentityId ||
+      !storagePaymentId ||
       startedRef.current ||
       error
     ) {
@@ -631,6 +640,19 @@ export default function CapsuleHold() {
                     ? holdState.description
                     : "";
 
+                // Phase D2b — Creator-paid storage adapter (upload-only:
+                // the Irys storage payment is already PAYMENT_VERIFIED).
+                if (!connectedWallet?.wallet?.account) {
+                  throw new Error("STORAGE_WALLET_UNAVAILABLE");
+                }
+                const creatorStorage = createCreatorIrysStorage({
+                  wallet: toCreatorIrysWallet(connectedWallet.wallet),
+                  creatorIdentityId,
+                  lifecycleId: canonicalLifecycleId,
+                  capsuleId: holdState.prepared.capsuleId,
+                  storagePaymentId,
+                });
+
                 result =
                   await sealCapsuleCore({
 
@@ -666,6 +688,8 @@ export default function CapsuleHold() {
                     canonicalLifecycleId,
 
                     creatorIdentityId,
+
+                    storage: creatorStorage,
 
                     runtime,
 
@@ -841,6 +865,7 @@ export default function CapsuleHold() {
   holdState,
   canonicalLifecycleId,
   creatorIdentityId,
+  storagePaymentId,
   correlationTransactionId,
   navigate,
   error,

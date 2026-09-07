@@ -475,7 +475,7 @@ export default function CapsuleBuilder({
     }
   }
 
-  const handleReserveReady = async (result: { creatorCreditId: string; lifecycleId: string }) => {
+  const handleReserveReady = async (result: { creatorCreditId: string; lifecycleId: string; storagePaymentId: string }) => {
     if (!preparedRef.current) return
 
     const prepared = preparedRef.current
@@ -499,6 +499,7 @@ export default function CapsuleBuilder({
         recipientSecret: prepared.prepared.recipientSecret,
         creatorAuthority: prepared.prepared.creatorAuthority,
         chunkMetadata: prepared.prepared.chunkMetadata,
+        storagePaymentId: result.storagePaymentId,
       }
 
       try {
@@ -518,6 +519,7 @@ export default function CapsuleBuilder({
           correlationTransactionId: null,
           canonicalLifecycleId: reserved.lifecycleId,
           creatorIdentityId,
+          storagePaymentId: result.storagePaymentId,
         },
       })
     } catch (err) {
@@ -818,6 +820,7 @@ export default function CapsuleBuilder({
       await handleReserveReady({
         creatorCreditId: servicePaymentResult.creatorCreditId,
         lifecycleId: pendingLifecycleId,
+        storagePaymentId: storageReview.storagePaymentId,
       });
     } catch (err) {
       // Failure path: remain in the storage payment/review state with

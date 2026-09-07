@@ -4,6 +4,10 @@ import type {
 
 import { storage } from "@/lib/storage";
 
+import type {
+  StorageAdapter,
+} from "@/lib/storage/storageAdapter";
+
 import {
   uploadPreparedChunks,
 } from "@/lib/storage/uploadPreparedChunks";
@@ -677,6 +681,13 @@ export async function sealCapsuleCore(
 
     creatorIdentityId: string;
 
+    /**
+     * Phase D2b — storage DI. The Creator-paid path injects
+     * creatorIrysStorage; legacy/default callers omit it and the
+     * canonical Executor-bound singleton is used.
+     */
+    storage?: StorageAdapter;
+
     encryptedVaultPointer:
       string;
 
@@ -719,6 +730,11 @@ export async function sealCapsuleCore(
     creatorAuthority
 
   } = params;
+
+  // Phase D2b — storage DI: Creator-paid path injects creatorIrysStorage;
+  // legacy callers omit it and the canonical Executor-bound singleton
+  // is used. Protocol logic does not know which implementation runs.
+  const storageAdapter: StorageAdapter = params.storage ?? storage;
 
   let encryptedPayload: Uint8Array | null = null;
 
@@ -946,7 +962,8 @@ export async function sealCapsuleCore(
       await uploadPreparedChunks(
         runtime,
         chunkMetadata,
-        token
+        token,
+        storageAdapter
       );
 
     if (
@@ -1018,7 +1035,7 @@ export async function sealCapsuleCore(
     } else {
 
       const vaultTxId =
-        await storage.upload(
+        await storageAdapter.upload(
           encryptedPayload,
           token
         );

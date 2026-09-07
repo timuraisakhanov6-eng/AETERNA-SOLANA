@@ -65,7 +65,7 @@ export interface CreatorIrysUploadResult {
  * provider internals are imported here.
  */
 export interface AeternaWalletLike {
-  account: string;
+  account: string | null;
   signMessage(message: string | Uint8Array): Promise<{ signature: Uint8Array }>;
   signAndSendTransaction(transaction: unknown): Promise<{ signature: string }>;
 }

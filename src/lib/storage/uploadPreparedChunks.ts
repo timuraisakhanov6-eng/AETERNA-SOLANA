@@ -1,6 +1,11 @@
 import { storage } from "@/lib/storage";
 
 import type {
+  StorageAdapter,
+  UploadToken,
+} from "@/lib/storage/storageAdapter";
+
+import type {
   ChunkMetadata,
   PublishedChunkMetadata,
 } from "@/types/vault";
@@ -13,14 +18,14 @@ import {
   assertStoragePointer,
 } from "@/lib/storage/storageAdapter";
 
-import type {
-  UploadToken,
-} from "@/lib/storage/storageAdapter";
-
 export async function uploadPreparedChunks(
   runtime: RuntimeStorage,
   chunkMetadata: readonly ChunkMetadata[],
   uploadToken: UploadToken,
+  /* Phase D2b — storage DI: the Creator-paid path injects
+     creatorIrysStorage; legacy callers default to the canonical
+     Executor-bound singleton. */
+  storageAdapter: StorageAdapter = storage,
 ): Promise<
   readonly PublishedChunkMetadata[]
 > {
@@ -41,7 +46,7 @@ export async function uploadPreparedChunks(
     try {
 
       const result =
-        await storage.uploadChunk(
+        await storageAdapter.uploadChunk(
           chunk.ciphertext,
           metadata.chunkId,
           uploadToken
