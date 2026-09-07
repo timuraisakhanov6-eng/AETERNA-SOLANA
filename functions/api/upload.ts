@@ -29,11 +29,6 @@ import {
   MAX_ENCRYPTED_CHUNK_SIZE,
 } from "../../src/lib/crypto/constants";
 import {
-  publishCiphertext,
-  ExecutorUnavailableError,
-  type ExecutorEnv,
-} from "../lib/executorHot";
-import {
   getChunkPointerMap,
   putChunkPointerEntries,
   type ChunkPointerRegistryKVNamespace,
@@ -43,7 +38,7 @@ import { assertCapsuleId } from "../../src/types/manifest";
 
 /* ================= ENV ================= */
 
-interface UploadEnv extends ExecutorEnv {
+interface UploadEnv {
   VERIFIED_PAYMENTS: {
     get(key: string): Promise<string | null>;
   };
@@ -535,160 +530,17 @@ export const onRequestPost = async (
     }
   }
 
-  /* 11–13. Fund Executor Hot if required, upload via Executor Hot,
-     await independently-confirmed propagation. Nothing above this
-     line may fund or sign anything (Section 4, final MUST NOT). */
-  let storagePointer: string | null = null;
+  /* Publication via the legacy Executor Hot path is RETIRED.
+     The canonical Creator-paid flow publishes directly from the
+     creator wallet (src/lib/storage/creatorIrysStorage.ts) and
+     claims the publication server-side through
+     /api/publication/claim (Irys Node confirmation). This endpoint
+     retains its validation/registry shell until Phase F3 cleanup. */
+  return fail(origin, 410, "PUBLICATION_RETIRED_CREATOR_PAID");
 
-  try {
-    const publishResult = await publishCiphertext(env, bytes, now);
-    storagePointer = publishResult.storagePointer;
+  /* Unreachable legacy publication body retained commentually:
+     it previously funded/signed via Executor Hot and wrote
+     PUBLICATION_VERIFICATIONS / CHUNK_POINTER_REGISTRY entries;
+     both authorities now live in /api/publication/claim. */
 
-    if (kind === "vault") {
-      const tokenLifecycleId =
-        typeof tokenData.canonicalLifecycleId === "string"
-          ? tokenData.canonicalLifecycleId.trim()
-          : "";
-
-      const tokenCreatorIdentityId =
-        typeof tokenData.creatorIdentityId === "string"
-          ? tokenData.creatorIdentityId.trim()
-          : "";
-
-      const publicationKey = `creator:publication:${tokenLifecycleId}`;
-      const existingPublicationRaw = await env.PUBLICATION_VERIFICATIONS.get(publicationKey);
-
-      if (existingPublicationRaw) {
-        const existingPublication = JSON.parse(existingPublicationRaw) as Record<string, unknown>;
-        if (existingPublication.state !== "PENDING" || existingPublication.expectedTxId !== storagePointer) {
-          return fail(origin, 409, "PUBLICATION_ALREADY_BOUND");
-        }
-      } else {
-        const publicationRecord = {
-          lifecycleId: tokenLifecycleId,
-          capsuleId: resolvedCapsuleId,
-          creatorIdentityId: tokenCreatorIdentityId,
-          state: "PENDING",
-          expectedTxId: storagePointer,
-          expectedVaultSha256: null,
-          evidenceIds: [storagePointer],
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        try {
-          await env.PUBLICATION_VERIFICATIONS.put(publicationKey, JSON.stringify(publicationRecord));
-        } catch {
-          return fail(origin, 503, "PUBLICATION_RECORD_WRITE_FAILED");
-        }
-      }
-    }
-
-    /* Chunk path — canonical Chunk Pointer Registry persistence
-       (Storage Authority). Sequence: obtain StoragePointer →
-       assertStoragePointer → Registry Creation → Registry
-       Validation → Registry Persistence → success. Registry
-       persistence MUST complete before the success response. */
-    if (chunkId !== undefined) {
-      const pointer = assertStoragePointer(storagePointer);
-
-      // Branded capsuleId refinement for the Registry store API.
-      assertCapsuleId(resolvedCapsuleId);
-
-      const existing = await getChunkPointerMap(env, resolvedCapsuleId);
-      if (existing[chunkId] !== undefined) {
-        // Duplicate chunkId — fail closed. Never silently overwrite
-        // an existing immutable pointer mapping.
-        return fail(origin, 409, "DUPLICATE_CHUNK_ID");
-      }
-
-      await putChunkPointerEntries(env, resolvedCapsuleId, {
-        [chunkId]: pointer,
-      });
-    }
-
-    /* 14. Return only { ok: true, storagePointer } */
-    return new Response(JSON.stringify({ ok: true, storagePointer }), {
-      status: 200,
-      headers: baseHeaders(origin),
-    });
-  } catch (error) {
-    if (error instanceof ExecutorUnavailableError) {
-      // Failure Law: no partial upload, token remains valid and
-      // unused, client may safely retry with the same token.
-      return fail(origin, 503, "EXECUTOR_TEMPORARILY_UNAVAILABLE");
-    }
-
-    if (kind === "vault") {
-      const tokenLifecycleId =
-        typeof tokenData.canonicalLifecycleId === "string"
-          ? tokenData.canonicalLifecycleId.trim()
-          : "";
-
-      const tokenCreatorIdentityId =
-        typeof tokenData.creatorIdentityId === "string"
-          ? tokenData.creatorIdentityId.trim()
-          : "";
-
-      if (tokenLifecycleId && tokenCreatorIdentityId) {
-        const lifecycleKey = `creator:credit:lifecycle:${tokenCreatorIdentityId}:${tokenLifecycleId}`;
-        const lifecycleRaw = await env.CREATOR_CREDITS.get(lifecycleKey);
-        if (lifecycleRaw) {
-          let creditRecord: { id?: string } | null = null;
-          try {
-            creditRecord = JSON.parse(lifecycleRaw) as typeof creditRecord;
-          } catch {
-            creditRecord = null;
-          }
-
-          const creatorCreditId =
-            typeof creditRecord?.id === "string" && creditRecord.id.trim().length > 0
-              ? creditRecord.id.trim()
-              : "";
-
-          if (creatorCreditId) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            const isExplicitIrysRejection = /Irys upload failed:\s*[4-5]\d\d\b/.test(errorMessage);
-
-            if (isExplicitIrysRejection) {
-              try {
-                await env.CREDIT_OP_COORDINATOR.fetch(
-                  new Request("http://localhost", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({
-                      op: "vault-publication-claim",
-                      creatorCreditId,
-                      creatorIdentityId: tokenCreatorIdentityId,
-                      lifecycleId: tokenLifecycleId,
-                      capsuleId: resolvedCapsuleId,
-                      outcome: "PUBLICATION_EXPLICIT_FAILURE",
-                    }),
-                  })
-                );
-              } catch {
-                // best-effort failure marking; do not hide the original upload failure
-              }
-            }
-          }
-        }
-      }
-    }
-
-    if (env.DEBUG === "true") {
-      console.error(
-        "[AETERNA][upload] publication failed",
-        error instanceof Error ? error.name : typeof error
-      );
-    }
-
-    // Any other publication failure (funding, upload, or propagation)
-    // is also fail-closed and retryable: the Manifest is never
-    // touched by this endpoint, and the token is never marked used
-    // here at all — consumption happens exclusively at seal.ts, per
-    // Section 7 (Failure Law / token consumption semantics).
-    return fail(origin, 502, "PUBLICATION_FAILED");
-  } finally {
-    bytes.fill(0);
-  }
 };

@@ -11,12 +11,6 @@ import { onRequestPost as servicePaymentVerifyPost } from "./../api/service-paym
  * so we replace them with deterministic no-op implementations for this
  * test file only.
  */
-vi.mock("./../lib/executorHot", () => ({
-  assertExecutorHasBalance: vi.fn().mockResolvedValue(undefined),
-  getExecutorAddress: vi.fn().mockResolvedValue("0x0000000000000000000000000000000000000000"),
-  ExecutorUnavailableError: class extends Error {},
-}));
-
 const ALLOWED_ORIGIN = "https://aeternacapsule.com";
 
 const PAYMENT_INTENT_ID = "intent-1";

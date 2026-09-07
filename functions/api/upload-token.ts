@@ -7,7 +7,6 @@
  * - pre-capsule authorization does NOT require capsuleId
  * - upload token is issued only on valid entitlement/lifecycle linkage
  * - payment authority is NOT consumed here
- * - executor balance safety and TTL semantics are preserved
  */
 
 import type { EventContext } from "@cloudflare/workers-types";
