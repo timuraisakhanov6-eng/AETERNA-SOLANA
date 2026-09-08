@@ -659,7 +659,7 @@ export function PaymentModal({
                   : connectWallet
                 : connectWallet
             }
-            className="w-full"
+            className="w-full h-auto min-h-10 whitespace-normal"
           >
             {isProcessing && <Loader2 className="mr-2 animate-spin" />}
             {phase === "quoting" && "Requesting quote..."}

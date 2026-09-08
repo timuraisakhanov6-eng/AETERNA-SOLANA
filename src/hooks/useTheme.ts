@@ -60,19 +60,9 @@ function getInitialTheme(): Theme {
 
   }
 
-  /* fallback to system preference */
+  /* canonical default */
 
-  if (
-    window.matchMedia(
-      "(prefers-color-scheme: dark)"
-    ).matches
-  ) {
-
-    return "dark";
-
-  }
-
-  return "light";
+  return "dark";
 
 }
 

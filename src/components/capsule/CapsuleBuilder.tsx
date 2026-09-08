@@ -977,7 +977,7 @@ export default function CapsuleBuilder({
                     : handleFirstCreateClick
                 }
                 className={[
-                  "w-full h-14 text-lg font-display tracking-widest transition-all active:scale-[0.98]",
+                  "w-full h-auto min-h-14 whitespace-normal text-lg font-display tracking-widest transition-all active:scale-[0.98]",
                   isCreateDisabled
                     ? "bg-muted text-muted-foreground cursor-not-allowed"
                     : "bg-emerald-600 hover:bg-emerald-500 text-white",
