@@ -6,15 +6,12 @@ import type {
 import { MANIFEST_VERSION } from "@/types/manifest";
 
 import type {
-  StoragePointer,
-  UploadToken,
-  StorageAdapter
+  StoragePointer
 } from "./storageAdapter";
 
 import {
   assertChunkPointerMap,
-  assertStoragePointer,
-  assertUploadToken
+  assertStoragePointer
 } from "./storageAdapter";
 
 import { executorStorage } from "./executorStorage";
@@ -37,7 +34,7 @@ import {
  */
 
 
-const storageAdapter: StorageAdapter =
+const storageAdapter =
   Object.freeze(executorStorage);
 
 
@@ -48,9 +45,6 @@ const storageAdapter: StorageAdapter =
  * capsule ≤ 20GB
  * chunk ≤ 256MB (Safari-safe)
  */
-
-const MAX_CHUNK_UPLOAD_SIZE =
-  256 * 1024 * 1024;
 
 const MAX_CHUNK_DOWNLOAD_SIZE =
   256 * 1024 * 1024;
@@ -191,312 +185,6 @@ function assertStrictManifestShape(
 
 /* =========================
    VAULT / CHUNK UPLOAD
-   ========================= */
-
-
-export async function upload(
-
-  data: Uint8Array,
-
-  uploadToken: UploadToken
-
-): Promise<{
-
-  txId: StoragePointer
-
-}> {
-
-  if (!(data instanceof Uint8Array)) {
-
-    sealedError();
-
-  }
-
-
-  if (isDetachedBuffer(data)) {
-
-    sealedError();
-
-  }
-
-
-  if (
-
-    data.byteLength <= 0 ||
-
-    // NOTE: Number.isFinite(data.byteLength) is
-    // technically redundant (byteLength is always
-    // an integer per the JS runtime), but retained
-    // here as an explicit audit-visible assertion.
-    !Number.isFinite(data.byteLength) ||
-
-    data.byteLength >
-      MAX_CHUNK_UPLOAD_SIZE
-
-  ) {
-
-    sealedError();
-
-  }
-
-
-  /**
-   * Canonical upload-token validator
-   *
-   * Spec:
-   * uploadToken MUST be verified
-   * before adapter.upload()
-   */
-
-  assertUploadToken(uploadToken);
-
-
-  if (
-
-    !storageAdapter ||
-
-    typeof storageAdapter.upload !==
-      "function"
-
-  ) {
-
-    sealedError();
-
-  }
-
-
-  try {
-
-    const result =
-      await storageAdapter.upload(
-        data,
-        uploadToken
-      );
-
-
-    if (
-
-      !result ||
-
-      !isPlainObject(result) ||
-
-      typeof result.txId !==
-        "string"
-
-    ) {
-
-      sealedError();
-
-    }
-
-
-    const pointer =
-      assertStoragePointer(
-        result.txId
-      );
-
-
-    // FIX 4 — Storage pointers are authority-relevant
-    // runtime identifiers and must not appear in logs,
-    // even in DEV (browser log / extension exposure).
-    if (import.meta.env.DEV) {
-
-      console.log(
-        `[storage:${storageAdapter.name}] upload complete`
-      );
-
-    }
-
-
-    return {
-
-      txId: pointer
-
-    };
-
-  }
-
-  catch (cause) {
-
-    // FIX 6 — Preserve causal context in DEV without
-    // leaking it to callers. Fail-closed behavior is
-    // unchanged; sealedError() still throws opaquely.
-    if (import.meta.env.DEV) {
-      console.error("[storage] upload failed", cause);
-    }
-
-    sealedError();
-
-  }
-
-}
-
-
-/* =========================
-   CHUNK UPLOAD (STORAGE AUTHORITY)
-   ========================= */
-
-
-/**
- * Chunk upload with mandatory chunkId binding.
- *
- * Capability boundary:
- *
- * chunkId REQUIRED
- * NO chunkId → NO UPLOAD
- *
- * Canonical rule:
- *
- * Chunk Pointer Registry belongs to the Storage Authority
- * and is independent of the Manifest Authority.
- * manifest.ext.chunkPointers is NOT the canonical source.
- */
-
-export async function uploadChunk(
-
-  data: Uint8Array,
-
-  chunkId: ChunkId,
-
-  uploadToken: UploadToken
-
-): Promise<{
-
-  txId: StoragePointer
-
-}> {
-
-  if (!(data instanceof Uint8Array)) {
-
-    sealedError();
-
-  }
-
-
-  if (isDetachedBuffer(data)) {
-
-    sealedError();
-
-  }
-
-
-  if (
-
-    data.byteLength <= 0 ||
-
-    !Number.isFinite(data.byteLength) ||
-
-    data.byteLength >
-      MAX_CHUNK_UPLOAD_SIZE
-
-  ) {
-
-    sealedError();
-
-  }
-
-
-  /**
-   * Mandatory chunkId boundary.
-   *
-   * chunkId MUST be provided by the caller.
-   * It is never generated here and never
-   * extracted from ciphertext.
-   */
-
-  if (
-
-    typeof chunkId !== "string" ||
-
-    chunkId.length === 0
-
-  ) {
-
-    sealedError();
-
-  }
-
-
-  assertUploadToken(uploadToken);
-
-
-  if (
-
-    !storageAdapter ||
-
-    typeof storageAdapter.uploadChunk !==
-      "function"
-
-  ) {
-
-    sealedError();
-
-  }
-
-
-  try {
-
-    const result =
-      await storageAdapter.uploadChunk(
-        data,
-        chunkId,
-        uploadToken
-      );
-
-
-    if (
-
-      !result ||
-
-      !isPlainObject(result) ||
-
-      typeof result.txId !==
-        "string"
-
-    ) {
-
-      sealedError();
-
-    }
-
-
-    const pointer =
-      assertStoragePointer(
-        result.txId
-      );
-
-
-    if (import.meta.env.DEV) {
-
-      console.log(
-        `[storage:${storageAdapter.name}] uploadChunk complete`
-      );
-
-    }
-
-
-    return {
-
-      txId: pointer
-
-    };
-
-  }
-  catch (cause) {
-
-    if (import.meta.env.DEV) {
-      console.error("[storage] uploadChunk failed", cause);
-    }
-
-    sealedError();
-
-  }
-
-}
-
-
-/* =========================
-   VAULT / CHUNK DOWNLOAD
    ========================= */
 
 
@@ -760,10 +448,6 @@ export function getCurrentAdapterName(): string {
 
 export const storage =
   Object.freeze({
-
-    upload,
-
-    uploadChunk,
 
     download,
 

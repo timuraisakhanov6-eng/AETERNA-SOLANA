@@ -2,8 +2,6 @@ import type {
   RuntimeStorage,
 } from "@/lib/runtime/runtimeStorage";
 
-import { storage } from "@/lib/storage";
-
 import type {
   StorageAdapter,
 } from "@/lib/storage/storageAdapter";
@@ -682,11 +680,12 @@ export async function sealCapsuleCore(
     creatorIdentityId: string;
 
     /**
-     * Phase D2b — storage DI. The Creator-paid path injects
-     * creatorIrysStorage; legacy/default callers omit it and the
-     * canonical Executor-bound singleton is used.
+     * Phase D2b — storage DI. Storage is required for the sealing
+     * path: the Creator-paid canonical caller injects the
+     * creatorIrysStorage adapter. There is no Executor write-path
+     * fallback and no default singleton.
      */
-    storage?: StorageAdapter;
+    storage: StorageAdapter;
 
     encryptedVaultPointer:
       string;
@@ -731,10 +730,11 @@ export async function sealCapsuleCore(
 
   } = params;
 
-  // Phase D2b — storage DI: Creator-paid path injects creatorIrysStorage;
-  // legacy callers omit it and the canonical Executor-bound singleton
-  // is used. Protocol logic does not know which implementation runs.
-  const storageAdapter: StorageAdapter = params.storage ?? storage;
+  // Phase D2b — storage DI: storage is required; the Creator-paid
+  // canonical caller injects creatorIrysStorage. There is no Executor
+  // write-path fallback. Protocol logic does not know which
+  // implementation runs.
+  const storageAdapter: StorageAdapter = params.storage;
 
   let encryptedPayload: Uint8Array | null = null;
 
@@ -1065,7 +1065,7 @@ export async function sealCapsuleCore(
      * Canonical order: server-authoritative publication verification
      * MUST complete before the irreversible seal commit. The txId is
      * submitted as evidence only — the server verifies against its
-     * own PENDING record from /api/upload.
+     * own PENDING record created by /api/publication/claim.
      */
     await verifyPublicationOrThrow(
       creatorIdentityId,

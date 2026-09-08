@@ -26,6 +26,17 @@ import type { StorageAdapter } from "./storageAdapter";
 
 import { executorStorage } from "./executorStorage";
 
+/**
+ * Phase D2b — executorStorage is now read-only (upload/uploadChunk
+ * moved to the Creator-paid path via creatorIrysStorage). The legacy
+ * singleton binding is preserved for non-Creator callers (open,
+ * recovery, download).
+ */
+type LegacyReadStorageAdapter = Pick<
+  StorageAdapter,
+  "name" | "download" | "getManifest" | "getChunkPointers"
+>;
+
 
 /**
  * Canonical failure helper
@@ -55,5 +66,5 @@ if (!executorStorage) {
  * Immutable canonical adapter binding
  */
 
-export const storage: StorageAdapter =
+export const storage: LegacyReadStorageAdapter =
   Object.freeze(executorStorage);

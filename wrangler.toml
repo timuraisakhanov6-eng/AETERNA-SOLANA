@@ -53,7 +53,7 @@ id = "cdf53f4586574d7b9285c55565c45d58"
 # ─────────────────────────────────────────────
 # Authoritative Publication / Seal Verification stores
 #
-# REQUIRED for /api/upload (vault), /api/publication/verify,
+# REQUIRED for /api/publication/verify,
 # /api/seal/verify, /api/capsule/seal, /api/creator/finalize-credit,
 # /api/creator/recover-lifecycle.
 # ─────────────────────────────────────────────
@@ -184,55 +184,4 @@ id = "556eff4319894b58b3fac0638950ec71"
 [[env.production.kv_namespaces]]
 binding = "SEAL_VERIFICATIONS"
 id = "7e0a1295d9e54b8393e081586363ee43"
-# ─────────────────────────────────────────────
-
-# ─────────────────────────────────────────────
-# Executor Hot (Publication Authority)
-#
-# Endpoint: /api/upload
-# Module:   functions/lib/executorHot.ts
-#
-# Executor Hot performs publication to Irys on behalf
-# of the protocol. The client never receives or supplies
-# any publication credentials.
-#
-# All sensitive values MUST be configured using
-# Wrangler Secrets and MUST NEVER be committed
-# to Git or placed inside wrangler.toml.
-#
-# Required production secrets:
-#
-# EXECUTOR_PRIVATE_KEY
-#   Operational signing key for publication execution.
-#
-# Note: payment verification secrets are defined separately.
-#
-# Current implementation notes:
-#
-# Executor Hot currently uses the canonical
-# Irys Mainnet endpoint compiled into
-# executorHot.ts:
-#
-#   https://node1.irys.xyz
-#
-# Publication currently uses the Irys Mainnet endpoint compiled into
-# executorHot.ts:
-#
-#   https://node1.irys.xyz
-#
-# These values are implementation constants,
-# not deployment secrets.
-#
-# NEVER place secret values in this file.
-#
-# Configure every secret with:
-#
-#   wrangler secret put <SECRET_NAME>
-#
-# Example:
-#
-#   wrangler secret put EXECUTOR_PRIVATE_KEY
-#
-# Secrets are stored securely by Cloudflare and
-# are never committed to the repository.
 # ─────────────────────────────────────────────
