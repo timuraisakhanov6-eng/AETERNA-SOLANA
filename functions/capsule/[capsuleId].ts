@@ -1,14 +1,21 @@
 /**
  * AETERNA — Capsule Route Handler
  *
- * GET /capsule/:capsuleId
+ * GET /capsule/:capsuleId#<recipientSecret>
  *
- * Spec §28: OG Preview Model
+ * Crawler-facing social preview layer (Spec §28: OG Preview Model).
+ *
+ * Security model:
+ * - The URL fragment (#recipientSecret / #c=creatorAuthority) is
+ *   client-side only and NEVER reaches this function — it cannot be
+ *   reflected into any response.
+ * - Only public manifest metadata (description) is ever served here.
+ * - Browsers (non-crawlers) pass straight through to the SPA; the
+ *   capsule URL format and application behavior are unchanged.
  */
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../lib/rateLimit";
-import { getTrustedTime } from "../api/time";
 import { CAPSULE_ID_REGEX } from "../../src/lib/crypto/validators";
 
 /**
@@ -28,19 +35,38 @@ interface OgEnv {
   CAPSULE_MANIFESTS: KVNamespace;
 }
 
-const SITE_URL  = "https://aeternacapsule.com";
-const SITE_NAME = "AETERNA Capsule";
-const OG_IMAGE  = `${SITE_URL}/og/og-cover.png`;
+/**
+ * Single-point origin configuration.
+ *
+ * Switching to the future canonical domain is a ONE-LINE change here
+ * (plus the static index.html meta). Do not scatter absolute URLs.
+ */
+const SITE_URL = "https://aeterna-solana.pages.dev";
+const SITE_NAME = "AETERNA";
+const OG_IMAGE_PATH = "/og/aeterna-og-1200x630.png";
+const OG_IMAGE = `${SITE_URL}${OG_IMAGE_PATH}`;
+const OG_IMAGE_WIDTH = 1733;
+const OG_IMAGE_HEIGHT = 908;
+
+const FALLBACK_TITLE = "AETERNA — Digital Time Capsule";
+const FALLBACK_DESCRIPTION =
+  "A non-custodial digital time capsule. Time decides. Not people.";
+
+/**
+ * Canonical creator description limit (client enforces the same
+ * value in CapsuleBuilder: MAX_DESCRIPTION = 140).
+ */
+const OG_DESCRIPTION_LIMIT = 140;
 
 /**
  * NOTE on isCrawler(): this is a UX/perf routing decision, not a
  * security boundary. Any client can spoof one of these User-Agent
  * substrings to receive the static OG HTML instead of the SPA shell.
  * That's acceptable here because the OG branch only ever serves
- * already-public preview fields (openAt, truncated description) —
- * nothing secret is gated behind crawler detection. The actual
- * abuse control for this branch is the IP-based rateLimit() call
- * below, which applies regardless of what User-Agent is presented.
+ * already-public preview fields (the creator description) — nothing
+ * secret is gated behind crawler detection. The actual abuse control
+ * for this branch is the IP-based rateLimit() call below, which
+ * applies regardless of what User-Agent is presented.
  */
 
 const CRAWLER_UA_PATTERNS = [
@@ -72,24 +98,13 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#x27;");
 }
 
-function formatUTCDate(ts: number): string {
-  return new Date(ts).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "2-digit",
-    timeZone: "UTC",
-  });
-}
-
-function buildOgHtml(params: {
+export function buildOgHtml(params: {
   title: string;
   description: string;
-  openAt: string;
   url: string;
-  updatedTimeSec: number;
 }): string {
 
-  const { title, description, openAt, url, updatedTimeSec } = params;
+  const { title, description, url } = params;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -105,7 +120,7 @@ function buildOgHtml(params: {
 
 <link rel="canonical" href="${escapeHtml(url)}" />
 
-<meta property="og:type" content="article" />
+<meta property="og:type" content="website" />
 <meta property="og:locale" content="en_US" />
 <meta property="og:site_name" content="${escapeHtml(SITE_NAME)}" />
 <meta property="og:url" content="${escapeHtml(url)}" />
@@ -114,24 +129,22 @@ function buildOgHtml(params: {
 <meta property="og:image" content="${escapeHtml(OG_IMAGE)}" />
 <meta property="og:image:secure_url" content="${escapeHtml(OG_IMAGE)}" />
 <meta property="og:image:type" content="image/png" />
-<meta property="og:image:width" content="1200" />
-<meta property="og:image:height" content="630" />
-<meta property="og:image:alt" content="AETERNA Capsule preview" />
+<meta property="og:image:width" content="${OG_IMAGE_WIDTH}" />
+<meta property="og:image:height" content="${OG_IMAGE_HEIGHT}" />
+<meta property="og:image:alt" content="AETERNA — Digital Time Capsule" />
 
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="${escapeHtml(title)}" />
 <meta name="twitter:description" content="${escapeHtml(description)}" />
 <meta name="twitter:image" content="${escapeHtml(OG_IMAGE)}" />
-<meta name="twitter:image:alt" content="AETERNA Capsule preview" />
+<meta name="twitter:image:alt" content="AETERNA — Digital Time Capsule" />
 
-<meta property="og:updated_time" content="${updatedTimeSec}" />
 <meta http-equiv="content-language" content="en" />
 
 </head>
 
 <body>
 
-<p>Opens on: ${escapeHtml(openAt)}</p>
 <p><a href="${escapeHtml(url)}">Open capsule</a></p>
 
 </body>
@@ -149,7 +162,9 @@ export const onRequestGet = async (
   const userAgent = request.headers.get("user-agent") ?? "";
 
   /**
-   * Browser → SPA passthrough
+   * Browser → SPA passthrough.
+   * The capsule URL (including its fragment) is untouched; the SPA
+   * bootstraps exactly as it does without this function.
    */
 
   if (!isCrawler(userAgent)) {
@@ -169,7 +184,10 @@ export const onRequestGet = async (
   }
 
   /**
-   * Validate capsuleId
+   * Validate capsuleId.
+   *
+   * Malformed id → normal SPA (client renders its canonical
+   * NotFound view); never an error page a crawler could miscast.
    */
 
   const capsuleId = params?.capsuleId;
@@ -179,9 +197,7 @@ export const onRequestGet = async (
     typeof capsuleId !== "string" ||
     !CAPSULE_ID_REGEX.test(capsuleId)
   ) {
-    return new Response("Not Found", {
-      status: 404,
-    });
+    return context.next();
   }
 
   /**
@@ -194,9 +210,7 @@ export const onRequestGet = async (
       "[og] CAPSULE_MANIFESTS binding unavailable"
     );
 
-    return new Response("Service Unavailable", {
-      status: 503,
-    });
+    return context.next();
   }
 
   /**
@@ -211,17 +225,13 @@ export const onRequestGet = async (
 
   } catch {
 
-    return new Response("Service Unavailable", {
-      status: 503,
-    });
+    return context.next();
 
   }
 
   if (!raw) {
 
-    return new Response("Not Found", {
-      status: 404,
-    });
+    return context.next();
 
   }
 
@@ -243,9 +253,7 @@ export const onRequestGet = async (
 
   } catch {
 
-    return new Response("Not Found", {
-      status: 404,
-    });
+    return context.next();
 
   }
 
@@ -255,51 +263,29 @@ export const onRequestGet = async (
 
   if (
     manifest.version !== 1 ||
-    manifest.capsuleId !== capsuleId ||
-    typeof manifest.openAt !== "number" ||
-    !Number.isSafeInteger(manifest.openAt)
+    manifest.capsuleId !== capsuleId
   ) {
 
-    return new Response("Not Found", {
-      status: 404,
-    });
+    return context.next();
 
   }
 
   /**
-   * Format preview data
+   * Creator description ONLY — exactly the text the creator typed
+   * into "Capsule Description". No title/name derivation, no
+   * capsuleId, no secrets, no encrypted content.
    */
 
-  const openAtFormatted = formatUTCDate(
-    manifest.openAt as number
-  );
-
-  const rawDescription =
-    typeof manifest.description === "string"
-      ? manifest.description.slice(0, 140)
-      : null;
-
-  const title = rawDescription
-    ? `"${rawDescription}" — AETERNA Capsule`
-    : "AETERNA Time Capsule";
-
   const description =
-    `Sealed and time-locked. Opens on ${openAtFormatted} (UTC). ` +
-    `Created with AETERNA — zero-knowledge digital time capsule protocol.`;
-
-  const canonicalUrl =
-    `${SITE_URL}/capsule/${capsuleId}`;
-
-  const { nowUtc } = await getTrustedTime();
+    typeof manifest.description === "string" &&
+    manifest.description.trim().length > 0
+      ? manifest.description.slice(0, OG_DESCRIPTION_LIMIT)
+      : FALLBACK_DESCRIPTION;
 
   const html = buildOgHtml({
-
-    title,
+    title: FALLBACK_TITLE,
     description,
-    openAt: openAtFormatted,
-    url: canonicalUrl,
-    updatedTimeSec: Math.floor(nowUtc / 1000)
-
+    url: `${SITE_URL}/capsule/${capsuleId}`
   });
 
   return new Response(html, {
@@ -310,6 +296,13 @@ export const onRequestGet = async (
 
       "Content-Type":
         "text/html; charset=utf-8",
+
+      /**
+       * Cache key is the full request path (unique per capsuleId),
+       * so previews of different capsules can never share an edge
+       * or browser cache entry. Sealed manifests are immutable;
+       * the short max-age only bounds crawler staleness.
+       */
 
       "Cache-Control":
         "public, max-age=300, stale-while-revalidate=600",
