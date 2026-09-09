@@ -91,11 +91,135 @@ function isBase58Address(value: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]+$/.test(value);
 }
 
+/* ===== TEMPORARY DIAGNOSTIC (safe, remove after TX_FAILED root cause) =====
+ *
+ * Server-generated failure context for Solana transactions that are found,
+ * finalized, and carry meta.err != null. Derived ONLY from the already-fetched
+ * finalized transaction. Contains no secrets, no signatures, no raw
+ * transaction bytes, no instruction payloads, no log output.
+ */
+
+const DIAGNOSTIC_SERIALIZED_CAP = 512;
+
+interface DiagnosticTokenBalance {
+  mint?: string;
+  owner?: string;
+  uiTokenAmount?: { uiAmount?: number; decimals?: number };
+}
+
+interface SolanaTxShape {
+  slot?: number;
+  transaction?: {
+    message?: {
+      accountKeys?: Array<{ pubkey?: string; signer?: boolean }>;
+    };
+  };
+  meta?: {
+    preBalances?: number[];
+    postBalances?: number[];
+    preTokenBalances?: DiagnosticTokenBalance[];
+    postTokenBalances?: DiagnosticTokenBalance[];
+    err?: unknown;
+    status?: { Ok?: unknown; Err?: unknown };
+  };
+}
+
+function jsonSafeMetaErr(value: unknown): unknown {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value ?? null) ?? "null";
+  } catch {
+    return { repr: "unserializable" };
+  }
+  if (serialized.length > DIAGNOSTIC_SERIALIZED_CAP) {
+    return { truncated: serialized.slice(0, DIAGNOSTIC_SERIALIZED_CAP) };
+  }
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    return String(value);
+  }
+}
+
+function diagnosticTokenDelta(
+  pre: DiagnosticTokenBalance[] | undefined,
+  post: DiagnosticTokenBalance[] | undefined,
+  owner: string,
+  mint: string
+): number | null {
+  const preEntry = pre?.find(
+    (balance) => balance.owner === owner && balance.mint === mint
+  );
+  const postEntry = post?.find(
+    (balance) => balance.owner === owner && balance.mint === mint
+  );
+  const preAmount = preEntry?.uiTokenAmount?.uiAmount;
+  const postAmount = postEntry?.uiTokenAmount?.uiAmount;
+  if (typeof preAmount !== "number" && typeof postAmount !== "number") {
+    return null;
+  }
+  return (
+    (typeof postAmount === "number" ? postAmount : 0) -
+    (typeof preAmount === "number" ? preAmount : 0)
+  );
+}
+
+function buildTxFailedDiagnostic(
+  info: SolanaTxShape,
+  expectedPayer: string
+): Record<string, unknown> {
+  const meta = info.meta ?? {};
+  const accountKeys = info.transaction?.message?.accountKeys ?? [];
+  const payerIndex = accountKeys.findIndex(
+    (key) => key?.pubkey === expectedPayer
+  );
+
+  let payerSOLDelta: number | null = null;
+  const preSOL = Array.isArray(meta.preBalances)
+    ? meta.preBalances[payerIndex]
+    : undefined;
+  const postSOL = Array.isArray(meta.postBalances)
+    ? meta.postBalances[payerIndex]
+    : undefined;
+  if (
+    payerIndex >= 0 &&
+    typeof preSOL === "number" &&
+    typeof postSOL === "number"
+  ) {
+    payerSOLDelta = postSOL - preSOL;
+  }
+
+  return {
+    hasMetaErr: meta.err !== null && meta.err !== undefined,
+    metaErr: jsonSafeMetaErr(meta.err),
+    slot: typeof info.slot === "number" ? info.slot : null,
+    balances: {
+      payerUsdcDelta: diagnosticTokenDelta(
+        meta.preTokenBalances,
+        meta.postTokenBalances,
+        expectedPayer,
+        SOLANA_USDC_MINT
+      ),
+      destinationUsdcDelta: diagnosticTokenDelta(
+        meta.preTokenBalances,
+        meta.postTokenBalances,
+        SOLANA_SERVICE_SETTLEMENT_ADDRESS,
+        SOLANA_USDC_MINT
+      ),
+      payerSOLDelta,
+    },
+  };
+}
+
+/* ===== END TEMPORARY DIAGNOSTIC ===== */
+
 async function verifySolanaPayment(
   env: ServicePaymentVerifyEnv,
   txHash: string,
   expectedPayer: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<
+  { ok: true } | { ok: false; error: string; diagnostic?: Record<string, unknown> }
+> {
   if (!/^[A-Za-z0-9]{64,88}$/.test(txHash)) {
     return { ok: false as const, error: "INVALID_SOLANA_TX_HASH" };
   }
@@ -116,6 +240,8 @@ async function verifySolanaPayment(
       };
     };
     meta?: {
+      preBalances?: number[];
+      postBalances?: number[];
       postTokenBalances?: Array<{ mint?: string; owner?: string; uiTokenAmount?: { uiAmount?: number; decimals?: number } }>;
       preTokenBalances?: Array<{ mint?: string; owner?: string; uiTokenAmount?: { uiAmount?: number; decimals?: number } }>;
       err?: unknown;
@@ -128,7 +254,12 @@ async function verifySolanaPayment(
   }
 
   if (info.meta.err) {
-    return { ok: false as const, error: "TX_FAILED" };
+    /* TEMPORARY DIAGNOSTIC: attach safe failure context to the 402. */
+    return {
+      ok: false as const,
+      error: "TX_FAILED",
+      diagnostic: buildTxFailedDiagnostic(info, expectedPayer),
+    };
   }
 
   const accountKeys =
@@ -243,10 +374,15 @@ function baseHeaders(origin: string): Record<string, string> {
 function fail(
   origin: string,
   status = 400,
-  error = "error"
+  error = "error",
+  diagnostic?: Record<string, unknown>
 ): Response {
+  const body: Record<string, unknown> = { ok: false, error };
+  if (diagnostic) {
+    body.diagnostic = diagnostic;
+  }
   return new Response(
-    JSON.stringify({ ok: false, error }),
+    JSON.stringify(body),
     { status, headers: baseHeaders(origin) }
   );
 }
@@ -771,7 +907,12 @@ async function resolveCreatorIdentity(
   } else if (isSolanaSignature) {
     const solanaVerification = await verifySolanaPayment(env, txHash, expectedPayer);
     if (!solanaVerification.ok) {
-      return fail(origin, 402, solanaVerification.error);
+      return fail(
+        origin,
+        402,
+        solanaVerification.error,
+        solanaVerification.diagnostic
+      );
     }
   } else {
     return fail(origin, 400, "INVALID_TX_HASH");
