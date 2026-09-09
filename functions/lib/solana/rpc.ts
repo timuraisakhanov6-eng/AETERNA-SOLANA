@@ -89,6 +89,7 @@ export async function getSolanaTransaction(
       signature,
       {
         commitment: "finalized",
+        encoding: "jsonParsed",
         maxSupportedTransactionVersion: 0,
       },
     ], perRequestTimeout);
