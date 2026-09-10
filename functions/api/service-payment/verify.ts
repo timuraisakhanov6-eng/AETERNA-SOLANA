@@ -21,6 +21,10 @@ import { getSolanaTransaction } from "../../lib/solana/rpc";
 import {
   getBusinessQuote,
 } from "../../lib/business/businessQuoteStore";
+import {
+  claimPaymentTransaction,
+  resolvePaymentNetwork,
+} from "../../lib/paymentTxUniqueness";
 
 /* ================= ENV ================= */
 
@@ -45,6 +49,10 @@ export interface ServicePaymentVerifyEnv {
   CHAINSTACK_BASE_RPC_USERNAME?: string;
   CHAINSTACK_BASE_RPC_PASSWORD?: string;
   SOLANA_MAINNET_RPC_URL?: string;
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(binding: { id: string }): DurableObjectStub;
+  };
 }
 
 /* ================= CONSTANTS ================= */
@@ -916,6 +924,46 @@ async function resolveCreatorIdentity(
     }
   } else {
     return fail(origin, 400, "INVALID_TX_HASH");
+  }
+
+  /* ================= GLOBAL TRANSACTION UNIQUENESS ================= */
+
+  /**
+   * Canonical invariant: ONE successful on-chain service-payment
+   * transaction (network + transactionId) -> MAXIMUM ONE verified
+   * payment -> MAXIMUM ONE Creator Credit, globally across quotes and
+   * paymentIntentIds. Claimed atomically via the CreditOperationCoordinator
+   * Durable Object, only AFTER the transaction passed every existing
+   * validity check above. A conflict means a different paymentIntentId
+   * already owns this transaction (second-credit attempt); any
+   * coordination failure is fail-closed: no verified payment is
+   * persisted, so no Credit can be granted.
+   */
+  const paymentNetwork = resolvePaymentNetwork(txHash);
+  if (!paymentNetwork) {
+    return fail(origin, 400, "INVALID_TX_HASH");
+  }
+
+  const txClaim = await claimPaymentTransaction(
+    {
+      CREDIT_OP_COORDINATOR: env.CREDIT_OP_COORDINATOR as
+        ServicePaymentVerifyEnv["CREDIT_OP_COORDINATOR"],
+    },
+    {
+      network: paymentNetwork,
+      transactionId: txHash,
+      paymentIntentId,
+      evidenceId,
+      creatorIdentityId,
+      claimedAt: now,
+    }
+  );
+  if (!txClaim.ok) {
+    return fail(
+      origin,
+      txClaim.conflict ? 409 : 503,
+      txClaim.conflict ? "TRANSACTION_ALREADY_VERIFIED" : "PAYMENT_TX_UNIQUENESS_UNAVAILABLE"
+    );
   }
 
   /* ================= PERSIST VERIFIED PAYMENT ================= */

@@ -20,6 +20,10 @@ import {
   createCreatorCredit,
   generateCreditId,
 } from "../../../src/lib/creator/creatorCreditStore";
+import {
+  checkPaymentTransactionBinding,
+  resolvePaymentNetwork,
+} from "../../lib/paymentTxUniqueness";
 
 interface GrantCreditEnv {
   CREATOR_CREDITS: {
@@ -31,6 +35,10 @@ interface GrantCreditEnv {
   };
   VERIFIED_PAYMENTS: {
     get(key: string): Promise<string | null>;
+  };
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(binding: { id: string }): DurableObjectStub;
   };
 }
 
@@ -145,6 +153,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     quoteId: string;
     creatorIdentityId: string;
     evidenceId: string;
+    transactionId?: string;
     consumed?: boolean;
   };
 
@@ -175,6 +184,52 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   if (verifiedPayment.quoteId !== quote.paymentIntentId) {
     return fail(origin, 409, "QUOTE_MISMATCH");
+  }
+
+  /* ================= GLOBAL TRANSACTION UNIQUENESS ================= */
+
+  /**
+   * Defense in depth at the Credit minting boundary: the verified
+   * payment must carry the SAME transactionId as this request, and the
+   * transaction's global uniqueness binding (network + transactionId,
+   * established atomically by /api/service-payment/verify) must exist
+   * and belong to THIS paymentIntentId. This makes
+   * ONE successful transaction -> MAXIMUM ONE Creator Credit hold
+   * independently of the (creatorIdentityId, quoteId) idempotency
+   * index below.
+   */
+  const recordedTransactionId =
+    typeof verifiedPayment.transactionId === "string" ? verifiedPayment.transactionId : "";
+  if (!recordedTransactionId || recordedTransactionId !== transactionId) {
+    return fail(origin, 409, "VERIFIED_PAYMENT_TX_MISMATCH");
+  }
+
+  const paymentNetwork = resolvePaymentNetwork(recordedTransactionId);
+  if (!paymentNetwork) {
+    return fail(origin, 409, "VERIFIED_PAYMENT_TX_MISMATCH");
+  }
+
+  const txBinding = await checkPaymentTransactionBinding(
+    {
+      CREDIT_OP_COORDINATOR: env.CREDIT_OP_COORDINATOR as
+        GrantCreditEnv["CREDIT_OP_COORDINATOR"],
+    },
+    {
+      network: paymentNetwork,
+      transactionId: recordedTransactionId,
+      paymentIntentId,
+    }
+  );
+  if (!txBinding.ok) {
+    return fail(
+      origin,
+      txBinding.reason === "CONFLICT" ? 409 : txBinding.reason === "UNVERIFIED" ? 409 : 503,
+      txBinding.reason === "CONFLICT"
+        ? "TRANSACTION_ALREADY_VERIFIED"
+        : txBinding.reason === "UNVERIFIED"
+        ? "PAYMENT_TX_UNIQUENESS_UNVERIFIED"
+        : "PAYMENT_TX_UNIQUENESS_UNAVAILABLE"
+    );
   }
 
   /* ================= IDEMPOTENCY ================= */

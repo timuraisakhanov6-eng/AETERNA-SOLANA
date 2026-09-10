@@ -41,7 +41,52 @@ type Operation =
   | { op: "finalize"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationVerified: boolean; sealVerified: boolean }
   | { op: "recover"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationState: string; sealState: string }
   | { op: "vault-publication-claim"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; outcome?: string }
-  | { op: "read"; creatorCreditId: string };
+  | { op: "read"; creatorCreditId: string }
+  | {
+      op: "payment-tx-claim";
+      network: string;
+      transactionId: string;
+      paymentIntentId: string;
+      evidenceId: string;
+      creatorIdentityId: string;
+      claimedAt: number;
+    }
+  | {
+      op: "payment-tx-check";
+      network: string;
+      transactionId: string;
+      paymentIntentId: string;
+    };
+
+/**
+ * AETERNA — Global payment transaction uniqueness record.
+ *
+ * Canonical invariant: ONE successful on-chain AETERNA service-payment
+ * transaction (network + transactionId) -> MAXIMUM ONE verified
+ * payment -> MAXIMUM ONE Creator Credit, globally across quotes,
+ * paymentIntentIds, identities and credits.
+ *
+ * One CreditOperationCoordinator instance is addressed per
+ * sha256(network:transactionId); the single-threaded execution model
+ * serializes concurrent claims for the SAME transaction, and claim
+ * state survives in Durable Object storage — deliberately NOT subject
+ * to the 1-hour VERIFIED_PAYMENTS KV TTL.
+ */
+export interface PaymentTxClaimRecord {
+  network: string;
+  transactionId: string;
+  paymentIntentId: string;
+  evidenceId: string;
+  creatorIdentityId: string;
+  claimedAt: number;
+}
+
+interface PaymentTxOpResult {
+  ok: boolean;
+  outcome: string;
+  claim?: PaymentTxClaimRecord;
+  error?: string;
+}
 
 interface CoordinatorEnv {
   CREATOR_CREDITS: {
@@ -680,6 +725,145 @@ async function handleRecover(state: DurableObjectState, env: CoordinatorEnv, req
   });
 }
 
+function paymentTxClaimKey(network: string, transactionId: string): string {
+  return `payment-tx-unique:${network}:${transactionId}`;
+}
+
+async function getPaymentTxClaim(
+  state: DurableObjectState,
+  network: string,
+  transactionId: string
+): Promise<PaymentTxClaimRecord | null> {
+  const raw = await state.storage.get<PaymentTxClaimRecord>(
+    paymentTxClaimKey(network, transactionId)
+  );
+  return raw ?? null;
+}
+
+function paymentTxSuccessResponse(result: PaymentTxOpResult): Response {
+  return new Response(JSON.stringify({ ...result, ok: true }), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+function paymentTxFailureResponse(result: PaymentTxOpResult, status = 409): Response {
+  return new Response(JSON.stringify({ ...result, ok: false }), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+/**
+ * Atomic global claim for one successful payment transaction.
+ *
+ * The read below and the conditional write are separated by NO other
+ * await: under the Durable Object input gate, the get -> (synchronous
+ * decision) -> put sequence is atomic with respect to every other
+ * request, so at most ONE concurrent claim can win for a given
+ * network + transactionId.
+ *
+ * The binding is only ever created here — and the caller is required
+ * to invoke this op only AFTER the transaction passed all existing
+ * payment validity checks — so a failed/invalid transaction can never
+ * poison the global key. A claim is never deleted: once a valid
+ * successful transaction owns the key, no later failure can allow a
+ * second Credit from the same transaction under a different quote.
+ */
+async function handlePaymentTxClaim(
+  state: DurableObjectState,
+  request: Operation & { op: "payment-tx-claim" }
+): Promise<Response> {
+  const { network, transactionId, paymentIntentId, evidenceId, creatorIdentityId, claimedAt } = request;
+
+  if (
+    typeof network !== "string" || !network ||
+    typeof transactionId !== "string" || !transactionId ||
+    typeof paymentIntentId !== "string" || !paymentIntentId ||
+    typeof evidenceId !== "string" || !evidenceId ||
+    typeof creatorIdentityId !== "string" || !creatorIdentityId
+  ) {
+    return paymentTxFailureResponse({ ok: false, outcome: "INVALID_FIELDS", error: "INVALID_FIELDS" }, 400);
+  }
+
+  const existing = await getPaymentTxClaim(state, network, transactionId);
+
+  if (existing) {
+    if (existing.network !== network || existing.transactionId !== transactionId) {
+      return paymentTxFailureResponse(
+        { ok: false, outcome: "PAYMENT_TX_IDENTITY_MISMATCH", error: "PAYMENT_TX_IDENTITY_MISMATCH", claim: existing },
+        409
+      );
+    }
+    if (existing.paymentIntentId === paymentIntentId) {
+      // Same payment replay (same paymentIntentId, possibly a new
+      // evidenceId): idempotent, the caller keeps its existing flow.
+      return paymentTxSuccessResponse({ ok: true, outcome: "ALREADY_CLAIMED", claim: existing });
+    }
+    // A DIFFERENT paymentIntentId is attempting to reuse this
+    // transaction. This is exactly the second-credit attack path.
+    return paymentTxFailureResponse(
+      { ok: false, outcome: "ALREADY_CLAIMED_OTHER_PAYMENT", error: "ALREADY_CLAIMED_OTHER_PAYMENT", claim: existing },
+      409
+    );
+  }
+
+  const claim: PaymentTxClaimRecord = {
+    network,
+    transactionId,
+    paymentIntentId,
+    evidenceId,
+    creatorIdentityId,
+    claimedAt: typeof claimedAt === "number" && Number.isFinite(claimedAt) ? claimedAt : Date.now(),
+  };
+  await state.storage.put(paymentTxClaimKey(network, transactionId), claim);
+
+  return paymentTxSuccessResponse({ ok: true, outcome: "CLAIMED", claim });
+}
+
+/**
+ * Read-only validation of the global binding. Used at the Creator
+ * Credit minting boundary (grant-credit): a verified payment record
+ * may only mint a Credit when the transaction's global binding exists
+ * and belongs to the SAME paymentIntentId.
+ */
+async function handlePaymentTxCheck(
+  state: DurableObjectState,
+  request: Operation & { op: "payment-tx-check" }
+): Promise<Response> {
+  const { network, transactionId, paymentIntentId } = request;
+
+  if (
+    typeof network !== "string" || !network ||
+    typeof transactionId !== "string" || !transactionId ||
+    typeof paymentIntentId !== "string" || !paymentIntentId
+  ) {
+    return paymentTxFailureResponse({ ok: false, outcome: "INVALID_FIELDS", error: "INVALID_FIELDS" }, 400);
+  }
+
+  const existing = await getPaymentTxClaim(state, network, transactionId);
+
+  if (!existing) {
+    return paymentTxSuccessResponse({ ok: true, outcome: "NOT_CLAIMED" });
+  }
+
+  if (existing.network !== network || existing.transactionId !== transactionId) {
+    return paymentTxFailureResponse(
+      { ok: false, outcome: "PAYMENT_TX_IDENTITY_MISMATCH", error: "PAYMENT_TX_IDENTITY_MISMATCH", claim: existing },
+      409
+    );
+  }
+
+  if (existing.paymentIntentId === paymentIntentId) {
+    return paymentTxSuccessResponse({ ok: true, outcome: "CLAIMED", claim: existing });
+  }
+
+  return paymentTxFailureResponse(
+    { ok: false, outcome: "ALREADY_CLAIMED_OTHER_PAYMENT", error: "ALREADY_CLAIMED_OTHER_PAYMENT", claim: existing },
+    409
+  );
+}
+
 export class CreditOperationCoordinator {
   constructor(private state: DurableObjectState, private env: CoordinatorEnv) {}
 
@@ -704,6 +888,10 @@ export class CreditOperationCoordinator {
         return handleRecover(this.state, this.env, body);
       case "vault-publication-claim":
         return handleVaultPublicationClaim(this.state, this.env, body);
+      case "payment-tx-claim":
+        return handlePaymentTxClaim(this.state, body);
+      case "payment-tx-check":
+        return handlePaymentTxCheck(this.state, body);
       case "read": {
         const credit = await getCreditRecord(this.state, body.creatorCreditId);
         if (!credit) {

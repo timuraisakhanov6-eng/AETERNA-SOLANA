@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { createFakeRequest, makeEventContext, type CreateQuoteEnv } from "./harness";
+import { createFakeRequest, makeEventContext, createFakeCreditCoordinatorBinding, type CreateQuoteEnv } from "./harness";
 import { onRequestPost as servicePaymentVerifyPost } from "./../api/service-payment/verify";
 import * as solanaRpc from "./../lib/solana/rpc";
 
@@ -67,6 +67,7 @@ function buildEnv() {
     CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
     VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
     SOLANA_MAINNET_RPC_URL: "https://solana-rpc.example.com",
+    CREDIT_OP_COORDINATOR: createFakeCreditCoordinatorBinding(),
   };
 }
 

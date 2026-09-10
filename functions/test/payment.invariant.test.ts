@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { createBusinessQuote } from "./../lib/business/businessQuoteStore";
-import { createFakeKV, createFakeRequest, makeEventContext } from "./harness";
+import { createFakeKV, createFakeRequest, makeEventContext, createFakeCreditCoordinatorBinding } from "./harness";
 import { onRequestPost as uploadTokenPost } from "./../api/upload-token";
 import { onRequestPost as servicePaymentVerifyPost } from "./../api/service-payment/verify";
 
@@ -437,6 +437,7 @@ describe("Payment authorization / replay protection invariants", () => {
         CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
         SOLANA_MAINNET_RPC_URL: "https://solana-rpc.example.com",
+        CREDIT_OP_COORDINATOR: createFakeCreditCoordinatorBinding(),
       };
 
       const original = await import("./../lib/solana/rpc");
@@ -512,6 +513,7 @@ describe("Payment authorization / replay protection invariants", () => {
         CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
         ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
+        CREDIT_OP_COORDINATOR: createFakeCreditCoordinatorBinding(),
       };
 
       const fakeFetch = vi.fn()
