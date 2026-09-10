@@ -26,7 +26,14 @@ export interface CreatorRuntimeContextValue {
   status: CreatorIdentityStatus;
   error: string | null;
   authenticate: (network: string, account: string, signature: string, challengeId: string) => Promise<void>;
-  issueChallenge: (network: string) => Promise<{ challengeId: string; challenge: string }>;
+  issueChallenge: (network: string) => Promise<{ challengeId: string; challenge: string; message: string }>;
+  /**
+   * Adopt a creatorIdentityId that was just server-verified (e.g. by
+   * the payment modal's challenge/proof or by credit-status
+   * discovery). Runtime state is only a MIRROR of server-authenticated
+   * state — the server remains authoritative.
+   */
+  adoptIdentity: (creatorIdentityId: string) => void;
   clear: () => void;
   hasDevBypass: boolean;
   // TEMPORARY DEV PREVIEW — REMOVE AFTER CREATE UI WORK
@@ -42,6 +49,17 @@ export interface CreatorCreditContextValue {
   error: string | null;
   refreshCredit: (challengeId: string, network: string, account: string, signature: string, creatorCreditId: string, lifecycleId?: string | null) => Promise<void>;
   checkEntitlement: (challengeId: string, network: string, account: string, signature: string, creatorCreditId: string, lifecycleId?: string | null) => Promise<CreateAccessStatus>;
+  /**
+   * Authenticated discovery of the creator's AVAILABLE Credit via
+   * /api/creator/credit-status WITHOUT a client-supplied
+   * creatorCreditId. The server derives the identity from the fresh
+   * challenge proof; the returned state mirrors that server answer.
+   */
+  discoverAvailableCredit: (network: string, account: string, signature: string, challengeId: string) => Promise<{
+    status: "available" | "none";
+    creatorCreditId: string | null;
+    creatorIdentityId: string | null;
+  }>;
   reserveLifecycle: (creatorCreditId: string, lifecycleId: string, capsuleId: string) => Promise<{ ok: boolean; status?: string }>;
   accessStatus: CreateAccessStatus;
   setAccessStatus: (status: CreateAccessStatus) => void;
@@ -97,6 +115,12 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const adoptIdentity = useCallback((creatorIdentityId: string) => {
+    setCreatorIdentityId(creatorIdentityId);
+    setStatus("authenticated");
+    setError(null);
+  }, []);
+
   const issueChallenge = useCallback(async (network: string) => {
     setError(null);
     const res = await fetch("/api/creator/issue-challenge", {
@@ -105,10 +129,10 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ network }),
     });
     const data = await res.json();
-    if (!res.ok || !data?.ok || !data?.challengeId || !data?.challenge) {
+    if (!res.ok || !data?.ok || !data?.challengeId || !data?.challenge || !data?.message) {
       throw new Error(data?.error || "CHALLENGE_ISSUANCE_FAILED");
     }
-    return { challengeId: data.challengeId, challenge: data.challenge };
+    return { challengeId: data.challengeId, challenge: data.challenge, message: data.message as string };
   }, []);
 
   const clear = useCallback(() => {
@@ -117,8 +141,20 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, []);
 
+  const providerIdentityValue: CreatorRuntimeContextValue = {
+    creatorIdentityId,
+    status,
+    error,
+    authenticate,
+    issueChallenge,
+    adoptIdentity,
+    clear,
+    hasDevBypass,
+    hasCreatePreview,
+  };
+
   return (
-    <CreatorIdentityContext.Provider value={{ creatorIdentityId, status, error, authenticate, issueChallenge, clear, hasDevBypass, hasCreatePreview }}>
+    <CreatorIdentityContext.Provider value={providerIdentityValue}>
       {children}
     </CreatorIdentityContext.Provider>
   );
@@ -199,6 +235,48 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const discoverAvailableCredit = useCallback(async (
+    network: string,
+    account: string,
+    signature: string,
+    challengeId: string
+  ) => {
+    setCreditStatus("pending");
+    setError(null);
+    try {
+      const res = await fetch("/api/creator/credit-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challengeId, network, account, signature }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || "CREDIT_DISCOVERY_FAILED");
+      }
+      const creatorIdentityId =
+        typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null;
+      if (data.status === "available" && typeof data.creatorCreditId === "string") {
+        setCreditStatus("available");
+        setCreditId(data.creatorCreditId);
+        setCreatorCreditId(data.creatorCreditId);
+        if (data.lifecycleId) {
+          setLifecycleId(data.lifecycleId);
+        }
+        return {
+          status: "available" as const,
+          creatorCreditId: data.creatorCreditId,
+          creatorIdentityId,
+        };
+      }
+      setCreditStatus("idle");
+      return { status: "none" as const, creatorCreditId: null, creatorIdentityId };
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "CREDIT_DISCOVERY_FAILED");
+      setCreditStatus("error");
+      throw err;
+    }
+  }, []);
+
   const reserveLifecycle = useCallback(async (creatorCreditId: string, lifecycleId: string, capsuleId: string) => {
     setCreditStatus("pending");
     setError(null);
@@ -239,7 +317,7 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <CreatorCreditContext.Provider value={{ creditStatus, creditId, creatorCreditId, lifecycleId, paymentIntentId, error, refreshCredit, checkEntitlement, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
+    <CreatorCreditContext.Provider value={{ creditStatus, creditId, creatorCreditId, lifecycleId, paymentIntentId, error, refreshCredit, checkEntitlement, discoverAvailableCredit, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
       {children}
     </CreatorCreditContext.Provider>
   );

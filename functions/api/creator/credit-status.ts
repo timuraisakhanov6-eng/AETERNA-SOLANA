@@ -11,10 +11,16 @@ import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
 import { verifyMessage } from "ethers";
 import { getCreatorIdentity } from "../../../src/lib/creator/creatorIdentityStore";
+import {
+  base58Decode,
+  buildSolanaMessage,
+  verifySolanaSignature,
+} from "../../lib/solanaIdentityProof";
 
 interface CreditStatusEnv {
   CREATOR_CREDITS: {
     get(key: string): Promise<string | null>;
+    list(options: { prefix: string }): Promise<{ keys: Array<{ name: string }> }>;
   };
   CREATOR_IDENTITIES: {
     get(key: string): Promise<string | null>;
@@ -101,18 +107,31 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     typeof challengeId !== "string" ||
     typeof network !== "string" ||
     typeof account !== "string" ||
-    typeof signature !== "string" ||
-    typeof creatorCreditId !== "string"
+    typeof signature !== "string"
   ) {
     return fail(origin, 400, "INVALID_FIELDS");
   }
 
-  if (!/^0x[a-fA-F0-9]{40}$/.test(account)) {
-    return fail(origin, 400, "INVALID_ACCOUNT");
-  }
+  /**
+   * creatorCreditId MAY be omitted: when absent, the endpoint performs
+   * authenticated discovery of the creator's AVAILABLE Credit (see
+   * below). When supplied, the exact pre-existing ownership/status
+   * semantics apply unchanged.
+   */
 
-  if (!creatorCreditId) {
-    return fail(origin, 400, "CREATOR_CREDIT_ID_REQUIRED");
+  const isSolanaRequest = network === "solana";
+  if (isSolanaRequest) {
+    let publicKeyBytes: Uint8Array;
+    try {
+      publicKeyBytes = base58Decode(account);
+    } catch {
+      return fail(origin, 400, "INVALID_ACCOUNT");
+    }
+    if (publicKeyBytes.length !== 32) {
+      return fail(origin, 400, "INVALID_ACCOUNT");
+    }
+  } else if (!/^0x[a-fA-F0-9]{40}$/.test(account)) {
+    return fail(origin, 400, "INVALID_ACCOUNT");
   }
 
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
@@ -141,16 +160,33 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   }
 
   let recovered = "";
-  try {
-    const message = `AETERNA identity challenge:${challengeRecord.challenge}`;
-    const recoveredAddress = await verifyMessage(message, signature);
-    recovered = recoveredAddress;
-  } catch {
-    return fail(origin, 401, "INVALID_SIGNATURE");
-  }
+  if (isSolanaRequest) {
+    /**
+     * Solana: Ed25519 verification via the shared proof helper. The
+     * verification key is imported from `account` itself, so a valid
+     * signature simultaneously binds the signer to the claimed
+     * account (fail-closed on any mismatch/malformation).
+     */
+    const message = buildSolanaMessage(
+      challengeRecord as unknown as Parameters<typeof buildSolanaMessage>[0]
+    );
+    const valid = await verifySolanaSignature(account, signature, message);
+    if (!valid) {
+      return fail(origin, 401, "INVALID_SIGNATURE");
+    }
+    recovered = account;
+  } else {
+    try {
+      const message = `AETERNA identity challenge:${challengeRecord.challenge}`;
+      const recoveredAddress = await verifyMessage(message, signature);
+      recovered = recoveredAddress;
+    } catch {
+      return fail(origin, 401, "INVALID_SIGNATURE");
+    }
 
-  if (recovered.toLowerCase() !== account.toLowerCase()) {
-    return fail(origin, 401, "ACCOUNT_MISMATCH");
+    if (recovered.toLowerCase() !== account.toLowerCase()) {
+      return fail(origin, 401, "ACCOUNT_MISMATCH");
+    }
   }
 
   /* ================= Creator identity resolution ================= */
@@ -164,10 +200,91 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   /* ================= Creator Credit lookup ================= */
 
-  const creditRaw = await context.env.CREATOR_CREDITS.get(`creator:credit:${creatorCreditId}`);
+  let resolvedCreatorCreditId = creatorCreditId;
+
+  if (!resolvedCreatorCreditId) {
+    /**
+     * Authenticated discovery mode (creatorCreditId omitted).
+     *
+     * The KV prefix is constructed EXCLUSIVELY from the
+     * SERVER-DERIVED authenticated creatorIdentityId — never from any
+     * client-supplied value — then resolved credit records are
+     * re-validated for ownership. Discovery is strictly read-only:
+     * no KV writes, no consumption, no reservation.
+     */
+    const indexPrefix = `creator:credit:index:${authenticatedCreatorIdentityId}:`;
+    const listed = await context.env.CREATOR_CREDITS.list({ prefix: indexPrefix });
+
+    const availableCredits: Array<{
+      id: string;
+      createdAt: number;
+    }> = [];
+
+    for (const key of listed.keys) {
+      const creditIdRaw = await context.env.CREATOR_CREDITS.get(key.name);
+      if (!creditIdRaw || typeof creditIdRaw !== "string") {
+        continue;
+      }
+      const recordRaw = await context.env.CREATOR_CREDITS.get(`creator:credit:${creditIdRaw}`);
+      if (!recordRaw || typeof recordRaw !== "string") {
+        continue;
+      }
+      try {
+        const record = JSON.parse(recordRaw) as {
+          id?: unknown;
+          creatorIdentityId?: unknown;
+          status?: unknown;
+          createdAt?: unknown;
+        };
+        if (
+          typeof record.id === "string" &&
+          record.id === creditIdRaw &&
+          typeof record.creatorIdentityId === "string" &&
+          record.creatorIdentityId === authenticatedCreatorIdentityId &&
+          record.status === "AVAILABLE" &&
+          typeof record.createdAt === "number" &&
+          Number.isFinite(record.createdAt)
+        ) {
+          availableCredits.push({ id: record.id, createdAt: record.createdAt });
+        }
+      } catch {
+        // corrupt record — skip (fail closed: never returned as available)
+      }
+    }
+
+    if (availableCredits.length === 0) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          status: "none",
+          creatorCreditId: null,
+          lifecycleId: lifecycleId || null,
+          creatorIdentityId: authenticatedCreatorIdentityId,
+        }),
+        { status: 200, headers: baseHeaders(origin) }
+      );
+    }
+
+    /**
+     * Deterministic server-side rule when multiple AVAILABLE credits
+     * exist: the EARLIEST granted credit (smallest createdAt, tie-break
+     * lexicographically smallest id). Discovery is authority-neutral —
+     * any returned AVAILABLE credit is a valid, unconsumed entitlement.
+     */
+    availableCredits.sort((a, b) =>
+      a.createdAt !== b.createdAt
+        ? a.createdAt - b.createdAt
+        : a.id < b.id
+        ? -1
+        : 1
+    );
+    resolvedCreatorCreditId = availableCredits[0]!.id;
+  }
+
+  const creditRaw = await context.env.CREATOR_CREDITS.get(`creator:credit:${resolvedCreatorCreditId}`);
   if (!creditRaw) {
     return new Response(
-      JSON.stringify({ ok: true, status: "none", creatorCreditId, lifecycleId: lifecycleId || null }),
+      JSON.stringify({ ok: true, status: "none", creatorCreditId: resolvedCreatorCreditId, lifecycleId: lifecycleId || null, creatorIdentityId: authenticatedCreatorIdentityId }),
       { status: 200, headers: baseHeaders(origin) }
     );
   }
@@ -196,7 +313,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 500, "CREATOR_CREDIT_CORRUPT");
   }
 
-  if (creditRecord.id !== creatorCreditId) {
+  if (creditRecord.id !== resolvedCreatorCreditId) {
     return fail(origin, 403, "CREATOR_CREDIT_MISMATCH");
   }
 
@@ -245,6 +362,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
       status,
       creatorCreditId: creditRecord.id,
       lifecycleId: lifecycleId || creditRecord.lifecycleId || null,
+      creatorIdentityId: authenticatedCreatorIdentityId,
     }),
     { status: 200, headers: baseHeaders(origin) }
   );

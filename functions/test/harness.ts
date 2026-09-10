@@ -7,6 +7,7 @@ export interface FakeKV {
     options?: { expirationTtl?: number }
   ): Promise<void>;
   delete(key: string): Promise<void>;
+  list(options: { prefix?: string }): Promise<{ keys: Array<{ name: string }> }>;
 }
 
 export function createFakeKV(): FakeKV {
@@ -20,6 +21,14 @@ export function createFakeKV(): FakeKV {
     },
     async delete(key) {
       this.data.delete(key);
+    },
+    async list(options) {
+      const prefix = options.prefix ?? "";
+      return {
+        keys: [...this.data.keys()]
+          .filter((name) => name.startsWith(prefix))
+          .map((name) => ({ name })),
+      };
     },
   };
 }

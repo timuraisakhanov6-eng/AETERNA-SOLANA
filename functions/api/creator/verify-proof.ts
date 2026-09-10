@@ -19,6 +19,12 @@ import {
   createCreatorIdentity,
   putCreatorIdentityIndex,
 } from "../../../src/lib/creator/creatorIdentityStore";
+import {
+  base58Decode,
+  base64ToUint8Array,
+  buildSolanaMessage,
+  verifySolanaSignature,
+} from "../../lib/solanaIdentityProof";
 
 interface VerifyProofEnv {
   CREATOR_IDENTITIES: {
@@ -50,108 +56,9 @@ function fail(origin: string, status = 400, error = "error"): Response {
   return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders(origin) });
 }
 
-function buildSolanaMessage(record: {
-  network: string;
-  challenge: string;
-  publicKey: string;
-  issuedAt: number;
-  expiresAt: number;
-  id: string;
-}): string {
-  return [
-    "AETERNA identity challenge",
-    `network=${record.network}`,
-    `address=${record.publicKey}`,
-    `challenge=${record.challenge}`,
-    `id=${record.id}`,
-    `issuedAt=${record.issuedAt}`,
-    `expiresAt=${record.expiresAt}`,
-  ].join("\n");
-}
-
-const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-function base58Decode(input: string): Uint8Array {
-  const lookup = new Map<string, number>();
-  for (let i = 0; i < BASE58_ALPHABET.length; i++) {
-    lookup.set(BASE58_ALPHABET[i]!, i);
-  }
-
-  const bytes: number[] = [];
-  for (const char of input) {
-    const value = lookup.get(char);
-    if (value === undefined) {
-      throw new Error("Invalid base58");
-    }
-
-    let carry = value;
-    for (let i = 0; i < bytes.length; i++) {
-      carry += bytes[i] * 58;
-      bytes[i] = carry & 0xff;
-      carry >>>= 8;
-    }
-    while (carry > 0) {
-      bytes.push(carry & 0xff);
-      carry >>>= 8;
-    }
-  }
-
-  let leadingZeros = 0;
-  for (const char of input) {
-    if (char === "1") {
-      leadingZeros++;
-    } else {
-      break;
-    }
-  }
-
-  const result = new Uint8Array(leadingZeros + bytes.length);
-  for (let i = 0; i < leadingZeros; i++) {
-    result[i] = 0;
-  }
-  for (let i = 0; i < bytes.length; i++) {
-    result[leadingZeros + bytes.length - 1 - i] = bytes[i];
-  }
-
-  return result;
-}
-
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-async function verifySolanaSignature(publicKey: string, signatureBase64: string, message: string): Promise<boolean> {
-  const publicKeyBytes = base58Decode(publicKey);
-  if (publicKeyBytes.length !== 32) {
-    return false;
-  }
-
-  const messageBytes = new TextEncoder().encode(message);
-  const signatureBytes = base64ToUint8Array(signatureBase64);
-  if (signatureBytes.length !== 64) {
-    return false;
-  }
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    publicKeyBytes,
-    { name: "Ed25519" },
-    false,
-    ["verify"]
-  );
-
-  return crypto.subtle.verify(
-    { name: "Ed25519" },
-    key,
-    signatureBytes,
-    messageBytes
-  );
-}
+/* Solana verification primitives (base58, message construction,
+ * Ed25519) are shared via functions/lib/solanaIdentityProof.ts —
+ * behavior identical to the previous inline implementations. */
 
 export async function onRequestOptions(context: EventContext<Record<string, unknown>, string, VerifyProofEnv>): Promise<Response> {
   const origin = context.request.headers.get("origin") ?? "";

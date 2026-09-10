@@ -1,10 +1,11 @@
-import { useState, useRef, useContext, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Lock, Loader2 } from "lucide-react";
 import { useCapsule } from "../../context/CapsuleContext";
-import { useCreatorIdentity } from "@/context/CreatorRuntimeContext";
-import { AETERNAWalletContext } from "@/context/AETERNAWalletContext";
+import { useCreatorIdentity, useCreatorCredit } from "@/context/CreatorRuntimeContext";
+import { useAeternaWallet } from "@/context/AETERNAWalletContext";
+import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext";
 import ActionMenu from "./ActionMenu";
 import MediaCapture from "./MediaCapture";
 import CapsuleInput from "./CapsuleInput";
@@ -288,6 +289,26 @@ function restorePreparedFromSession(
 
 }
 
+/* ================= SERVICE PAYMENT TYPES ================= */
+
+type ServicePaymentState = "ready" | "payment_in_progress" | "paid";
+
+/**
+ * Mirror of the server's grant/discovery result. Never an authority:
+ * the Creator Credit record and the challenge-proof identity remain
+ * server-side authority.
+ */
+interface ServicePaymentResult {
+  creatorCreditId: string;
+  creatorIdentityId: string;
+  account: string;
+  paymentIntentId?: string;
+}
+
+interface CapsuleBuilderProps {
+  onOpenServicePayment: () => void;
+}
+
 /* ================= COMPONENT ================= */
 
 export default function CapsuleBuilder({
@@ -308,8 +329,10 @@ export default function CapsuleBuilder({
     resetCapsule,
   } = useCapsule();
 
-  const { creatorIdentityId } = useCreatorIdentity();
-  const wallet = useContext(AETERNAWalletContext);
+  const { creatorIdentityId, issueChallenge, adoptIdentity } = useCreatorIdentity();
+  const { discoverAvailableCredit } = useCreatorCredit();
+  const { entitlement } = useLandingPaymentGate();
+  const wallet = useAeternaWallet();
   const walletRef = useRef(wallet);
   useEffect(() => {
     walletRef.current = wallet;
@@ -554,6 +577,103 @@ export default function CapsuleBuilder({
     setServicePaymentState("ready");
     setServicePaymentError(null);
   }, []);
+
+  /* ================= ENTITLEMENT RESTORE (PATCH-2) ================= */
+
+  /**
+   * Reload / re-entry: with a connected wallet, obtain a fresh server
+   * proof (issue-challenge → sign → credit-status discovery) and
+   * restore an AVAILABLE Creator Credit WITHOUT any payment.
+   *
+   * This is strictly read-only and side-effect-free beyond mirrors of
+   * server state: it does NOT initiate the $1 payment, does NOT
+   * reserve a lifecycle, does NOT consume the Credit, and does NOT
+   * touch the PreparedCapsule. React state only mirrors the
+   * server-authenticated answer; without an AVAILABLE Credit the
+   * canonical $1 payment path remains fully available.
+   */
+  const identityRestoreInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (!wallet.connected || !wallet.account) return;
+    if (servicePaymentState === "paid") return;
+    if (identityRestoreInFlightRef.current) return;
+
+    identityRestoreInFlightRef.current = true;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { challengeId, message } = await issueChallenge("solana");
+        const currentAccount = walletRef.current.account;
+        if (!currentAccount || cancelled) return;
+
+        const { signature } = await walletRef.current.signMessage(
+          new TextEncoder().encode(message)
+        );
+        const base64Signature = btoa(
+          String.fromCharCode(...new Uint8Array(signature))
+        );
+
+        const discovery = await discoverAvailableCredit(
+          "solana",
+          currentAccount,
+          base64Signature,
+          challengeId
+        );
+        if (cancelled) return;
+
+        if (discovery.status === "available" && discovery.creatorCreditId) {
+          if (discovery.creatorIdentityId) {
+            adoptIdentity(discovery.creatorIdentityId);
+          }
+          setServicePaymentResult({
+            creatorCreditId: discovery.creatorCreditId,
+            creatorIdentityId: discovery.creatorIdentityId ?? "",
+            account: currentAccount,
+          });
+          setServicePaymentState("paid");
+        }
+      } catch {
+        // Discovery is best-effort: the explicit creation action still
+        // reaches the canonical $1 payment flow when no AVAILABLE
+        // Credit exists.
+      } finally {
+        identityRestoreInFlightRef.current = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // Re-runs only on wallet-identity changes or payment-state flips;
+    // context actions are stable callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.connected, wallet.account, servicePaymentState]);
+
+  /**
+   * In-session: a successful $1 payment grants the Credit inside the
+   * app-root payment modal; the gate retains the FULL server result
+   * (previously dropped), so the prepared /create workspace sees the
+   * paid entitlement immediately — without another signature or
+   * another $1.
+   */
+  useEffect(() => {
+    if (!entitlement?.creatorCreditId) return;
+    if (!entitlement.creatorIdentityId || !entitlement.account) return;
+    if (servicePaymentState === "paid") return;
+
+    const result: ServicePaymentResult = {
+      creatorCreditId: entitlement.creatorCreditId,
+      creatorIdentityId: entitlement.creatorIdentityId,
+      account: entitlement.account,
+    };
+    if (entitlement.paymentIntentId !== undefined) {
+      result.paymentIntentId = entitlement.paymentIntentId;
+    }
+    setServicePaymentResult(result);
+    setServicePaymentState("paid");
+  }, [entitlement, servicePaymentState]);
 
   const walletMatch = useCallback(() => {
     const account = walletRef.current?.account;
