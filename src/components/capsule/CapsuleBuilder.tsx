@@ -39,6 +39,33 @@ import {
 const HEADER_HEIGHT = 64;
 const MAX_DESCRIPTION = 140;
 
+/**
+ * PATCH-2F: shape of CreatorRuntimeContext.discoverAvailableCredit's
+ * resolution, narrowed to the fields the entitlement-restore decision
+ * may read.
+ */
+export interface DiscoveryOutcome {
+  status: "available" | "none";
+  creatorCreditId: string | null;
+}
+
+/**
+ * PATCH-2F: a discovered AVAILABLE Creator Credit with an id restores
+ * the paid workspace (servicePaymentState = "paid") AND closes the
+ * app-root payment modal — no second-$1 path may stay visible under an
+ * existing entitlement. Any other discovery outcome leaves both the
+ * payment state and the modal untouched.
+ *
+ * Exported for the node-env regression test — kept in this file by design.
+ */
+export function hasRestorableEntitlement(discovery: DiscoveryOutcome): boolean {
+  return (
+    discovery.status === "available" &&
+    typeof discovery.creatorCreditId === "string" &&
+    discovery.creatorCreditId.length > 0
+  );
+}
+
 type SealPhase = "idle" | "preparing";
 
 
@@ -331,7 +358,7 @@ export default function CapsuleBuilder({
 
   const { creatorIdentityId, issueChallenge, adoptIdentity } = useCreatorIdentity();
   const { discoverAvailableCredit } = useCreatorCredit();
-  const { entitlement } = useLandingPaymentGate();
+  const { entitlement, closeLandingPaymentModal } = useLandingPaymentGate();
   const wallet = useAeternaWallet();
   const walletRef = useRef(wallet);
   useEffect(() => {
@@ -624,16 +651,19 @@ export default function CapsuleBuilder({
         );
         if (cancelled) return;
 
-        if (discovery.status === "available" && discovery.creatorCreditId) {
+        if (hasRestorableEntitlement(discovery)) {
           if (discovery.creatorIdentityId) {
             adoptIdentity(discovery.creatorIdentityId);
           }
           setServicePaymentResult({
-            creatorCreditId: discovery.creatorCreditId,
+            creatorCreditId: discovery.creatorCreditId!,
             creatorIdentityId: discovery.creatorIdentityId ?? "",
             account: currentAccount,
           });
           setServicePaymentState("paid");
+          // PATCH-2F: an AVAILABLE Credit discovered under an open
+          // payment modal closes it — no second $1 path may stay visible.
+          closeLandingPaymentModal();
         }
       } catch {
         // Discovery is best-effort: the explicit creation action still
@@ -674,6 +704,10 @@ export default function CapsuleBuilder({
     }
     setServicePaymentResult(result);
     setServicePaymentState("paid");
+    // PATCH-2F: mirror the in-session entitlement restore with the same
+    // gate close as discovery, so no payment modal stays mounted once a
+    // Credit is known.
+    closeLandingPaymentModal();
   }, [entitlement, servicePaymentState]);
 
   const walletMatch = useCallback(() => {

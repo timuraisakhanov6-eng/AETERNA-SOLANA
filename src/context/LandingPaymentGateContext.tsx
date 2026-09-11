@@ -31,6 +31,7 @@ export interface LandingEntitlement {
 
 type LandingPaymentGateContextType = {
   openLandingPaymentModal: () => void
+  closeLandingPaymentModal: () => void
   entitlement: LandingEntitlement | null
 }
 
@@ -66,8 +67,17 @@ export function LandingPaymentGateProvider({
     setOpen(false)
   }, [])
 
+  /**
+   * Programmatic close for callers outside the modal (e.g. CapsuleBuilder
+   * entitlement discovery): when an AVAILABLE Creator Credit is restored,
+   * the open payment modal must not stay mounted above the workspace.
+   */
+  const closeLandingPaymentModal = useCallback(() => {
+    setOpen(false)
+  }, [])
+
   return (
-    <LandingPaymentGateContext.Provider value={{ openLandingPaymentModal, entitlement }}>
+    <LandingPaymentGateContext.Provider value={{ openLandingPaymentModal, closeLandingPaymentModal, entitlement }}>
       {children}
       <PaymentModal
         open={open}
