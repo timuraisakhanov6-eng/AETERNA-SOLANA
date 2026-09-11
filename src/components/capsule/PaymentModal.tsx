@@ -73,6 +73,19 @@ async function verifyProof(input: { challengeId: string; network: string; accoun
   }
 }
 
+/**
+ * /api/creator/grant-credit returns the raw Creator Credit store enum
+ * ("AVAILABLE"), while /api/creator/credit-status maps the same enum to
+ * lowercase ("available"). The phase comparison in confirmAndVerify is
+ * case-sensitive; normalize here so an uppercase grant status cannot
+ * strand the modal in "verifying" after a successful grant.
+ *
+ * Exported for the node-env regression test — kept in this file by design.
+ */
+export function normalizeGrantCreditStatus(raw: unknown): string {
+  return typeof raw === "string" ? raw.toLowerCase() : "available"
+}
+
 /* ───────────────── TYPES ───────────────── */
 
 interface PaymentModalProps {
@@ -464,7 +477,7 @@ export function PaymentModal({
         throw new Error(grantData?.error || "PAYMENT_VERIFICATION_FAILED")
       }
 
-      const status = grantData.status ?? "available"
+      const status = normalizeGrantCreditStatus(grantData.status)
       setPhase(status === "available" ? "available" : "verifying")
       setIsProcessing(false)
       onCreditReady?.({
