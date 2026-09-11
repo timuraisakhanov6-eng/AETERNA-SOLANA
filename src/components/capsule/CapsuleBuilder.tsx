@@ -604,9 +604,10 @@ export default function CapsuleBuilder({
 
     (async () => {
       try {
-        const { challengeId, message } = await issueChallenge("solana");
         const currentAccount = walletRef.current.account;
         if (!currentAccount || cancelled) return;
+
+        const { challengeId, message } = await issueChallenge("solana", currentAccount);
 
         const { signature } = await walletRef.current.signMessage(
           new TextEncoder().encode(message)

@@ -26,7 +26,7 @@ export interface CreatorRuntimeContextValue {
   status: CreatorIdentityStatus;
   error: string | null;
   authenticate: (network: string, account: string, signature: string, challengeId: string) => Promise<void>;
-  issueChallenge: (network: string) => Promise<{ challengeId: string; challenge: string; message: string }>;
+  issueChallenge: (network: string, publicKey: string) => Promise<{ challengeId: string; challenge: string; message: string }>;
   /**
    * Adopt a creatorIdentityId that was just server-verified (e.g. by
    * the payment modal's challenge/proof or by credit-status
@@ -121,18 +121,21 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, []);
 
-  const issueChallenge = useCallback(async (network: string) => {
+  const issueChallenge = useCallback(async (network: string, publicKey: string) => {
     setError(null);
     const res = await fetch("/api/creator/issue-challenge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ network }),
+      body: JSON.stringify({ network, publicKey }),
     });
     const data = await res.json();
-    if (!res.ok || !data?.ok || !data?.challengeId || !data?.challenge || !data?.message) {
+    // Production endpoint returns `id`; normalize the legacy
+    // `challengeId` alias so both response shapes resolve identically.
+    const challengeId = data?.id ?? data?.challengeId;
+    if (!res.ok || !data?.ok || !challengeId || !data?.challenge || !data?.message) {
       throw new Error(data?.error || "CHALLENGE_ISSUANCE_FAILED");
     }
-    return { challengeId: data.challengeId, challenge: data.challenge, message: data.message as string };
+    return { challengeId, challenge: data.challenge, message: data.message as string };
   }, []);
 
   const clear = useCallback(() => {
