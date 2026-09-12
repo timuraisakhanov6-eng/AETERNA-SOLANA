@@ -37,7 +37,10 @@ import { useAeternaWallet } from "@/context/AETERNAWalletContext"
 import {
   createServicePaymentController,
 } from "@/lib/payment/servicePaymentController"
-import type { ServicePaymentController } from "@/lib/payment/servicePaymentController"
+import type {
+  ServicePaymentController,
+  ServicePaymentDiscoveryResult,
+} from "@/lib/payment/servicePaymentController"
 
 /**
  * PATCH-2E regression-test surface. The canonical implementation moved to
@@ -62,6 +65,8 @@ interface PaymentModalProps {
     account?: string
     paymentIntentId?: string
   }) => void
+  /** PATCH-2J: credit-status discovery answer (entitlement facts only). */
+  onCreditDiscovered?: (result: ServicePaymentDiscoveryResult) => void
   onReserveReady?: (result: {
     creatorCreditId: string
     lifecycleId: string
@@ -93,6 +98,7 @@ export function PaymentModal({
   creatorIdentityId,
   stopAfterCredit = false,
   onCreditReady,
+  onCreditDiscovered,
   onReserveReady,
 }: PaymentModalProps) {
   const wallet = useAeternaWallet()
@@ -125,8 +131,8 @@ export function PaymentModal({
   // Original flow read props/wallet through render closures and effects;
   // the controller receives the same values explicitly.
   useEffect(() => {
-    controller.setCallbacks({ onCreditReady, onReserveReady })
-  }, [controller, onCreditReady, onReserveReady])
+    controller.setCallbacks({ onCreditReady, onReserveReady, onCreditDiscovered })
+  }, [controller, onCreditReady, onCreditDiscovered, onReserveReady])
 
   useEffect(() => {
     controller.setParams({ creatorIdentityId, protocolAccepted, stopAfterCredit })
@@ -220,6 +226,17 @@ export function PaymentModal({
               <div className="text-xs text-muted-foreground">Quote</div>
               <div className="text-xs">
                 ${quote.expectedAmount.toFixed(2)} {quote.currency}
+              </div>
+            </div>
+          )}
+
+          {state.discovery && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Credit Discovery</div>
+              <div className="text-xs">
+                {state.discovery.status === "available"
+                  ? "Existing Creator Credit AVAILABLE — no payment needed"
+                  : "No existing Creator Credit"}
               </div>
             </div>
           )}

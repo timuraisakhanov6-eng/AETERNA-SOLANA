@@ -3,7 +3,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Lock, Loader2 } from "lucide-react";
 import { useCapsule } from "../../context/CapsuleContext";
-import { useCreatorIdentity, useCreatorCredit } from "@/context/CreatorRuntimeContext";
+import { useCreatorIdentity } from "@/context/CreatorRuntimeContext";
 import { useAeternaWallet } from "@/context/AETERNAWalletContext";
 import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext";
 import ActionMenu from "./ActionMenu";
@@ -446,8 +446,7 @@ export default function CapsuleBuilder({
     resetCapsule,
   } = useCapsule();
 
-  const { creatorIdentityId, issueChallenge, adoptIdentity } = useCreatorIdentity();
-  const { discoverAvailableCredit } = useCreatorCredit();
+  const { creatorIdentityId } = useCreatorIdentity();
   const { entitlement, closeLandingPaymentModal, isPaymentModalOpen } =
     useLandingPaymentGate();
   const wallet = useAeternaWallet();
@@ -719,135 +718,31 @@ export default function CapsuleBuilder({
     handlePaymentCancel,
   ]);
 
-  /* ================= ENTITLEMENT RESTORE (PATCH-2) ================= */
+  /* ================= ENTITLEMENT RESTORE (PATCH-2J) ================= */
 
-  /**
-   * Reload / re-entry: with a connected wallet, obtain a fresh server
-   * proof (issue-challenge → sign → credit-status discovery) and
-   * restore an AVAILABLE Creator Credit WITHOUT any payment.
-   *
-   * This is strictly read-only and side-effect-free beyond mirrors of
-   * server state: it does NOT initiate the $1 payment, does NOT
-   * reserve a lifecycle, does NOT consume the Credit, and does NOT
-   * touch the PreparedCapsule. React state only mirrors the
-   * server-authenticated answer; without an AVAILABLE Credit the
-   * canonical $1 payment path remains fully available.
-   */
-  const identityRestoreInFlightRef = useRef(false);
-  // PATCH-2G: at most ONE discovery attempt per wallet account per
-  // component session. Unlike identityRestoreInFlightRef (which only
-  // prevents concurrent duplicates), this survives the state returning
-  // to "ready" after a no-credit/error outcome — otherwise the effect
-  // (re-run on every servicePaymentState flip) would loop the user back
-  // into repeated signMessage requests for the same account.
-  const discoveryAttemptedForAccountRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (
-      !shouldStartDiscovery(
-        wallet.connected,
-        wallet.account,
-        servicePaymentState,
-        discoveryAttemptedForAccountRef.current,
-        identityRestoreInFlightRef.current
-      )
-    ) {
-      // PATCH-2G: a lingering "discovering" label after the attempt for
-      // this account already ended (e.g. the wallet disconnected
-      // mid-flight) must not permanently disable the canonical $1 path.
-      if (
-        wallet.connected &&
-        wallet.account &&
-        servicePaymentState === "discovering" &&
-        !identityRestoreInFlightRef.current &&
-        discoveryAttemptedForAccountRef.current === wallet.account
-      ) {
-        setServicePaymentState(
-          (prev) => discoveryNextState(prev, "error") ?? prev
-        );
-      }
-      return;
-    }
-
-    const attemptAccount = wallet.account;
-    discoveryAttemptedForAccountRef.current = attemptAccount;
-    identityRestoreInFlightRef.current = true;
-    setServicePaymentState(
-      (prev) => discoveryNextState(prev, "start") ?? prev
-    );
-
-    void (async () => {
-      try {
-        const currentAccount = walletRef.current.account;
-        if (!currentAccount || currentAccount !== attemptAccount) return;
-
-        const { challengeId, message } = await issueChallenge("solana", currentAccount);
-
-        const { signature } = await walletRef.current.signMessage(
-          new TextEncoder().encode(message)
-        );
-        const base64Signature = btoa(
-          String.fromCharCode(...new Uint8Array(signature))
-        );
-
-        const discovery = await discoverAvailableCredit(
-          "solana",
-          currentAccount,
-          base64Signature,
-          challengeId
-        );
-        // A newer attempt (different account) superseded this one.
-        if (discoveryAttemptedForAccountRef.current !== attemptAccount) return;
-
-        if (hasRestorableEntitlement(discovery)) {
-          if (discovery.creatorIdentityId) {
-            adoptIdentity(discovery.creatorIdentityId);
-          }
-          setServicePaymentResult({
-            creatorCreditId: discovery.creatorCreditId!,
-            creatorIdentityId: discovery.creatorIdentityId ?? "",
-            account: currentAccount,
-          });
-          // PATCH-2F preserved: an AVAILABLE Credit discovered under an
-          // open payment modal closes it — no second $1 path may stay
-          // visible.
-          setServicePaymentState(
-            (prev) => discoveryNextState(prev, "available") ?? prev
-          );
-          closeLandingPaymentModal();
-        } else {
-          setServicePaymentState(
-            (prev) => discoveryNextState(prev, "no-credit") ?? prev
-          );
-        }
-      } catch {
-        // Discovery is best-effort: the explicit creation action still
-        // reaches the canonical $1 payment flow when no AVAILABLE
-        // Credit exists.
-        if (discoveryAttemptedForAccountRef.current === attemptAccount) {
-          setServicePaymentState(
-            (prev) => discoveryNextState(prev, "error") ?? prev
-          );
-        }
-      } finally {
-        if (discoveryAttemptedForAccountRef.current === attemptAccount) {
-          identityRestoreInFlightRef.current = false;
-        }
-      }
-    })();
-    // Re-runs only on wallet-identity changes or payment-state flips;
-    // context actions are stable callbacks. Attempt identity is carried
-    // by discoveryAttemptedForAccountRef, so no cleanup cancellation is
-    // needed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wallet.connected, wallet.account, servicePaymentState]);
+  // PATCH-2J: sign-based credit discovery (issue-challenge → signMessage
+  // → credit-status) moved into the headless payment controller, which
+  // runs credit-status with the ONE identity proof BEFORE verify-proof
+  // consumes the server-side challenge. Discovery outcomes reach this
+  // component as server-authenticated entitlement facts through the
+  // payment gate (LandingPaymentGateContext.entitlement, set from the
+  // controller's onCreditDiscovered / onCreditReady) — never as raw
+  // proof material. The PATCH-2G state machine below
+  // (discoveryNextState / createPrimaryDisabled / one-attempt-per-account
+  // attempted-ref semantics, now owned by the controller) and the
+  // PATCH-2I modal-close reset are unchanged; hasRestorableEntitlement
+  // remains the restore predicate. No auto-sign on mount: the single
+  // signature is requested only by an explicit action inside the payment
+  // modal.
 
   /**
    * In-session: a successful $1 payment grants the Credit inside the
    * app-root payment modal; the gate retains the FULL server result
    * (previously dropped), so the prepared /create workspace sees the
    * paid entitlement immediately — without another signature or
-   * another $1.
+   * another $1. PATCH-2J: the same channel now also carries a
+   * discovery-restored AVAILABLE Credit (controller onCreditDiscovered),
+   * so this effect remains the single PATCH-2F restore point.
    */
   useEffect(() => {
     if (!entitlement?.creatorCreditId) return;

@@ -49,6 +49,33 @@ export interface ServicePaymentQuote {
   expiresAt: number
 }
 
+/**
+ * PATCH-2J: memory-only record of the ONE identity proof of the current
+ * verification flow (challenge id, network, account binding, base64
+ * signature, server expiry). Lives only in the controller's in-memory
+ * state — never persisted, never exposed to React context or the UI —
+ * and is invalidated on reset, wallet disconnect, or account switch.
+ */
+export interface ServicePaymentIdentityProof {
+  challengeId: string
+  network: string
+  account: string
+  signature: string
+  expiresAt: number
+}
+
+/**
+ * PATCH-2J: server answer of the credit-status discovery performed with
+ * the SAME proof that (may) later consume verify-proof. Carries only the
+ * entitlement facts — never the raw signature/proof.
+ */
+export interface ServicePaymentDiscoveryResult {
+  status: "available" | "none"
+  creatorCreditId: string | null
+  creatorIdentityId: string | null
+  account: string | null
+}
+
 export interface ServicePaymentState {
   phase: ServicePaymentPhase
   quote: ServicePaymentQuote | null
@@ -57,6 +84,8 @@ export interface ServicePaymentState {
   verifiedCreatorIdentityId: string | null
   verifiedCreatorAccount: string | null
   verificationError: string | null
+  identityProof: ServicePaymentIdentityProof | null
+  discovery: ServicePaymentDiscoveryResult | null
 }
 
 /**
@@ -98,6 +127,13 @@ export interface ServicePaymentParams {
 export interface ServicePaymentCallbacks {
   onCreditReady?: ((result: ServicePaymentCreditResult) => void) | undefined
   onReserveReady?: ((result: ServicePaymentReserveResult) => void) | undefined
+  /**
+   * PATCH-2J: emitted once per verification flow with the credit-status
+   * discovery answer (status / creatorCreditId / creatorIdentityId /
+   * account). Entitlement facts only — the raw proof never leaves the
+   * controller.
+   */
+  onCreditDiscovered?: ((result: ServicePaymentDiscoveryResult) => void) | undefined
 }
 
 export interface ServicePaymentControllerDeps extends ServicePaymentCallbacks {
@@ -183,7 +219,7 @@ async function verifyProof(
     body: JSON.stringify(input),
   })
 
-  const data = (await res.json()) as { ok: boolean; creatorIdentityId?: string; account?: string; error?: string }
+  const data = await res.json() as { ok: boolean; creatorIdentityId?: string; account?: string; error?: string }
   if (!res.ok || !data?.ok || !data.creatorIdentityId) {
     throw new Error(data?.error || "IDENTITY_VERIFICATION_FAILED")
   }
@@ -191,6 +227,65 @@ async function verifyProof(
   return {
     creatorIdentityId: data.creatorIdentityId,
     account: data.account ?? input.account,
+  }
+}
+
+/**
+ * PATCH-2J: authenticated credit-status discovery with an ALREADY-SIGNED
+ * proof (same challengeId/network/account/signature that verify-proof
+ * will consume afterwards). The endpoint is read-only and does not
+ * consume the challenge, so the proof stays alive for verify-proof.
+ *
+ * A brand-new creator has no server-side identity yet
+ * (CREATOR_IDENTITY_NOT_FOUND): because Creator Credits are bound to a
+ * server-side identity, no credit can exist for this account — the
+ * answer is a deterministic "none" and the unconsumed proof proceeds to
+ * verify-proof.
+ */
+async function discoverCreditStatus(
+  proof: ServicePaymentIdentityProof,
+  fetchImpl: typeof fetch
+): Promise<ServicePaymentDiscoveryResult> {
+  const res = await fetchImpl("/api/creator/credit-status", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      challengeId: proof.challengeId,
+      network: proof.network,
+      account: proof.account,
+      signature: proof.signature,
+    }),
+  })
+
+  const data = await res.json().catch(() => null) as {
+    ok?: boolean
+    status?: unknown
+    creatorCreditId?: unknown
+    creatorIdentityId?: unknown
+    error?: string
+  } | null
+
+  if (!res.ok || !data?.ok) {
+    if (data?.error === "CREATOR_IDENTITY_NOT_FOUND") {
+      return {
+        status: "none",
+        creatorCreditId: null,
+        creatorIdentityId: null,
+        account: proof.account,
+      }
+    }
+    throw new Error(data?.error || "CREDIT_DISCOVERY_FAILED")
+  }
+
+  const available =
+    data.status === "available" && typeof data.creatorCreditId === "string"
+
+  return {
+    status: available ? "available" : "none",
+    creatorCreditId: available ? (data.creatorCreditId as string) : null,
+    creatorIdentityId:
+      typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null,
+    account: proof.account,
   }
 }
 
@@ -209,6 +304,8 @@ export function createServicePaymentController(
     verifiedCreatorIdentityId: null,
     verifiedCreatorAccount: null,
     verificationError: null,
+    identityProof: null,
+    discovery: null,
   }
 
   const listeners = new Set<() => void>()
@@ -248,6 +345,7 @@ export function createServicePaymentController(
   let callbacks: ServicePaymentCallbacks = {
     onCreditReady: deps.onCreditReady,
     onReserveReady: deps.onReserveReady,
+    onCreditDiscovered: deps.onCreditDiscovered,
   }
 
   const setParams = (next: ServicePaymentParams) => {
@@ -266,6 +364,10 @@ export function createServicePaymentController(
       error: null,
       isProcessing: false,
       phase: "quote_ready",
+      // PATCH-2J: a proof is bound to its account — a wallet disconnect or
+      // account switch invalidates it immediately.
+      identityProof: null,
+      discovery: null,
     })
   }
 
@@ -278,6 +380,8 @@ export function createServicePaymentController(
       verifiedCreatorIdentityId: null,
       verifiedCreatorAccount: null,
       verificationError: null,
+      identityProof: null,
+      discovery: null,
     })
   }
 
@@ -340,32 +444,62 @@ export function createServicePaymentController(
     patch({ phase: "verifying_identity", error: null, verificationError: null, isProcessing: true })
 
     try {
-      const { challengeId, message } = await issueChallenge(currentAccount, fetchImpl)
+      // PATCH-2J: ONE identity challenge per verification flow. A retained
+      // proof still bound to the current account and unexpired is reused
+      // as-is — an explicit retry after a transient failure must not ask
+      // the wallet for a second signature.
+      let proof = state.identityProof
+      if (!proof || proof.account !== currentAccount || proof.expiresAt <= Date.now()) {
+        const { challengeId, message, expiresAt } = await issueChallenge(currentAccount, fetchImpl)
 
-      const encoded =
-        typeof message === "string" ? new TextEncoder().encode(message) : message
+        const encoded =
+          typeof message === "string" ? new TextEncoder().encode(message) : message
 
-      if (!wallet?.account) {
-        throw new Error("Wallet account changed during verification.")
-      }
+        if (!wallet?.account) {
+          throw new Error("Wallet account changed during verification.")
+        }
 
-      const { signature } = await wallet.signMessage(encoded)
+        const { signature } = await wallet.signMessage(encoded)
 
-      if (!wallet?.account) {
-        throw new Error("Wallet account changed after signing.")
-      }
+        if (!wallet?.account) {
+          throw new Error("Wallet account changed after signing.")
+        }
 
-      const uint8 = new Uint8Array(signature)
-      const base64Signature = btoa(
-        String.fromCharCode(...uint8)
-      )
-
-      const { creatorIdentityId, account } = await verifyProof(
-        {
+        proof = {
           challengeId,
           network: "solana",
           account: currentAccount,
-          signature: base64Signature,
+          signature: btoa(
+            String.fromCharCode(...new Uint8Array(signature))
+          ),
+          expiresAt,
+        }
+        patch({ identityProof: proof })
+      }
+
+      // PATCH-2J: credit-status discovery runs BEFORE verify-proof —
+      // verify-proof consumes (deletes) the server-side challenge, so
+      // discovery can only reuse the same proof while it is alive.
+      const discovery = await discoverCreditStatus(proof, fetchImpl)
+      patch({ discovery })
+      callbacks.onCreditDiscovered?.(discovery)
+
+      if (discovery.status === "available") {
+        // PATCH-2F: a discovered AVAILABLE Creator Credit restores the
+        // paid workspace with NO verify-proof, NO payment, NO grant and
+        // NO reserve. The flow is complete — the proof is dropped.
+        patch({ phase: "available", isProcessing: false, identityProof: null })
+        return
+      }
+
+      // PATCH-2J NO CREDIT: consume the SAME proof via verify-proof; the
+      // canonical $1 payment path then proceeds unchanged.
+      const { creatorIdentityId, account } = await verifyProof(
+        {
+          challengeId: proof.challengeId,
+          network: proof.network,
+          account: currentAccount,
+          signature: proof.signature,
         },
         fetchImpl
       )
@@ -374,10 +508,16 @@ export function createServicePaymentController(
         verifiedCreatorIdentityId: creatorIdentityId,
         verifiedCreatorAccount: account,
         phase: "wallet_verified",
+        // The challenge was consumed server-side on success — nothing to
+        // reuse.
+        identityProof: null,
       })
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "WALLET_VERIFICATION_FAILED"
+      // A retained proof (if any) survives the failure so an explicit
+      // retry reuses it without a second signature; syncWallet (account
+      // switch / disconnect) and reset() invalidate it.
       patch({ verificationError: message, error: message, phase: "error" })
     } finally {
       patch({ isProcessing: false })

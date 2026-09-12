@@ -118,6 +118,33 @@ export function LandingPaymentGateProvider({
             onEntitlementReady?.(result.paymentIntentId)
           }
         }}
+        onCreditDiscovered={(result) => {
+          if (
+            result.status === "available" &&
+            result.creatorCreditId &&
+            result.creatorIdentityId &&
+            result.account
+          ) {
+            // PATCH-2F preserved: a discovered AVAILABLE Creator Credit is
+            // a server-authenticated entitlement — the CapsuleBuilder
+            // entitlement effect restores "paid" and closes this modal.
+            setEntitlement({
+              creatorCreditId: result.creatorCreditId,
+              creatorIdentityId: result.creatorIdentityId,
+              account: result.account,
+            })
+            if (result.creatorIdentityId) {
+              adoptIdentity(result.creatorIdentityId)
+            }
+          } else if (result.status === "none" && result.account) {
+            // Server-authoritative "no AVAILABLE credit" for this account:
+            // a stale in-session entitlement mirror must not restore a
+            // consumed credit.
+            setEntitlement((prev) =>
+              prev && prev.account === result.account ? null : prev
+            )
+          }
+        }}
         onReserveReady={(result) => {
           setOpen(false)
           onEntitlementReady?.(result.paymentIntentId)
