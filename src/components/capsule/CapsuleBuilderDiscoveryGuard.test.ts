@@ -28,6 +28,7 @@ import { describe, expect, it } from "vitest";
 import {
   createPrimaryDisabled,
   discoveryNextState,
+  shouldResetPaymentOnModalClose,
   shouldStartDiscovery,
   type DiscoveryOutcomeKind,
   type ServicePaymentState,
@@ -126,5 +127,30 @@ describe("PATCH-2G create button guard", () => {
     expect(createPrimaryDisabled(false, "ready", false, true)).toBe(true);
     expect(createPrimaryDisabled(true, "paid", true, true)).toBe(false);
     expect(createPrimaryDisabled(true, "paid", true, false)).toBe(true);
+  });
+});
+
+describe("PATCH-2G abandoned payment-modal close reset", () => {
+  it("I: a close without a granted credit returns payment_in_progress to ready", () => {
+    expect(shouldResetPaymentOnModalClose(false, false, "payment_in_progress")).toBe(true);
+  });
+
+  it("I: an open modal never resets", () => {
+    expect(shouldResetPaymentOnModalClose(true, false, "payment_in_progress")).toBe(false);
+  });
+
+  it("I: a close that accompanies a granted credit never resets", () => {
+    expect(shouldResetPaymentOnModalClose(false, true, "payment_in_progress")).toBe(false);
+  });
+
+  it("I: only payment_in_progress is resettable", () => {
+    const states: ServicePaymentState[] = [
+      "ready",
+      "paid",
+      "discovering",
+    ];
+    expect(
+      states.map((s) => shouldResetPaymentOnModalClose(false, false, s))
+    ).toEqual([false, false, false]);
   });
 });

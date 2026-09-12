@@ -133,6 +133,25 @@ export function createPrimaryDisabled(
   return true;
 }
 
+/**
+ * Whether an app-root payment-modal close must reset the service-payment
+ * state to "ready". "payment_in_progress" has exactly two exits: a
+ * granted credit, or an abandoned modal close (X / Esc). Without the
+ * reset, a creator who closes the $1 modal without paying permanently
+ * disables the create button until a full page reload. A close that
+ * accompanies a granted credit (in-session entitlement or a discovery
+ * restore) must never reset the paid path.
+ *
+ * Exported for the node-env regression test — kept in this file by design.
+ */
+export function shouldResetPaymentOnModalClose(
+  modalOpen: boolean,
+  hasEntitlement: boolean,
+  state: ServicePaymentState
+): boolean {
+  return !modalOpen && !hasEntitlement && state === "payment_in_progress";
+}
+
 type SealPhase = "idle" | "preparing";
 
 
@@ -429,7 +448,8 @@ export default function CapsuleBuilder({
 
   const { creatorIdentityId, issueChallenge, adoptIdentity } = useCreatorIdentity();
   const { discoverAvailableCredit } = useCreatorCredit();
-  const { entitlement, closeLandingPaymentModal } = useLandingPaymentGate();
+  const { entitlement, closeLandingPaymentModal, isPaymentModalOpen } =
+    useLandingPaymentGate();
   const wallet = useAeternaWallet();
   const walletRef = useRef(wallet);
   useEffect(() => {
@@ -675,6 +695,29 @@ export default function CapsuleBuilder({
     setServicePaymentState("ready");
     setServicePaymentError(null);
   }, []);
+
+  // An abandoned payment-modal close (X / Esc, no credit granted) is the
+  // non-payment exit from "payment_in_progress"; without this reset the
+  // create button stays disabled until a full page reload. A close that
+  // accompanies a granted credit never resets (see
+  // shouldResetPaymentOnModalClose): the entitlement effect above owns
+  // that transition to "paid".
+  useEffect(() => {
+    if (
+      shouldResetPaymentOnModalClose(
+        isPaymentModalOpen,
+        Boolean(entitlement?.creatorCreditId),
+        servicePaymentState
+      )
+    ) {
+      handlePaymentCancel();
+    }
+  }, [
+    isPaymentModalOpen,
+    entitlement,
+    servicePaymentState,
+    handlePaymentCancel,
+  ]);
 
   /* ================= ENTITLEMENT RESTORE (PATCH-2) ================= */
 

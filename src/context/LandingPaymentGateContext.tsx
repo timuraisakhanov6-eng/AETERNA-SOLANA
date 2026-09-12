@@ -33,6 +33,13 @@ type LandingPaymentGateContextType = {
   openLandingPaymentModal: () => void
   closeLandingPaymentModal: () => void
   entitlement: LandingEntitlement | null
+  /**
+   * Live mirror of the app-root payment modal's open state. Consumers
+   * (CapsuleBuilder) use it to detect an abandoned modal close — the
+   * only exit from their "payment_in_progress" state that is not a
+   * granted credit.
+   */
+  isPaymentModalOpen: boolean
 }
 
 const LandingPaymentGateContext =
@@ -77,7 +84,7 @@ export function LandingPaymentGateProvider({
   }, [])
 
   return (
-    <LandingPaymentGateContext.Provider value={{ openLandingPaymentModal, closeLandingPaymentModal, entitlement }}>
+    <LandingPaymentGateContext.Provider value={{ openLandingPaymentModal, closeLandingPaymentModal, entitlement, isPaymentModalOpen: open }}>
       {children}
       <PaymentModal
         open={open}
