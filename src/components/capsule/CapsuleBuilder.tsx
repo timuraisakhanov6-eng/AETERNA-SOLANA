@@ -66,6 +66,73 @@ export function hasRestorableEntitlement(discovery: DiscoveryOutcome): boolean {
   );
 }
 
+/* ================= PATCH-2G DISCOVERY GUARD ================= */
+
+export type DiscoveryOutcomeKind = "start" | "available" | "no-credit" | "error";
+
+/**
+ * PATCH-2G: whether a new entitlement-discovery attempt may start.
+ * Requires a connected wallet with an account, a non-paid payment state,
+ * no in-flight attempt — and no attempt already made for THIS account
+ * (one attempt per account per component session; a no-credit/error
+ * outcome must not loop into repeated signMessage requests for the same
+ * wallet).
+ */
+export function shouldStartDiscovery(
+  connected: boolean,
+  account: string | null,
+  current: ServicePaymentState,
+  attemptedForAccount: string | null,
+  inFlight: boolean
+): boolean {
+  if (!connected || !account) return false;
+  if (current === "paid") return false;
+  if (inFlight) return false;
+  return attemptedForAccount !== account;
+}
+
+/**
+ * PATCH-2G: service-payment state machine for the discovery lifecycle.
+ * Returns the next state, or null when the outcome must not change the
+ * current state:
+ * - "start" arms the discovering phase only from "ready" (the pay click
+ *   is blocked while discovering, so payment_in_progress never races it);
+ * - "available" always restores "paid" (PATCH-2F semantics, idempotent);
+ * - "no-credit"/"error" un-block the canonical $1 path by returning to
+ *   "ready" — but only from "discovering", never clobbering a paid or
+ *   payment-in-progress state.
+ */
+export function discoveryNextState(
+  current: ServicePaymentState,
+  outcome: DiscoveryOutcomeKind
+): ServicePaymentState | null {
+  if (outcome === "start") {
+    return current === "ready" ? "discovering" : null;
+  }
+  if (outcome === "available") {
+    return current === "paid" ? null : "paid";
+  }
+  return current === "discovering" ? "ready" : null;
+}
+
+/**
+ * PATCH-2G: primary create-button disable matrix, extracted from the
+ * inline ternary so the "discovering" lock (and the unchanged behavior
+ * of every other state) is node-testable. Semantics are identical to
+ * the previous inline expression for all inputs.
+ */
+export function createPrimaryDisabled(
+  storageReviewPresent: boolean,
+  state: ServicePaymentState,
+  canSeal: boolean,
+  sealPhaseIdle: boolean
+): boolean {
+  if (storageReviewPresent) return !sealPhaseIdle;
+  if (state === "ready") return !canSeal;
+  if (state === "paid") return !canSeal || !sealPhaseIdle;
+  return true;
+}
+
 type SealPhase = "idle" | "preparing";
 
 
@@ -318,7 +385,11 @@ function restorePreparedFromSession(
 
 /* ================= SERVICE PAYMENT TYPES ================= */
 
-type ServicePaymentState = "ready" | "payment_in_progress" | "paid";
+export type ServicePaymentState =
+  | "ready"
+  | "payment_in_progress"
+  | "paid"
+  | "discovering";
 
 /**
  * Mirror of the server's grant/discovery result. Never an authority:
@@ -620,19 +691,52 @@ export default function CapsuleBuilder({
    * canonical $1 payment path remains fully available.
    */
   const identityRestoreInFlightRef = useRef(false);
+  // PATCH-2G: at most ONE discovery attempt per wallet account per
+  // component session. Unlike identityRestoreInFlightRef (which only
+  // prevents concurrent duplicates), this survives the state returning
+  // to "ready" after a no-credit/error outcome — otherwise the effect
+  // (re-run on every servicePaymentState flip) would loop the user back
+  // into repeated signMessage requests for the same account.
+  const discoveryAttemptedForAccountRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!wallet.connected || !wallet.account) return;
-    if (servicePaymentState === "paid") return;
-    if (identityRestoreInFlightRef.current) return;
+    if (
+      !shouldStartDiscovery(
+        wallet.connected,
+        wallet.account,
+        servicePaymentState,
+        discoveryAttemptedForAccountRef.current,
+        identityRestoreInFlightRef.current
+      )
+    ) {
+      // PATCH-2G: a lingering "discovering" label after the attempt for
+      // this account already ended (e.g. the wallet disconnected
+      // mid-flight) must not permanently disable the canonical $1 path.
+      if (
+        wallet.connected &&
+        wallet.account &&
+        servicePaymentState === "discovering" &&
+        !identityRestoreInFlightRef.current &&
+        discoveryAttemptedForAccountRef.current === wallet.account
+      ) {
+        setServicePaymentState(
+          (prev) => discoveryNextState(prev, "error") ?? prev
+        );
+      }
+      return;
+    }
 
+    const attemptAccount = wallet.account;
+    discoveryAttemptedForAccountRef.current = attemptAccount;
     identityRestoreInFlightRef.current = true;
-    let cancelled = false;
+    setServicePaymentState(
+      (prev) => discoveryNextState(prev, "start") ?? prev
+    );
 
-    (async () => {
+    void (async () => {
       try {
         const currentAccount = walletRef.current.account;
-        if (!currentAccount || cancelled) return;
+        if (!currentAccount || currentAccount !== attemptAccount) return;
 
         const { challengeId, message } = await issueChallenge("solana", currentAccount);
 
@@ -649,7 +753,8 @@ export default function CapsuleBuilder({
           base64Signature,
           challengeId
         );
-        if (cancelled) return;
+        // A newer attempt (different account) superseded this one.
+        if (discoveryAttemptedForAccountRef.current !== attemptAccount) return;
 
         if (hasRestorableEntitlement(discovery)) {
           if (discovery.creatorIdentityId) {
@@ -660,25 +765,37 @@ export default function CapsuleBuilder({
             creatorIdentityId: discovery.creatorIdentityId ?? "",
             account: currentAccount,
           });
-          setServicePaymentState("paid");
-          // PATCH-2F: an AVAILABLE Credit discovered under an open
-          // payment modal closes it — no second $1 path may stay visible.
+          // PATCH-2F preserved: an AVAILABLE Credit discovered under an
+          // open payment modal closes it — no second $1 path may stay
+          // visible.
+          setServicePaymentState(
+            (prev) => discoveryNextState(prev, "available") ?? prev
+          );
           closeLandingPaymentModal();
+        } else {
+          setServicePaymentState(
+            (prev) => discoveryNextState(prev, "no-credit") ?? prev
+          );
         }
       } catch {
         // Discovery is best-effort: the explicit creation action still
         // reaches the canonical $1 payment flow when no AVAILABLE
         // Credit exists.
+        if (discoveryAttemptedForAccountRef.current === attemptAccount) {
+          setServicePaymentState(
+            (prev) => discoveryNextState(prev, "error") ?? prev
+          );
+        }
       } finally {
-        identityRestoreInFlightRef.current = false;
+        if (discoveryAttemptedForAccountRef.current === attemptAccount) {
+          identityRestoreInFlightRef.current = false;
+        }
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
     // Re-runs only on wallet-identity changes or payment-state flips;
-    // context actions are stable callbacks.
+    // context actions are stable callbacks. Attempt identity is carried
+    // by discoveryAttemptedForAccountRef, so no cleanup cancellation is
+    // needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallet.connected, wallet.account, servicePaymentState]);
 
@@ -997,20 +1114,23 @@ export default function CapsuleBuilder({
     isConfirmed &&
     sealPhase === "idle";
 
-  const isCreateDisabled =
-    storageReview !== null
-      ? sealPhase !== "idle"
-      : servicePaymentState === "ready"
-      ? !canSeal || servicePaymentState !== "ready"
-      : servicePaymentState === "paid"
-      ? !canSeal || sealPhase !== "idle"
-      : true;
+  // PATCH-2G: disable matrix extracted to createPrimaryDisabled so the
+  // "discovering" lock is node-testable; behavior for every pre-existing
+  // state is unchanged.
+  const isCreateDisabled = createPrimaryDisabled(
+    storageReview !== null,
+    servicePaymentState,
+    canSeal,
+    sealPhase === "idle"
+  );
 
   const primaryButtonLabel =
     storageReview !== null
       ? `Pay $${storageReview.displayAmountUSDC} Storage`
       : servicePaymentState === "paid"
       ? "Create Capsule"
+      : servicePaymentState === "discovering"
+      ? "Checking for existing credit..."
       : "Pay $1 & Create Capsule";
 
   return (
