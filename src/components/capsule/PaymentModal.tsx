@@ -1,13 +1,18 @@
 /**
  * AETERNA — PaymentModal
  *
- * Canonical service-payment modal.
+ * Canonical service-payment modal — UI shell only (PATCH-2H Phase 1).
+ *
+ * All orchestration (quote -> wallet -> identity -> payment -> verify
+ * -> grant-credit) lives in the headless
+ * src/lib/payment/servicePaymentController.ts; this component subscribes
+ * to its state and renders it. The user-visible flow is unchanged.
  *
  * Active flow:
  *   paymentIntentId -> immutable quote -> Solana USDC payment
  *   -> server verification -> Creator Credit -> grant-credit
  *
- * When stopAfterCredit=true, the modal stops after grant-credit and
+ * When stopAfterCredit=true, the controller stops after grant-credit and
  * returns control to the caller without reserving lifecycle.
  *
  * This modal MUST NOT:
@@ -17,7 +22,7 @@
  * - treat frontend state as authority
  */
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useEffect, useRef, useSyncExternalStore } from "react"
 
 import {
   Dialog,
@@ -29,62 +34,17 @@ import { Button } from "@/components/ui/button"
 import { Loader2 } from "lucide-react"
 
 import { useAeternaWallet } from "@/context/AETERNAWalletContext"
-import { sendSolanaUSDCPayment } from "@/lib/wallet/solanaWallet"
-
-/* ───────────────── HELPERS ───────────────── */
-
-async function issueChallenge(publicKey: string) {
-  const res = await fetch("/api/creator/issue-challenge", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ network: "solana", publicKey }),
-  })
-
-  const data = (await res.json()) as { ok: boolean; id?: string; challengeId?: string; challenge?: string; message?: string; expiresAt?: number; error?: string }
-  if (!res.ok || !data?.ok || !data.id || !data.challenge || !data.message) {
-    throw new Error(data?.error || "IDENTITY_CHALLENGE_FAILED")
-  }
-
-  const challengeId = data.id ?? data.challengeId
-
-  return {
-    challengeId,
-    challenge: data.challenge,
-    message: data.message,
-    expiresAt: Number(data.expiresAt),
-  }
-}
-
-async function verifyProof(input: { challengeId: string; network: string; account: string; signature: string }) {
-  const res = await fetch("/api/creator/verify-proof", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  })
-
-  const data = (await res.json()) as { ok: boolean; creatorIdentityId?: string; account?: string; error?: string }
-  if (!res.ok || !data?.ok || !data.creatorIdentityId) {
-    throw new Error(data?.error || "IDENTITY_VERIFICATION_FAILED")
-  }
-
-  return {
-    creatorIdentityId: data.creatorIdentityId,
-    account: data.account ?? input.account,
-  }
-}
+import {
+  createServicePaymentController,
+} from "@/lib/payment/servicePaymentController"
+import type { ServicePaymentController } from "@/lib/payment/servicePaymentController"
 
 /**
- * /api/creator/grant-credit returns the raw Creator Credit store enum
- * ("AVAILABLE"), while /api/creator/credit-status maps the same enum to
- * lowercase ("available"). The phase comparison in confirmAndVerify is
- * case-sensitive; normalize here so an uppercase grant status cannot
- * strand the modal in "verifying" after a successful grant.
- *
- * Exported for the node-env regression test — kept in this file by design.
+ * PATCH-2E regression-test surface. The canonical implementation moved to
+ * the headless service payment controller (PATCH-2H Phase 1); re-exported
+ * here so the existing import path keeps working.
  */
-export function normalizeGrantCreditStatus(raw: unknown): string {
-  return typeof raw === "string" ? raw.toLowerCase() : "available"
-}
+export { normalizeGrantCreditStatus } from "@/lib/payment/servicePaymentController"
 
 /* ───────────────── TYPES ───────────────── */
 
@@ -123,21 +83,6 @@ function formatUTCDate(ts: number): string {
   }).format(new Date(ts))
 }
 
-/* ───────────────── STATE ───────────────── */
-
-type PaymentPhase =
-  | "idle"
-  | "quoting"
-  | "quote_ready"
-  | "connecting_wallet"
-  | "verifying_identity"
-  | "wallet_verified"
-  | "confirming"
-  | "verifying"
-  | "available"
-  | "reserving"
-  | "error"
-
 /* ───────────────── COMPONENT ───────────────── */
 
 export function PaymentModal({
@@ -151,18 +96,6 @@ export function PaymentModal({
   onReserveReady,
 }: PaymentModalProps) {
   const wallet = useAeternaWallet()
-  const [phase, setPhase] = useState<PaymentPhase>("idle")
-  const [quote, setQuote] = useState<{
-    paymentIntentId: string
-    expectedAmount: number
-    currency: string
-    expiresAt: number
-  } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [verifiedCreatorIdentityId, setVerifiedCreatorIdentityId] = useState<string | null>(null)
-  const [verifiedCreatorAccount, setVerifiedCreatorAccount] = useState<string | null>(null)
-  const [verificationError, setVerificationError] = useState<string | null>(null)
 
   const mountedRef = useRef(true)
 
@@ -173,47 +106,49 @@ export function PaymentModal({
     }
   }, [])
 
-  const walletRef = useRef(wallet)
+  const controllerRef = useRef<ServicePaymentController | null>(null)
+  if (!controllerRef.current) {
+    controllerRef.current = createServicePaymentController({
+      isCancelled: () => !mountedRef.current,
+    })
+  }
+  const controller = controllerRef.current
+
+  const state = useSyncExternalStore(
+    controller.subscribe,
+    controller.getState,
+    controller.getState
+  )
+
+  /* ───────────────── CONTROLLER WIRING ───────────────── */
+
+  // Original flow read props/wallet through render closures and effects;
+  // the controller receives the same values explicitly.
   useEffect(() => {
-    walletRef.current = wallet
-  }, [wallet])
-
-  const previousAccountRef = useRef<string | null>(null)
-
-  const resetVerificationState = useCallback(() => {
-    setVerifiedCreatorIdentityId(null)
-    setVerifiedCreatorAccount(null)
-    setVerificationError(null)
-    setError(null)
-    setIsProcessing(false)
-    setPhase("quote_ready")
-  }, [])
+    controller.setCallbacks({ onCreditReady, onReserveReady })
+  }, [controller, onCreditReady, onReserveReady])
 
   useEffect(() => {
-    if (!wallet.connected) {
-      resetVerificationState()
-      previousAccountRef.current = null
-      return
-    }
+    controller.setParams({ creatorIdentityId, protocolAccepted, stopAfterCredit })
+  }, [controller, creatorIdentityId, protocolAccepted, stopAfterCredit])
 
-    const previousAccount = previousAccountRef.current
-    if (previousAccount && wallet.account && previousAccount !== wallet.account) {
-      resetVerificationState()
-    }
-    previousAccountRef.current = wallet.account
-  }, [wallet.connected, wallet.account, resetVerificationState])
+  useEffect(() => {
+    controller.syncWallet(wallet)
+  }, [controller, wallet])
 
   useEffect(() => {
     if (!open) {
-      setPhase("idle")
-      setQuote(null)
-      setError(null)
-      setIsProcessing(false)
-      setVerifiedCreatorIdentityId(null)
-      setVerifiedCreatorAccount(null)
-      setVerificationError(null)
+      controller.reset()
     }
-  }, [open])
+  }, [controller, open])
+
+  /* ───────────────── CANONICAL FLOW ───────────────── */
+
+  useEffect(() => {
+    if (open && state.phase === "idle") {
+      void controller.requestQuote()
+    }
+  }, [controller, open, state.phase])
 
   const unlockDate =
     typeof unlockAt === "number" &&
@@ -222,324 +157,9 @@ export function PaymentModal({
       ? formatUTCDate(unlockAt)
       : null
 
-  /* ───────────────── CANONICAL FLOW ───────────────── */
-
-  const requestQuote = async () => {
-    setPhase("quoting")
-    setError(null)
-    setIsProcessing(true)
-
-    try {
-      const paymentIntentId = crypto.randomUUID()
-
-      const res = await fetch("/api/service-payment/create-quote", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paymentIntentId }),
-      })
-
-      const data = await res.json()
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "QUOTE_REQUEST_FAILED")
-      }
-
-      const q = {
-        paymentIntentId: typeof data.paymentIntentId === "string" ? data.paymentIntentId : paymentIntentId,
-        expectedAmount: Number(data.expectedAmount ?? 1),
-        currency: String(data.currency ?? "USD"),
-        expiresAt: Number(data.expiresAt),
-      }
-      setQuote(q)
-      setPhase("quote_ready")
-      setIsProcessing(false)
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "QUOTE_REQUEST_FAILED"
-      setError(message)
-      setPhase("error")
-      setIsProcessing(false)
-    }
-  }
-
-  const connectWallet = async () => {
-    if (wallet.connected && wallet.account) {
-      if (!creatorIdentityId && !verifiedCreatorIdentityId) {
-        await verifyIdentity()
-      } else {
-        setPhase("quote_ready")
-      }
-      return
-    }
-
-    setPhase("connecting_wallet")
-    setError(null)
-    setVerificationError(null)
-
-    try {
-      await wallet.openWalletPicker()
-
-      if (!walletRef.current.account) {
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            cleanup()
-            reject(new Error("Wallet account is not available."))
-          }, 30000)
-
-          const interval = setInterval(() => {
-            if (!mountedRef.current) {
-              cleanup()
-              reject(new Error("Modal closed during wallet connection."))
-              return
-            }
-            if (walletRef.current.account) {
-              cleanup()
-              resolve()
-            }
-          }, 50)
-
-          const cleanup = () => {
-            clearTimeout(timeout)
-            clearInterval(interval)
-          }
-        })
-      }
-
-      const currentAccount = walletRef.current.account
-      if (!currentAccount) {
-        throw new Error("Wallet account is not available.")
-      }
-
-      if (!creatorIdentityId && !verifiedCreatorIdentityId) {
-        await verifyIdentity()
-      } else {
-        setPhase("quote_ready")
-      }
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "WALLET_CONNECT_FAILED"
-      setError(message)
-      setPhase("error")
-      setIsProcessing(false)
-    }
-  }
-
-  const verifyIdentity = async () => {
-    const currentAccount = walletRef.current.account
-    if (!currentAccount) {
-      setError("Wallet account is required for verification.")
-      setPhase("error")
-      return
-    }
-
-    setPhase("verifying_identity")
-    setError(null)
-    setVerificationError(null)
-    setIsProcessing(true)
-
-    try {
-      const { challengeId, message } = await issueChallenge(currentAccount)
-
-      const encoded =
-        typeof message === "string" ? new TextEncoder().encode(message) : message
-
-      if (!walletRef.current.account) {
-        throw new Error("Wallet account changed during verification.")
-      }
-
-      const { signature } = await walletRef.current.signMessage(encoded)
-
-      if (!walletRef.current.account) {
-        throw new Error("Wallet account changed after signing.")
-      }
-
-      const uint8 = new Uint8Array(signature)
-      const base64Signature = btoa(
-        String.fromCharCode(...uint8)
-      )
-
-      const { creatorIdentityId, account } = await verifyProof({
-        challengeId,
-        network: "solana",
-        account: currentAccount,
-        signature: base64Signature,
-      })
-
-      setVerifiedCreatorIdentityId(creatorIdentityId)
-      setVerifiedCreatorAccount(account)
-      setPhase("wallet_verified")
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "WALLET_VERIFICATION_FAILED"
-      setVerificationError(message)
-      setError(message)
-      setPhase("error")
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  const confirmAndVerify = async () => {
-    const effectiveCreatorIdentityId =
-      creatorIdentityId || verifiedCreatorIdentityId
-    if (!protocolAccepted || !effectiveCreatorIdentityId || !quote) {
-      setError(
-        !effectiveCreatorIdentityId
-          ? "Creator identity is required."
-          : "Protocol acceptance is required."
-      )
-      setPhase("error")
-      setIsProcessing(false)
-      return
-    }
-
-    const currentAccount = walletRef.current.account
-    if (!currentAccount) {
-      setError("Wallet account is required for payment.")
-      setPhase("error")
-      setIsProcessing(false)
-      return
-    }
-
-    if (effectiveCreatorIdentityId && !verifiedCreatorAccount) {
-      resetVerificationState()
-      setError("Wallet verification is required before payment.")
-      setPhase("error")
-      return
-    }
-
-    if (
-      verifiedCreatorIdentityId &&
-      verifiedCreatorAccount &&
-      currentAccount !== verifiedCreatorAccount
-    ) {
-      resetVerificationState()
-      setError("Wallet account changed after verification. Please verify again.")
-      setPhase("error")
-      return
-    }
-
-    setPhase("verifying")
-    setError(null)
-    setIsProcessing(true)
-
-    try {
-      const currentAccount = walletRef.current.account
-      if (!currentAccount) {
-        throw new Error("Wallet account is required for payment.")
-      }
-
-      const txHash = await sendSolanaUSDCPayment({
-        destination: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
-        amountAtomic: "1000000",
-        publicKey: currentAccount,
-        signAndSendTransaction: walletRef.current.signAndSendTransaction,
-      })
-
-      if (!txHash) {
-        throw new Error("No transaction signature from wallet.")
-      }
-
-      const evidenceId = `payment-modal-${quote.paymentIntentId}-${Date.now()}`
-
-      const verifyRes = await fetch("/api/service-payment/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId: effectiveCreatorIdentityId,
-          evidenceId,
-          transactionId: txHash,
-        }),
-      })
-
-      const verifyData = await verifyRes.json()
-      if (!verifyRes.ok || !verifyData?.ok) {
-        throw new Error(verifyData?.error || "PAYMENT_VERIFICATION_FAILED")
-      }
-
-      if (verifyData.status !== "VERIFIED") {
-        throw new Error("PAYMENT_NOT_VERIFIED")
-      }
-
-      const grantRes = await fetch("/api/creator/grant-credit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId: effectiveCreatorIdentityId,
-          verifiedPaymentId: evidenceId,
-          transactionId: txHash,
-        }),
-      })
-
-      const grantData = await grantRes.json()
-      if (!grantRes.ok || !grantData?.ok) {
-        throw new Error(grantData?.error || "PAYMENT_VERIFICATION_FAILED")
-      }
-
-      const status = normalizeGrantCreditStatus(grantData.status)
-      setPhase(status === "available" ? "available" : "verifying")
-      setIsProcessing(false)
-      onCreditReady?.({
-        status,
-        creatorIdentityId: effectiveCreatorIdentityId,
-        creatorCreditId: grantData.creatorCreditId,
-        account: currentAccount,
-        paymentIntentId: quote.paymentIntentId,
-      })
-
-      if (status !== "available" || !grantData.creatorCreditId) {
-        return
-      }
-
-      if (stopAfterCredit) {
-        setPhase("available")
-        return
-      }
-
-      setPhase("reserving")
-      setError(null)
-      const lifecycleId = `lifecycle-${quote.paymentIntentId}-${Date.now()}`
-
-      const lifecycleRes = await fetch("/api/creator/reserve-lifecycle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId: effectiveCreatorIdentityId,
-          capsuleId: `reserve-${quote.paymentIntentId}-${Date.now()}`,
-          lifecycleId,
-        }),
-      })
-
-      const lifecycleData = await lifecycleRes.json()
-      if (!lifecycleRes.ok || !lifecycleData?.ok) {
-        throw new Error(lifecycleData?.error || "LIFECYCLE_RESERVATION_FAILED")
-      }
-
-      onReserveReady?.({
-        creatorCreditId: grantData.creatorCreditId,
-        lifecycleId: lifecycleData.lifecycleId ?? lifecycleId,
-        paymentIntentId: quote.paymentIntentId,
-      })
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "PAYMENT_VERIFICATION_FAILED"
-      setError(message)
-      setPhase("error")
-      setIsProcessing(false)
-    }
-  }
-
-  /* ───────────────── EFFECTS ───────────────── */
-
-  useEffect(() => {
-    if (open && phase === "idle") {
-      void requestQuote()
-    }
-  }, [open, phase])
-
   /* ───────────────── RENDER ───────────────── */
+
+  const { phase, quote, error, verificationError, isProcessing } = state
 
   return (
     <Dialog open={open}>
@@ -666,11 +286,11 @@ export function PaymentModal({
             onClick={
               phase === "quote_ready" || phase === "error" || phase === "wallet_verified"
                 ? phase === "wallet_verified"
-                  ? confirmAndVerify
+                  ? controller.confirmAndVerify
                   : wallet.connected
                   ? wallet.changeWallet
-                  : connectWallet
-                : connectWallet
+                  : controller.connectWallet
+                : controller.connectWallet
             }
             className="w-full h-auto min-h-10 whitespace-normal"
           >
@@ -694,11 +314,11 @@ export function PaymentModal({
             {phase === "idle" && "Pay $1 to continue"}
           </Button>
 
-          {phase === "quote_ready" && wallet.connected && !creatorIdentityId && !verifiedCreatorIdentityId && (
+          {phase === "quote_ready" && wallet.connected && !creatorIdentityId && !state.verifiedCreatorIdentityId && (
             <Button
               type="button"
               variant="secondary"
-              onClick={verifyIdentity}
+              onClick={controller.verifyIdentity}
               disabled={isProcessing}
               className="w-full"
             >
