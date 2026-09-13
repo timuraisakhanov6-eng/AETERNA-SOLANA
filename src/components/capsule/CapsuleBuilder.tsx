@@ -160,6 +160,43 @@ export function shouldResetPaymentOnModalClose(
   return !modalOpen && !hasEntitlement && state === "payment_in_progress";
 }
 
+/* ================= PATCH-2K-C WALLET FLOW EVENT ================= */
+
+/**
+ * PATCH-2K-C: single decision point for wallet-driven create-flow events.
+ * Semantics (pinned by CapsuleBuilderDiscoveryGuard.test.ts):
+ * - a disconnected wallet emits DISCONNECTED only when a real account was
+ *   previously connected. A wallet-object re-emission while already
+ *   disconnected (previous=null) and the initial mount run
+ *   (previous=undefined) emit null, so a repeated DISCONNECTED can no
+ *   longer reset discovering/needs-payment to ready;
+ * - ACCOUNT_CHANGED keeps the existing semantics: a known account
+ *   replaced by a different known account;
+ * - the caller keeps its own previous!==undefined first-mount guard, so
+ *   a mount run dispatches nothing even for an already-connected wallet.
+ *
+ * Exported for the node-env regression test — kept in this file by design.
+ */
+export function walletFlowEvent(
+  previous: string | null | undefined,
+  connected: boolean,
+  account: string | null
+): "DISCONNECTED" | "ACCOUNT_CHANGED" | null {
+  if (!connected) {
+    return previous !== null && previous !== undefined
+      ? "DISCONNECTED"
+      : null;
+  }
+
+  if (previous !== account) {
+    if (previous !== null && account !== null) {
+      return "ACCOUNT_CHANGED";
+    }
+  }
+
+  return null;
+}
+
 type SealPhase = "idle" | "preparing";
 
 /* ================= PATCH-2K-B GATE ERROR UX ================= */
@@ -773,19 +810,17 @@ export default function CapsuleBuilder() {
   // Wallet → reducer: account switch / disconnect invalidate the flow
   // (PATCH-2J account-bound proof semantics). The first mount emits
   // nothing; reconnecting the SAME account after a disconnect re-restores
-  // the in-session entitlement below.
+  // the in-session entitlement below. PATCH-2K-C: the dispatch decision
+  // is walletFlowEvent — a wallet-object re-emission while already
+  // disconnected emits no event, so discovering/needs-payment are no
+  // longer reset to ready by a repeated DISCONNECTED.
   const previousWalletAccountRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const previous = previousWalletAccountRef.current;
     if (previous !== undefined) {
-      if (!wallet.connected) {
-        dispatchCreateFlow("DISCONNECTED");
-      } else if (
-        previous !== null &&
-        wallet.account &&
-        previous !== wallet.account
-      ) {
-        dispatchCreateFlow("ACCOUNT_CHANGED");
+      const ev = walletFlowEvent(previous, wallet.connected, wallet.account);
+      if (ev) {
+        dispatchCreateFlow(ev);
       }
     }
     previousWalletAccountRef.current = wallet.connected ? wallet.account : null;
