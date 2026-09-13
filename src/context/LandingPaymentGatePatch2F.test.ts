@@ -5,19 +5,16 @@
  * the creator continue without a second $1 — and must not leave a
  * payment step mounted over the workspace.
  *
- * Two production behaviors are pinned here:
+ * Pinned here: the payment gate is programmatically drivable —
+ * CapsuleBuilder feeds server-verified outcomes via reportCreditDiscovery
+ * / reportCreditReady (PATCH-2K-B — the app-root modal and its
+ * open/close API are removed). Mounted via react-dom/server like the
+ * other PATCH-2 node tests; no DOM needed.
  *
- * 1. The payment gate is programmatically drivable: CapsuleBuilder feeds
- *    server-verified outcomes via reportCreditDiscovery /
- *    reportCreditReady (PATCH-2K-B — the app-root modal and its
- *    open/close API are removed). Mounted via react-dom/server like the
- *    other PATCH-2 node tests; no DOM needed.
- *
- * 2. CapsuleBuilder's entitlement-restore decision (exported pure
- *    predicate hasRestorableEntitlement): discovery "available" with a
- *    credit id restores the paid workspace; any other outcome ("none",
- *    or "available" without a credit id) leaves the payment state
- *    untouched.
+ * The former exported predicate hasRestorableEntitlement was a dead
+ * test-only mirror removed by PATCH-2K-D; the live entitlement-restore
+ * decision runs in CapsuleBuilder's entitlement effect and its reducer
+ * invariant is pinned by capsuleCreateFlow.test.ts.
  *
  * All network access is mocked (none is performed). No production calls.
  */
@@ -35,10 +32,6 @@ import {
   LandingPaymentGateProvider,
   useLandingPaymentGate,
 } from "@/context/LandingPaymentGateContext";
-import {
-  hasRestorableEntitlement,
-  type DiscoveryOutcome,
-} from "@/components/capsule/CapsuleBuilder";
 
 function GateProbe({
   harness,
@@ -115,40 +108,5 @@ describe("PATCH-2F payment gate is programmatically drivable (PATCH-2K-B API)", 
         account: "account-a",
       })
     ).not.toThrow();
-  });
-});
-
-describe("PATCH-2F entitlement restore decision", () => {
-  it("available discovery with a credit id restores entitlement (paid + gate close)", () => {
-    const discovery: DiscoveryOutcome = {
-      status: "available",
-      creatorCreditId: "74a61dd1473459166d2f72c0d0bc6a9e",
-    };
-    // Production credit-status evidence for the discovered credit.
-    expect(hasRestorableEntitlement(discovery)).toBe(true);
-  });
-
-  it("no credit (status none) does not restore entitlement nor close the gate", () => {
-    const discovery: DiscoveryOutcome = {
-      status: "none",
-      creatorCreditId: null,
-    };
-    expect(hasRestorableEntitlement(discovery)).toBe(false);
-  });
-
-  it("available without a credit id does not restore entitlement nor close the gate", () => {
-    const discovery: DiscoveryOutcome = {
-      status: "available",
-      creatorCreditId: null,
-    };
-    expect(hasRestorableEntitlement(discovery)).toBe(false);
-  });
-
-  it("empty-string credit id is treated as no entitlement", () => {
-    const discovery: DiscoveryOutcome = {
-      status: "available",
-      creatorCreditId: "",
-    };
-    expect(hasRestorableEntitlement(discovery)).toBe(false);
   });
 });

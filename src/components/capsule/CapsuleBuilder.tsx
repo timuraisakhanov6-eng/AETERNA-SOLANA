@@ -47,119 +47,6 @@ import {
 const HEADER_HEIGHT = 64;
 const MAX_DESCRIPTION = 140;
 
-/**
- * PATCH-2F: shape of CreatorRuntimeContext.discoverAvailableCredit's
- * resolution, narrowed to the fields the entitlement-restore decision
- * may read.
- */
-export interface DiscoveryOutcome {
-  status: "available" | "none";
-  creatorCreditId: string | null;
-}
-
-/**
- * PATCH-2F: a discovered AVAILABLE Creator Credit with an id restores
- * the paid workspace AND closes the
- * app-root payment modal — no second-$1 path may stay visible under an
- * existing entitlement. Any other discovery outcome leaves both the
- * payment state and the modal untouched.
- *
- * Exported for the node-env regression test — kept in this file by design.
- */
-export function hasRestorableEntitlement(discovery: DiscoveryOutcome): boolean {
-  return (
-    discovery.status === "available" &&
-    typeof discovery.creatorCreditId === "string" &&
-    discovery.creatorCreditId.length > 0
-  );
-}
-
-/* ================= PATCH-2G DISCOVERY GUARD ================= */
-
-export type DiscoveryOutcomeKind = "start" | "available" | "no-credit" | "error";
-
-/**
- * PATCH-2G: whether a new entitlement-discovery attempt may start.
- * Requires a connected wallet with an account, a non-paid payment state,
- * no in-flight attempt — and no attempt already made for THIS account
- * (one attempt per account per component session; a no-credit/error
- * outcome must not loop into repeated signMessage requests for the same
- * wallet).
- */
-export function shouldStartDiscovery(
-  connected: boolean,
-  account: string | null,
-  current: ServicePaymentState,
-  attemptedForAccount: string | null,
-  inFlight: boolean
-): boolean {
-  if (!connected || !account) return false;
-  if (current === "paid") return false;
-  if (inFlight) return false;
-  return attemptedForAccount !== account;
-}
-
-/**
- * PATCH-2G: service-payment state machine for the discovery lifecycle.
- * Returns the next state, or null when the outcome must not change the
- * current state:
- * - "start" arms the discovering phase only from "ready" (the pay click
- *   is blocked while discovering, so payment_in_progress never races it);
- * - "available" always restores "paid" (PATCH-2F semantics, idempotent);
- * - "no-credit"/"error" un-block the canonical $1 path by returning to
- *   "ready" — but only from "discovering", never clobbering a paid or
- *   payment-in-progress state.
- */
-export function discoveryNextState(
-  current: ServicePaymentState,
-  outcome: DiscoveryOutcomeKind
-): ServicePaymentState | null {
-  if (outcome === "start") {
-    return current === "ready" ? "discovering" : null;
-  }
-  if (outcome === "available") {
-    return current === "paid" ? null : "paid";
-  }
-  return current === "discovering" ? "ready" : null;
-}
-
-/**
- * PATCH-2G: primary create-button disable matrix, extracted from the
- * inline ternary so the "discovering" lock (and the unchanged behavior
- * of every other state) is node-testable. Semantics are identical to
- * the previous inline expression for all inputs.
- */
-export function createPrimaryDisabled(
-  storageReviewPresent: boolean,
-  state: ServicePaymentState,
-  canSeal: boolean,
-  sealPhaseIdle: boolean
-): boolean {
-  if (storageReviewPresent) return !sealPhaseIdle;
-  if (state === "ready") return !canSeal;
-  if (state === "paid") return !canSeal || !sealPhaseIdle;
-  return true;
-}
-
-/**
- * Whether an app-root payment-modal close must reset the service-payment
- * state to "ready". "payment_in_progress" has exactly two exits: a
- * granted credit, or an abandoned modal close (X / Esc). Without the
- * reset, a creator who closes the $1 modal without paying permanently
- * disables the create button until a full page reload. A close that
- * accompanies a granted credit (in-session entitlement or a discovery
- * restore) must never reset the paid path.
- *
- * Exported for the node-env regression test — kept in this file by design.
- */
-export function shouldResetPaymentOnModalClose(
-  modalOpen: boolean,
-  hasEntitlement: boolean,
-  state: ServicePaymentState
-): boolean {
-  return !modalOpen && !hasEntitlement && state === "payment_in_progress";
-}
-
 /* ================= PATCH-2K-C WALLET FLOW EVENT ================= */
 
 /**
@@ -471,12 +358,6 @@ function restorePreparedFromSession(
 }
 
 /* ================= SERVICE PAYMENT TYPES ================= */
-
-export type ServicePaymentState =
-  | "ready"
-  | "payment_in_progress"
-  | "paid"
-  | "discovering";
 
 /**
  * Mirror of the server's grant/discovery result. Never an authority:
@@ -1208,9 +1089,9 @@ export default function CapsuleBuilder() {
     sealPhase === "idle";
 
   // PATCH-2K-B disable matrix over the create-flow state machine. The
-  // PATCH-2G pure helpers (createPrimaryDisabled / discoveryNextState /
-  // shouldStartDiscovery / shouldResetPaymentOnModalClose) remain
-  // exported for their regression tests; cleanup is PATCH-2K-C.
+  // gate invariants (payment only after discovery, an AVAILABLE credit
+  // never pays, paid is never clobbered) are pinned by
+  // capsuleCreateFlow.test.ts on the live reducer.
   const isCreateDisabled =
     storageReview !== null
       ? sealPhase !== "idle" || createFlowState !== "paid"

@@ -47,8 +47,6 @@ export interface CreatorCreditContextValue {
   lifecycleId: string | null;
   paymentIntentId: string | null;
   error: string | null;
-  refreshCredit: (challengeId: string, network: string, account: string, signature: string, creatorCreditId: string, lifecycleId?: string | null) => Promise<void>;
-  checkEntitlement: (challengeId: string, network: string, account: string, signature: string, creatorCreditId: string, lifecycleId?: string | null) => Promise<CreateAccessStatus>;
   /**
    * Authenticated discovery of the creator's AVAILABLE Credit via
    * /api/creator/credit-status WITHOUT a client-supplied
@@ -173,71 +171,6 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [accessStatus, setAccessStatus] = useState<CreateAccessStatus>("loading");
 
-  const refreshCredit = useCallback(async (challengeId: string, network: string, account: string, signature: string, creatorCreditId: string, lifecycleId?: string | null) => {
-    setCreditStatus("pending");
-    setError(null);
-    try {
-      const res = await fetch("/api/creator/credit-status", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ challengeId, network, account, signature, creatorCreditId, lifecycleId }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.ok || typeof data?.status !== "string") {
-        throw new Error(data?.error || "CREDIT_STATUS_FAILED");
-      }
-      const status = data.status;
-      const mapped: CreditStatus = status === "available" || status === "consuming" || status === "consumed" ? status : "idle";
-      setCreditStatus(mapped);
-      setCreditId(data.creatorCreditId ?? creditId);
-      setCreatorCreditId(data.creatorCreditId ?? creatorCreditId);
-      setLifecycleId(data.lifecycleId ?? lifecycleId ?? null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "CREDIT_ERROR");
-      setCreditStatus("error");
-    }
-  }, []);
-
-  const checkEntitlement = useCallback(async (
-    challengeId: string,
-    network: string,
-    account: string,
-    signature: string,
-    creatorCreditId: string,
-    lifecycleId?: string | null
-  ) => {
-    setAccessStatus("loading");
-    setError(null);
-    try {
-      const res = await fetch("/api/creator/credit-status", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ challengeId, network, account, signature, creatorCreditId, lifecycleId }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.ok || typeof data?.status !== "string") {
-        throw new Error(data?.error || "ENTITLEMENT_CHECK_FAILED");
-      }
-      const status = data.status;
-      if (status === "available" || status === "consuming") {
-        setAccessStatus("available");
-        setCreditId(data.creatorCreditId ?? creditId);
-        setCreatorCreditId(data.creatorCreditId ?? creatorCreditId);
-        setLifecycleId(data.lifecycleId ?? lifecycleId ?? null);
-        return "available";
-      } else if (status === "consumed") {
-        setAccessStatus("unavailable");
-        return "unavailable";
-      }
-      setAccessStatus("access-required");
-      return "access-required";
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "ENTITLEMENT_ERROR");
-      setAccessStatus("unavailable");
-      return "unavailable";
-    }
-  }, []);
-
   const discoverAvailableCredit = useCallback(async (
     network: string,
     account: string,
@@ -320,7 +253,7 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <CreatorCreditContext.Provider value={{ creditStatus, creditId, creatorCreditId, lifecycleId, paymentIntentId, error, refreshCredit, checkEntitlement, discoverAvailableCredit, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
+    <CreatorCreditContext.Provider value={{ creditStatus, creditId, creatorCreditId, lifecycleId, paymentIntentId, error, discoverAvailableCredit, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
       {children}
     </CreatorCreditContext.Provider>
   );
