@@ -15,12 +15,6 @@ export type CreatorIdentityStatus = "idle" | "authenticating" | "authenticated" 
 
 export type CreditStatus = "idle" | "pending" | "available" | "consuming" | "consumed" | "error";
 
-export type CreateAccessStatus =
-  | "loading"
-  | "available"
-  | "access-required"
-  | "unavailable";
-
 export interface CreatorRuntimeContextValue {
   creatorIdentityId: string | null;
   status: CreatorIdentityStatus;
@@ -47,20 +41,6 @@ export interface CreatorCreditContextValue {
   lifecycleId: string | null;
   paymentIntentId: string | null;
   error: string | null;
-  /**
-   * Authenticated discovery of the creator's AVAILABLE Credit via
-   * /api/creator/credit-status WITHOUT a client-supplied
-   * creatorCreditId. The server derives the identity from the fresh
-   * challenge proof; the returned state mirrors that server answer.
-   */
-  discoverAvailableCredit: (network: string, account: string, signature: string, challengeId: string) => Promise<{
-    status: "available" | "none";
-    creatorCreditId: string | null;
-    creatorIdentityId: string | null;
-  }>;
-  reserveLifecycle: (creatorCreditId: string, lifecycleId: string, capsuleId: string) => Promise<{ ok: boolean; status?: string }>;
-  accessStatus: CreateAccessStatus;
-  setAccessStatus: (status: CreateAccessStatus) => void;
   clear: () => void;
 }
 
@@ -162,85 +142,12 @@ export function CreatorIdentityProvider({ children }: { children: ReactNode }) {
 }
 
 export function CreatorCreditProvider({ children }: { children: ReactNode }) {
-  const { creatorIdentityId } = useCreatorIdentity();
   const [creditStatus, setCreditStatus] = useState<CreditStatus>("idle");
   const [creditId, setCreditId] = useState<string | null>(null);
   const [creatorCreditId, setCreatorCreditId] = useState<string | null>(null);
   const [lifecycleId, setLifecycleId] = useState<string | null>(null);
   const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [accessStatus, setAccessStatus] = useState<CreateAccessStatus>("loading");
-
-  const discoverAvailableCredit = useCallback(async (
-    network: string,
-    account: string,
-    signature: string,
-    challengeId: string
-  ) => {
-    setCreditStatus("pending");
-    setError(null);
-    try {
-      const res = await fetch("/api/creator/credit-status", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ challengeId, network, account, signature }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "CREDIT_DISCOVERY_FAILED");
-      }
-      const creatorIdentityId =
-        typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null;
-      if (data.status === "available" && typeof data.creatorCreditId === "string") {
-        setCreditStatus("available");
-        setCreditId(data.creatorCreditId);
-        setCreatorCreditId(data.creatorCreditId);
-        if (data.lifecycleId) {
-          setLifecycleId(data.lifecycleId);
-        }
-        return {
-          status: "available" as const,
-          creatorCreditId: data.creatorCreditId,
-          creatorIdentityId,
-        };
-      }
-      setCreditStatus("idle");
-      return { status: "none" as const, creatorCreditId: null, creatorIdentityId };
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "CREDIT_DISCOVERY_FAILED");
-      setCreditStatus("error");
-      throw err;
-    }
-  }, []);
-
-  const reserveLifecycle = useCallback(async (creatorCreditId: string, lifecycleId: string, capsuleId: string) => {
-    setCreditStatus("pending");
-    setError(null);
-    try {
-      const res = await fetch("/api/creator/reserve-lifecycle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          creatorIdentityId: creatorIdentityId,
-          creatorCreditId,
-          lifecycleId,
-          capsuleId,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "LIFECYCLE_RESERVATION_FAILED");
-      }
-      setCreditStatus(data.status ?? "consuming");
-      setCreditId(data.creatorCreditId ?? creatorCreditId);
-      setLifecycleId(lifecycleId);
-      return data;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "LIFECYCLE_ERROR");
-      setCreditStatus("error");
-      throw err;
-    }
-  }, [creatorIdentityId]);
 
   const clear = useCallback(() => {
     setCreditStatus("idle");
@@ -249,11 +156,10 @@ export function CreatorCreditProvider({ children }: { children: ReactNode }) {
     setLifecycleId(null);
     setPaymentIntentId(null);
     setError(null);
-    setAccessStatus("loading");
   }, []);
 
   return (
-    <CreatorCreditContext.Provider value={{ creditStatus, creditId, creatorCreditId, lifecycleId, paymentIntentId, error, discoverAvailableCredit, reserveLifecycle, accessStatus, setAccessStatus, clear }}>
+    <CreatorCreditContext.Provider value={{ creditStatus, creditId, creatorCreditId, lifecycleId, paymentIntentId, error, clear }}>
       {children}
     </CreatorCreditContext.Provider>
   );
