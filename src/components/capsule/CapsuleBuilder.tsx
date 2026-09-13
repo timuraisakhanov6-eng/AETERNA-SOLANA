@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useReducer, useSyncExternalStore } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Lock, Loader2 } from "lucide-react";
@@ -6,6 +6,14 @@ import { useCapsule } from "../../context/CapsuleContext";
 import { useCreatorIdentity } from "@/context/CreatorRuntimeContext";
 import { useAeternaWallet } from "@/context/AETERNAWalletContext";
 import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext";
+import {
+  createServicePaymentController,
+} from "@/lib/payment/servicePaymentController";
+import type { ServicePaymentController } from "@/lib/payment/servicePaymentController";
+import {
+  INITIAL_CREATE_FLOW_STATE,
+  reduceCreateFlow,
+} from "@/components/capsule/capsuleCreateFlow";
 import ActionMenu from "./ActionMenu";
 import MediaCapture from "./MediaCapture";
 import CapsuleInput from "./CapsuleInput";
@@ -51,7 +59,7 @@ export interface DiscoveryOutcome {
 
 /**
  * PATCH-2F: a discovered AVAILABLE Creator Credit with an id restores
- * the paid workspace (servicePaymentState = "paid") AND closes the
+ * the paid workspace AND closes the
  * app-root payment modal — no second-$1 path may stay visible under an
  * existing entitlement. Any other discovery outcome leaves both the
  * payment state and the modal untouched.
@@ -153,6 +161,29 @@ export function shouldResetPaymentOnModalClose(
 }
 
 type SealPhase = "idle" | "preparing";
+
+/* ================= PATCH-2K-B GATE ERROR UX ================= */
+
+// Short, non-technical gate error text for the inline status line. The
+// raw controller error code stays in state (support/debug) and is never
+// rendered.
+function describeGateError(raw: string | null): string {
+  if (!raw) return "Something went wrong. Please try again.";
+  const code = raw.toUpperCase();
+  if (code.includes("SIGNATURE") || code.includes("CHALLENGE")) {
+    return "Wallet verification was not completed. Please try again.";
+  }
+  if (code.includes("QUOTE")) {
+    return "Payment setup failed. Please try again.";
+  }
+  if (code.includes("PAYMENT") || code.includes("VERIF") || code.includes("GRANT")) {
+    return "Payment could not be verified. No entitlement was granted. Please try again.";
+  }
+  if (code.includes("WALLET") || code.includes("ACCOUNT")) {
+    return "Wallet connection issue. Please try again.";
+  }
+  return "Something went wrong. Please try again.";
+}
 
 
 
@@ -422,15 +453,9 @@ interface ServicePaymentResult {
   paymentIntentId?: string;
 }
 
-interface CapsuleBuilderProps {
-  onOpenServicePayment: () => void;
-}
-
 /* ================= COMPONENT ================= */
 
-export default function CapsuleBuilder({
-  onOpenServicePayment,
-}: CapsuleBuilderProps) {
+export default function CapsuleBuilder() {
   const navigate = useNavigate();
 
   const {
@@ -447,13 +472,51 @@ export default function CapsuleBuilder({
   } = useCapsule();
 
   const { creatorIdentityId } = useCreatorIdentity();
-  const { entitlement, closeLandingPaymentModal, isPaymentModalOpen } =
+  const { entitlement, reportCreditDiscovery, reportCreditReady } =
     useLandingPaymentGate();
   const wallet = useAeternaWallet();
   const walletRef = useRef(wallet);
   useEffect(() => {
     walletRef.current = wallet;
   }, [wallet]);
+
+  /* ================= INLINE SERVICE PAYMENT GATE (PATCH-2K-B) ================= */
+
+  // Mounted-lifetime probe for the controller's wallet-connection wait
+  // loop (PATCH-2I recovery semantics: an abandoned wait must resolve).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Single headless service-payment controller instance (PATCH-2H): the
+  // inline gate drives the same canonical flow the payment modal used to
+  // render. The controller must not calculate price, declare success
+  // locally, write Credit state, or treat frontend state as authority.
+  const servicePaymentRef = useRef<ServicePaymentController | null>(null);
+  if (!servicePaymentRef.current) {
+    servicePaymentRef.current = createServicePaymentController({
+      isCancelled: () => !mountedRef.current,
+    });
+  }
+  const servicePayment = servicePaymentRef.current;
+
+  const servicePaymentRuntime = useSyncExternalStore(
+    servicePayment.subscribe,
+    servicePayment.getState,
+    servicePayment.getState
+  );
+
+  // PATCH-2K-A create-flow state machine: the ONLY source of which gate
+  // step the user is in. Server facts enter exclusively as reducer
+  // events; the reducer knows nothing about wallets, HTTP, KV or prices.
+  const [createFlowState, dispatchCreateFlow] = useReducer(
+    reduceCreateFlow,
+    INITIAL_CREATE_FLOW_STATE
+  );
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -477,8 +540,6 @@ export default function CapsuleBuilder({
 
   /* ================= SERVICE PAYMENT STATE ================= */
 
-  const [servicePaymentState, setServicePaymentState] =
-    useState<ServicePaymentState>("ready");
   const [servicePaymentResult, setServicePaymentResult] =
     useState<ServicePaymentResult | null>(null);
   // Phase B step 1 - storage review state: populated after the capsule
@@ -674,80 +735,141 @@ export default function CapsuleBuilder({
   const isPreparing = sealPhase === "preparing";
   const isBusy = isPreparing;
 
+  /* ================= INLINE GATE ACTIONS (PATCH-2K-B) ================= */
+
+  // Controller → gate/reducer: server-verified facts enter the state
+  // machine as events only. Entitlement facts go to the gate mirror
+  // (authoritative in-session signal); the raw proof never leaves the
+  // controller.
+  useEffect(() => {
+    servicePayment.setCallbacks({
+      onCreditDiscovered: (result) => {
+        reportCreditDiscovery(result);
+        dispatchCreateFlow(
+          result.status === "available"
+            ? "DISCOVERY_AVAILABLE"
+            : "DISCOVERY_NONE"
+        );
+      },
+      onCreditReady: (result) => {
+        reportCreditReady(result);
+        dispatchCreateFlow("PAYMENT_CONFIRMED");
+      },
+    });
+  }, [servicePayment, reportCreditDiscovery, reportCreditReady]);
+
+  useEffect(() => {
+    servicePayment.setParams({
+      creatorIdentityId: null,
+      protocolAccepted: true,
+      stopAfterCredit: true,
+    });
+  }, [servicePayment]);
+
+  useEffect(() => {
+    servicePayment.syncWallet(wallet);
+  }, [servicePayment, wallet]);
+
+  // Wallet → reducer: account switch / disconnect invalidate the flow
+  // (PATCH-2J account-bound proof semantics). The first mount emits
+  // nothing; reconnecting the SAME account after a disconnect re-restores
+  // the in-session entitlement below.
+  const previousWalletAccountRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const previous = previousWalletAccountRef.current;
+    if (previous !== undefined) {
+      if (!wallet.connected) {
+        dispatchCreateFlow("DISCONNECTED");
+      } else if (
+        previous !== null &&
+        wallet.account &&
+        previous !== wallet.account
+      ) {
+        dispatchCreateFlow("ACCOUNT_CHANGED");
+      }
+    }
+    previousWalletAccountRef.current = wallet.connected ? wallet.account : null;
+  }, [wallet]);
+
+  // Controller error → reducer. A payment-phase failure (wallet rejection
+  // / server verification) returns to the $1 confirm step with the
+  // discovery answer preserved (PATCH-2I: no credit lost, no re-discovery,
+  // no second signature); identity-phase failures surface the retry state.
+  // The reducer no-ops ERROR outside busy states, so ready/paid are never
+  // clobbered.
+  useEffect(() => {
+    if (servicePaymentRuntime.phase !== "error") return;
+    dispatchCreateFlow(
+      createFlowState === "payment-in-progress"
+        ? "PAYMENT_ABORTED"
+        : "ERROR"
+    );
+  }, [servicePaymentRuntime.phase, createFlowState]);
+
+  // First explicit Create Capsule action: starts identity verification and
+  // credit discovery — never a quote, never a payment (PATCH-2K-A: payment
+  // is reachable only after an authoritative NO-CREDIT discovery).
   const handleFirstCreateClick = () => {
-    if (servicePaymentState !== "ready") return;
-    setServicePaymentState("payment_in_progress");
+    if (createFlowState !== "ready" && createFlowState !== "error") return;
     setServicePaymentError(null);
-    onOpenServicePayment();
+    dispatchCreateFlow("CREATE_CLICKED");
+
+    const runtime = servicePayment.getState();
+    if (
+      runtime.discovery?.status === "none" &&
+      runtime.verifiedCreatorIdentityId
+    ) {
+      // Retry after a payment-phase error: identity and the NO-CREDIT
+      // discovery answer are already established — return straight to the
+      // $1 confirm step without re-running discovery or asking for a
+      // second signature.
+      dispatchCreateFlow("DISCOVERY_NONE");
+      return;
+    }
+
+    void servicePayment.connectWallet();
   };
 
-  const handlePaymentCreditReady = useCallback(
-    (result: ServicePaymentResult) => {
-      setServicePaymentResult(result);
-      setServicePaymentState("paid");
-      setServicePaymentError(null);
-    },
-    [setServicePaymentResult, setServicePaymentState]
-  );
+  // THE single production payment trigger: an explicit Confirm $1 click
+  // while the flow is in needs-payment. The PATCH-2K-A discovery guard
+  // inside the controller applies as defense-in-depth.
+  const handleConfirmServicePayment = async () => {
+    if (createFlowState !== "needs-payment") return;
+    dispatchCreateFlow("PAYMENT_STARTED");
 
-  const handlePaymentCancel = useCallback(() => {
-    setServicePaymentState("ready");
-    setServicePaymentError(null);
-  }, []);
-
-  // An abandoned payment-modal close (X / Esc, no credit granted) is the
-  // non-payment exit from "payment_in_progress"; without this reset the
-  // create button stays disabled until a full page reload. A close that
-  // accompanies a granted credit never resets (see
-  // shouldResetPaymentOnModalClose): the entitlement effect above owns
-  // that transition to "paid".
-  useEffect(() => {
-    if (
-      shouldResetPaymentOnModalClose(
-        isPaymentModalOpen,
-        Boolean(entitlement?.creatorCreditId),
-        servicePaymentState
-      )
-    ) {
-      handlePaymentCancel();
+    if (servicePayment.getState().quote === null) {
+      await servicePayment.requestQuote();
+      if (servicePayment.getState().quote === null) {
+        // Quote failed: the controller is in the error phase; the ERROR
+        // effect above moves the flow to the retry state.
+        return;
+      }
     }
-  }, [
-    isPaymentModalOpen,
-    entitlement,
-    servicePaymentState,
-    handlePaymentCancel,
-  ]);
+    await servicePayment.confirmAndVerify();
+  };
 
-  /* ================= ENTITLEMENT RESTORE (PATCH-2J) ================= */
+  /* ================= ENTITLEMENT RESTORE (PATCH-2F / PATCH-2J) ================= */
 
   // PATCH-2J: sign-based credit discovery (issue-challenge → signMessage
-  // → credit-status) moved into the headless payment controller, which
-  // runs credit-status with the ONE identity proof BEFORE verify-proof
-  // consumes the server-side challenge. Discovery outcomes reach this
-  // component as server-authenticated entitlement facts through the
-  // payment gate (LandingPaymentGateContext.entitlement, set from the
-  // controller's onCreditDiscovered / onCreditReady) — never as raw
-  // proof material. The PATCH-2G state machine below
-  // (discoveryNextState / createPrimaryDisabled / one-attempt-per-account
-  // attempted-ref semantics, now owned by the controller) and the
-  // PATCH-2I modal-close reset are unchanged; hasRestorableEntitlement
-  // remains the restore predicate. No auto-sign on mount: the single
-  // signature is requested only by an explicit action inside the payment
-  // modal.
+  // → credit-status) runs inside the headless payment controller. The
+  // single signature is requested only by an explicit Create Capsule
+  // action (handleFirstCreateClick) — never on mount.
+  //
+  // In-session: a successful $1 payment (grant via onCreditReady → gate
+  // reportCreditReady) or a discovery-restored AVAILABLE credit
+  // (onCreditDiscovered → gate reportCreditDiscovery) lands in the gate
+  // entitlement mirror; this effect is the single PATCH-2F restore point
+  // that returns the workspace to "paid" — no second signature, no
+  // second $1. The mirror is account-bound: a different connected wallet
+  // must re-discover instead of restoring.
 
-  /**
-   * In-session: a successful $1 payment grants the Credit inside the
-   * app-root payment modal; the gate retains the FULL server result
-   * (previously dropped), so the prepared /create workspace sees the
-   * paid entitlement immediately — without another signature or
-   * another $1. PATCH-2J: the same channel now also carries a
-   * discovery-restored AVAILABLE Credit (controller onCreditDiscovered),
-   * so this effect remains the single PATCH-2F restore point.
-   */
   useEffect(() => {
     if (!entitlement?.creatorCreditId) return;
     if (!entitlement.creatorIdentityId || !entitlement.account) return;
-    if (servicePaymentState === "paid") return;
+    // The entitlement is account-bound: never restore it for a different
+    // connected wallet (an account switch must re-discover).
+    if (entitlement.account !== wallet.account) return;
+    if (createFlowState === "paid") return;
 
     const result: ServicePaymentResult = {
       creatorCreditId: entitlement.creatorCreditId,
@@ -758,12 +880,10 @@ export default function CapsuleBuilder({
       result.paymentIntentId = entitlement.paymentIntentId;
     }
     setServicePaymentResult(result);
-    setServicePaymentState("paid");
-    // PATCH-2F: mirror the in-session entitlement restore with the same
-    // gate close as discovery, so no payment modal stays mounted once a
-    // Credit is known.
-    closeLandingPaymentModal();
-  }, [entitlement, servicePaymentState]);
+    // PATCH-2F: a server-authenticated AVAILABLE entitlement restores the
+    // paid workspace (idempotent; also wins from payment-in-progress).
+    dispatchCreateFlow("DISCOVERY_AVAILABLE");
+  }, [entitlement, createFlowState, wallet]);
 
   const walletMatch = useCallback(() => {
     const account = walletRef.current?.account;
@@ -850,7 +970,7 @@ export default function CapsuleBuilder({
   };
 
   const handleFinalCreateClick = async () => {
-    if (servicePaymentState !== "paid" || !servicePaymentResult) return;
+    if (createFlowState !== "paid" || !servicePaymentResult) return;
     if (sealPhase !== "idle" || sealingRef.current) return;
     if (!walletMatch() || walletMismatch) {
       // ACTIVE lifecycle: keep the paid credit and lifecycle binding.
@@ -974,7 +1094,7 @@ export default function CapsuleBuilder({
   // The real storage payment execution belongs to Phase B; this keeps
   // the lifecycle binding and continues reserve + hold as today.
   const handleConfirmStoragePayment = async () => {
-    if (servicePaymentState !== "paid" || !servicePaymentResult) return;
+    if (createFlowState !== "paid" || !servicePaymentResult) return;
     if (!storageReview || !preparedRef.current) return;
     if (sealPhase !== "idle" || sealingRef.current) return;
     if (!walletMatch()) {
@@ -1052,24 +1172,57 @@ export default function CapsuleBuilder({
     isConfirmed &&
     sealPhase === "idle";
 
-  // PATCH-2G: disable matrix extracted to createPrimaryDisabled so the
-  // "discovering" lock is node-testable; behavior for every pre-existing
-  // state is unchanged.
-  const isCreateDisabled = createPrimaryDisabled(
-    storageReview !== null,
-    servicePaymentState,
-    canSeal,
-    sealPhase === "idle"
-  );
+  // PATCH-2K-B disable matrix over the create-flow state machine. The
+  // PATCH-2G pure helpers (createPrimaryDisabled / discoveryNextState /
+  // shouldStartDiscovery / shouldResetPaymentOnModalClose) remain
+  // exported for their regression tests; cleanup is PATCH-2K-C.
+  const isCreateDisabled =
+    storageReview !== null
+      ? sealPhase !== "idle" || createFlowState !== "paid"
+      : createFlowState === "ready"
+      ? !canSeal
+      : createFlowState === "paid"
+      ? !canSeal || sealPhase !== "idle"
+      : createFlowState === "needs-payment" || createFlowState === "error"
+      ? false
+      : true; // discovering / payment-in-progress are busy states
 
   const primaryButtonLabel =
     storageReview !== null
       ? `Pay $${storageReview.displayAmountUSDC} Storage`
-      : servicePaymentState === "paid"
-      ? "Create Capsule"
-      : servicePaymentState === "discovering"
-      ? "Checking for existing credit..."
-      : "Pay $1 & Create Capsule";
+      : createFlowState === "needs-payment"
+      ? "Confirm $1 USDC"
+      : createFlowState === "error"
+      ? "Retry"
+      : "Create Capsule";
+
+  // PATCH-2K-B inline gate status: compact text next to Create Capsule.
+  // No endpoint names, quote ids, credit ids or transaction internals are
+  // shown; raw controller error codes stay in state and are never
+  // rendered.
+  const gateStatus = (() => {
+    if (storageReview !== null) return null;
+    switch (createFlowState) {
+      case "discovering":
+        return servicePaymentRuntime.phase === "connecting_wallet"
+          ? "Connect wallet"
+          : servicePaymentRuntime.phase === "verifying_identity"
+          ? "Verifying wallet…"
+          : "Checking your access…";
+      case "needs-payment":
+        return "One-time setup — $1 USDC";
+      case "payment-in-progress":
+        return "Processing…";
+      case "paid":
+        return "Creator access ready";
+      case "error":
+        return describeGateError(
+          servicePaymentRuntime.error ?? servicePaymentRuntime.verificationError
+        );
+      default:
+        return null; // ready — plain Create Capsule
+    }
+  })();
 
   return (
     <div className="min-h-screen bg-background relative">
@@ -1177,6 +1330,12 @@ export default function CapsuleBuilder({
                   {servicePaymentError}
                 </div>
               )}
+
+              {gateStatus && (
+                <p className="text-xs text-muted-foreground" role="status">
+                  {gateStatus}
+                </p>
+              )}
             </div>
 
             <div className="space-y-3">
@@ -1185,8 +1344,10 @@ export default function CapsuleBuilder({
                 onClick={
                   storageReview !== null
                     ? handleConfirmStoragePayment
-                    : servicePaymentState === "paid"
+                    : createFlowState === "paid"
                     ? handleFinalCreateClick
+                    : createFlowState === "needs-payment"
+                    ? handleConfirmServicePayment
                     : handleFirstCreateClick
                 }
                 className={[

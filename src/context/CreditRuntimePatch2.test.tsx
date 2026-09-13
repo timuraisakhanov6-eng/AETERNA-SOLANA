@@ -8,38 +8,18 @@
  *  R. successful in-session payment restores entitlement via the gate
  *  S. discovery only ever calls credit-status (never reserve/consume)
  *
+ * PATCH-2K-B: the app-root PaymentModal is removed — the gate is driven
+ * directly through reportCreditReady / reportCreditDiscovery (the bodies
+ * the modal callbacks used to fill). The modal vi.mock and its grant
+ * button are gone; the modal API itself is asserted absent.
+ *
  * All network access is mocked. No production calls.
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, act } from "@testing-library/react";
 import { CreatorIdentityProvider, CreatorCreditProvider, useCreatorIdentity, useCreatorCredit } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider, useLandingPaymentGate } from "@/context/LandingPaymentGateContext";
-
-vi.mock("@/components/capsule/PaymentModal", () => {
-  let lastOnCreditReady: ((result: Record<string, unknown>) => void) | null = null;
-  return {
-    PaymentModal: (props: Record<string, unknown>) => {
-      lastOnCreditReady = props["onCreditReady"] as (result: Record<string, unknown>) => void;
-      return (
-        <button
-          data-testid="grant-btn"
-          onClick={() =>
-            lastOnCreditReady?.({
-              status: "available",
-              creatorIdentityId: "id-from-payment",
-              creatorCreditId: "credit-from-payment",
-              account: "acc-from-payment",
-              paymentIntentId: "intent-from-payment",
-            })
-          }
-        >
-          grant
-        </button>
-      );
-    },
-  };
-});
 
 interface Harness {
   identity?: ReturnType<typeof useCreatorIdentity>;
@@ -154,9 +134,16 @@ describe("PATCH-2 runtime entitlement wiring", () => {
     const harness: Harness = {};
     renderTree(harness);
 
-    const grantButton = screen.getByTestId("grant-btn");
+    // PATCH-2K-B: the gate is fed by the controller host (CapsuleBuilder)
+    // via reportCreditReady — the server-verified grant result.
     await act(async () => {
-      fireEvent.click(grantButton);
+      harness.gate!.reportCreditReady({
+        status: "available",
+        creatorIdentityId: "id-from-payment",
+        creatorCreditId: "credit-from-payment",
+        account: "acc-from-payment",
+        paymentIntentId: "intent-from-payment",
+      });
     });
 
     expect(harness.gate!.entitlement).toEqual({
@@ -167,5 +154,78 @@ describe("PATCH-2 runtime entitlement wiring", () => {
     });
     expect(harness.identity!.creatorIdentityId).toBe("id-from-payment");
     expect(harness.identity!.status).toBe("authenticated");
+  });
+
+  it("PATCH-2K-B: reportCreditDiscovery AVAILABLE retains the entitlement and adopts the identity", async () => {
+    const harness: Harness = {};
+    renderTree(harness);
+
+    await act(async () => {
+      harness.gate!.reportCreditDiscovery({
+        status: "available",
+        creatorCreditId: "credit-9",
+        creatorIdentityId: "identity-9",
+        account: "acc-9",
+      });
+    });
+
+    expect(harness.gate!.entitlement).toEqual({
+      creatorCreditId: "credit-9",
+      creatorIdentityId: "identity-9",
+      account: "acc-9",
+    });
+    expect(harness.identity!.creatorIdentityId).toBe("identity-9");
+    expect(harness.identity!.status).toBe("authenticated");
+  });
+
+  it("PATCH-2K-B: reportCreditDiscovery NONE clears a stale entitlement only for the SAME account", async () => {
+    const harness: Harness = {};
+    renderTree(harness);
+
+    await act(async () => {
+      harness.gate!.reportCreditDiscovery({
+        status: "available",
+        creatorCreditId: "credit-1",
+        creatorIdentityId: "identity-1",
+        account: "acc-1",
+      });
+    });
+    expect(harness.gate!.entitlement).not.toBeNull();
+
+    // Authoritative none for a DIFFERENT account must not touch the mirror.
+    await act(async () => {
+      harness.gate!.reportCreditDiscovery({
+        status: "none",
+        creatorCreditId: null,
+        creatorIdentityId: "identity-1",
+        account: "acc-OTHER",
+      });
+    });
+    expect(harness.gate!.entitlement).toEqual({
+      creatorCreditId: "credit-1",
+      creatorIdentityId: "identity-1",
+      account: "acc-1",
+    });
+
+    // Authoritative none for the SAME account clears the stale mirror.
+    await act(async () => {
+      harness.gate!.reportCreditDiscovery({
+        status: "none",
+        creatorCreditId: null,
+        creatorIdentityId: "identity-1",
+        account: "acc-1",
+      });
+    });
+    expect(harness.gate!.entitlement).toBeNull();
+  });
+
+  it("PATCH-2K-B: the gate no longer exposes payment-modal API", () => {
+    const harness: Harness = {};
+    renderTree(harness);
+
+    const gateRecord = harness.gate as unknown as Record<string, unknown>;
+    expect(gateRecord["openLandingPaymentModal"]).toBeUndefined();
+    expect(gateRecord["closeLandingPaymentModal"]).toBeUndefined();
+    expect(gateRecord["isPaymentModalOpen"]).toBeUndefined();
   });
 });

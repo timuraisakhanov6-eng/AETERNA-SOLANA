@@ -133,9 +133,7 @@ describe("PATCH-2B CapsuleBuilder restore flow", () => {
           React.createElement(
             CreatorCreditProvider,
             null,
-            React.createElement(CapsuleBuilder, {
-              onOpenServicePayment: () => undefined,
-            })
+          React.createElement(CapsuleBuilder)
           )
         )
       )
