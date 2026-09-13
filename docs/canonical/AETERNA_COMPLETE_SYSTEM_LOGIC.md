@@ -85,7 +85,7 @@ Landing
 ↓
 CREATE CAPSULE
 ↓
-Service Payment Modal
+Service Payment Gate (inline on /create)
 ↓
 choose supported payment rail
 ↓
