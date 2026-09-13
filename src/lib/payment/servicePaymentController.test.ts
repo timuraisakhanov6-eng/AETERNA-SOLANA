@@ -693,3 +693,122 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
     expect(countCalls(calls, "verify-proof")).toBe(1);
   });
 });
+
+/**
+ * PATCH-2K-A — payment-after-discovery guard (defense-in-depth).
+ *
+ * confirmAndVerify must be unreachable without a completed credit-status
+ * discovery that answered NO CREDIT: no quote creation, no USDC
+ * transport, no /api/service-payment/verify, no grant-credit. An
+ * AVAILABLE discovery must block payment without clobbering the restored
+ * credit state; discovery reset (account switch / disconnect / failure)
+ * must re-block it.
+ */
+describe("PATCH-2K-A payment-after-discovery guard", () => {
+  const countCalls = (calls: { url: string }[], fragment: string) =>
+    calls.filter((c) => c.url.includes(fragment)).length;
+
+  it("blocks confirmAndVerify before any discovery — controlled error, zero transport", async () => {
+    const onCreditReady = vi.fn<[ServicePaymentCreditResult], void>();
+    const { controller, calls } = setup({ routes: [], onCreditReady });
+    controller.setParams({ creatorIdentityId: null, protocolAccepted: true, stopAfterCredit: true });
+    controller.syncWallet(createWalletStub());
+
+    await controller.confirmAndVerify();
+
+    const state = controller.getState();
+    expect(state.phase).toBe("error");
+    expect(state.error).toBe("CREDIT_DISCOVERY_REQUIRED");
+    expect(state.discovery).toBeNull();
+    expect(onCreditReady).not.toHaveBeenCalled();
+    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    // No quote creation, no verify, no grant — in fact no network call at all.
+    expect(countCalls(calls, "create-quote")).toBe(0);
+    expect(countCalls(calls, "service-payment/verify")).toBe(0);
+    expect(countCalls(calls, "grant-credit")).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("blocks payment after an AVAILABLE discovery and preserves the restored credit state", async () => {
+    const onCreditReady = vi.fn<[ServicePaymentCreditResult], void>();
+    const { controller, calls } = setup({
+      routes: [
+        { match: (u) => u.includes("create-quote"), body: QUOTE_BODY },
+        { match: (u) => u.includes("issue-challenge"), body: ISSUE_BODY },
+        {
+          match: (u) => u.includes("credit-status"),
+          body: { ok: true, status: "available", creatorCreditId: "credit-9", creatorIdentityId: "identity-9" },
+        },
+      ],
+      onCreditReady,
+    });
+
+    // The legacy modal flow held a quote before discovery; the guard must
+    // block payment even with quote + identity + wallet all present.
+    await controller.requestQuote();
+    controller.syncWallet(createWalletStub());
+    await controller.connectWallet();
+    expect(controller.getState().phase).toBe("available");
+
+    controller.setParams({ creatorIdentityId: "identity-9", protocolAccepted: true, stopAfterCredit: true });
+    await controller.confirmAndVerify();
+
+    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(onCreditReady).not.toHaveBeenCalled();
+    // The restored-credit state is preserved untouched (no error clobber).
+    expect(controller.getState().phase).toBe("available");
+    expect(controller.getState().error).toBeNull();
+    expect(countCalls(calls, "service-payment/verify")).toBe(0);
+    expect(countCalls(calls, "grant-credit")).toBe(0);
+  });
+
+  it("blocks payment when discovery failed (no credit-status answer)", async () => {
+    const { controller, calls } = setup({
+      routes: [
+        { match: (u) => u.includes("create-quote"), body: QUOTE_BODY },
+        { match: (u) => u.includes("issue-challenge"), body: ISSUE_BODY },
+        { match: (u) => u.includes("credit-status"), ok: false, body: { ok: false, error: "CREDIT_STATUS_DOWN" } },
+      ],
+    });
+    controller.setParams({ creatorIdentityId: null, protocolAccepted: true, stopAfterCredit: true });
+
+    await controller.requestQuote();
+    controller.syncWallet(createWalletStub());
+    await controller.connectWallet();
+    expect(controller.getState().phase).toBe("error");
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("CREDIT_DISCOVERY_REQUIRED");
+    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(countCalls(calls, "service-payment/verify")).toBe(0);
+    expect(countCalls(calls, "grant-credit")).toBe(0);
+  });
+
+  it("account switch and disconnect invalidate discovery — payment stays blocked", async () => {
+    const { controller, calls } = setup({ routes: SUCCESS_ROUTES });
+    controller.setParams({ creatorIdentityId: null, protocolAccepted: true, stopAfterCredit: true });
+
+    await controller.requestQuote();
+    controller.syncWallet(createWalletStub());
+    await controller.connectWallet();
+    expect(controller.getState().phase).toBe("wallet_verified");
+
+    // Account switch: discovery is account-bound (PATCH-2J) — the reset
+    // forbids payment for the new account until it re-discovers.
+    controller.syncWallet(createWalletStub({ account: "DifferentAccount11111111111111111111111111" }));
+    await controller.confirmAndVerify();
+    expect(controller.getState().discovery).toBeNull();
+    expect(controller.getState().error).toBe("CREDIT_DISCOVERY_REQUIRED");
+    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+
+    // Disconnect: same reset semantics.
+    controller.syncWallet(createWalletStub({ connected: false, account: null }));
+    await controller.confirmAndVerify();
+    expect(controller.getState().discovery).toBeNull();
+    expect(controller.getState().error).toBe("CREDIT_DISCOVERY_REQUIRED");
+    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(countCalls(calls, "service-payment/verify")).toBe(0);
+    expect(countCalls(calls, "grant-credit")).toBe(0);
+  });
+});

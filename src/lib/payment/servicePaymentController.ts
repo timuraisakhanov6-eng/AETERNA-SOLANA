@@ -587,6 +587,24 @@ export function createServicePaymentController(
   }
 
   const confirmAndVerify = async () => {
+    // PATCH-2K-A: the $1 payment is reachable only through a completed
+    // credit-status discovery that answered NO CREDIT (PATCH-2J ordering).
+    // A flow that never discovered must not reach the transport —
+    // controlled error, no quote, no USDC, no verify, no grant. A flow
+    // that discovered an AVAILABLE Creator Credit must never pay a second
+    // $1 — the restored-credit state is preserved untouched.
+    if (!state.discovery) {
+      patch({
+        error: "CREDIT_DISCOVERY_REQUIRED",
+        phase: "error",
+        isProcessing: false,
+      })
+      return
+    }
+    if (state.discovery.status !== "none") {
+      return
+    }
+
     const effectiveCreatorIdentityId =
       params.creatorIdentityId || state.verifiedCreatorIdentityId
     if (!params.protocolAccepted || !effectiveCreatorIdentityId || !state.quote) {
