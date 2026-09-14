@@ -15,6 +15,7 @@ import {
   reduceCreateFlow,
 } from "@/components/capsule/capsuleCreateFlow";
 import ActionMenu from "./ActionMenu";
+import FinalCapsuleReviewModal from "./FinalCapsuleReviewModal";
 import MediaCapture from "./MediaCapture";
 import CapsuleInput from "./CapsuleInput";
 import HorizontalCapsule from "./HorizontalCapsule";
@@ -85,6 +86,25 @@ export function walletFlowEvent(
 }
 
 type SealPhase = "idle" | "preparing";
+
+/* ================= STALE QUOTE HARDENING (PATCH-2L) ================= */
+
+/**
+ * Single decision point for dropping the storage review after a failed
+ * verify-payment. An EXPIRED quote can never be verified, so funding it
+ * again would only pay twice: the review is dropped and the next
+ * explicit Create Capsule re-quotes through the existing
+ * enterStorageReviewForPrepared path. Every other failure reason
+ * preserves the review state so the same storage payment can be retried.
+ *
+ * Exported for the regression test — kept in this file by design
+ * (same pattern as walletFlowEvent).
+ */
+export function shouldClearStorageReviewOnVerifyFailure(
+  reason: string
+): boolean {
+  return reason === "STORAGE_QUOTE_EXPIRED";
+}
 
 /* ================= PATCH-2K-B GATE ERROR UX ================= */
 
@@ -479,6 +499,10 @@ export default function CapsuleBuilder() {
   const [pendingLifecycleId, setPendingLifecycleId] = useState<string | null>(null);
   const [storageReviewLoading, setStorageReviewLoading] = useState(false);
   const [servicePaymentError, setServicePaymentError] = useState<string | null>(null);
+  // Final Capsule Review dialog visibility. storageReview (the canonical
+  // quote record) is deliberately NOT cleared on close: the dialog can be
+  // re-opened without a second quote while the quote stays valid.
+  const [isReviewOpen, setIsReviewOpen] = useState(false);
 
   /* ================= MEDIA ================= */
 
@@ -872,7 +896,9 @@ export default function CapsuleBuilder() {
         displayAmountUSDC: String(quote.displayAmountUSDC ?? ""),
         storageSizeBytes: preparedState.prepared.encryptedSizeBytes,
       });
+      // The canonical quote is in hand — open the Final Capsule Review.
       setSealPhase("idle");
+      setIsReviewOpen(true);
       sealingRef.current = false;
       return; // remain on /create in the storage review state
     } catch (reviewErr) {
@@ -1054,9 +1080,17 @@ export default function CapsuleBuilder() {
           (verifyData?.reason as string | undefined) ??
           (verifyData?.error as string | undefined) ??
           "STORAGE_PAYMENT_NOT_VERIFIED";
-        // Stay in the storage payment/review state: the paid $1
+        // Stale-quote hardening: an expired quote can never be verified,
+        // so funding it again would only pay twice. Drop the review; the
+        // next explicit Create Capsule re-quotes (no re-payment, no
+        // reserve against the stale quote). Every other failure reason
+        // stays in the storage payment/review state: the paid $1
         // entitlement, lifecycle binding, quote and wallet binding are
         // preserved so the creator can retry the same storage payment.
+        if (shouldClearStorageReviewOnVerifyFailure(reason)) {
+          setStorageReview(null);
+          setIsReviewOpen(false);
+        }
         setSealPhase("idle");
         setSealError(`Irys storage payment not verified: ${reason}`);
         sealingRef.current = false;
@@ -1103,10 +1137,11 @@ export default function CapsuleBuilder() {
       ? false
       : true; // discovering / payment-in-progress are busy states
 
+  // The Irys price lives inside the Final Capsule Review dialog; the
+  // primary action in the review state only (re)opens that dialog —
+  // never a quote, never a payment.
   const primaryButtonLabel =
-    storageReview !== null
-      ? `Pay $${storageReview.displayAmountUSDC} Storage`
-      : createFlowState === "needs-payment"
+    createFlowState === "needs-payment"
       ? "Confirm $1 USDC"
       : createFlowState === "error"
       ? "Retry"
@@ -1259,7 +1294,7 @@ export default function CapsuleBuilder() {
                 disabled={isCreateDisabled || storageReviewLoading || Boolean(walletMismatch)}
                 onClick={
                   storageReview !== null
-                    ? handleConfirmStoragePayment
+                    ? () => setIsReviewOpen(true)
                     : createFlowState === "paid"
                     ? handleFinalCreateClick
                     : createFlowState === "needs-payment"
@@ -1280,33 +1315,7 @@ export default function CapsuleBuilder() {
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-              {storageReview !== null && (
-            <section className="mx-auto w-full max-w-[720px] rounded-lg border border-border bg-card p-4 space-y-2">
-              <p className="text-sm font-medium tracking-widest text-muted-foreground uppercase">
-                Review capsule before storage payment
-              </p>
-              {typeof description === "string" && description.length > 0 && (
-                <p className="text-sm">Title: {description}</p>
-              )}
-              {typeof unlockAt === "number" && (
-                <p className="text-sm">
-                  Unlock date: {new Date(unlockAt).toLocaleString()}
-                </p>
-              )}
-              <p className="text-sm">
-                Final storage size: {(storageReview.storageSizeBytes / 1024).toFixed(1)} KB
-              </p>
-              <p className="text-sm">
-                Irys storage price: ${storageReview.displayAmountUSDC} USDC (set by Irys)
-              </p>
-              {walletMismatch && (
-                <p className="text-sm text-destructive">
-                  Reconnect the same wallet used for the $1 payment to continue.
-                </p>
-              )}
-            </section>
-          )}
-                {primaryButtonLabel}
+                    {primaryButtonLabel}
                   </div>
                 )}
               </Button>
@@ -1345,6 +1354,25 @@ export default function CapsuleBuilder() {
           />
         </>
       )}
+
+      {/* Final Capsule Review: rendered OUTSIDE the !isBusy block so the
+          dialog stays mounted while the storage payment runs. Open only
+          after a successful canonical Irys quote (storageReview !== null);
+          close (X/Escape/overlay/Cancel) only hides the dialog — the
+          review state and prepared identity are preserved. */}
+      <FinalCapsuleReviewModal
+        open={storageReview !== null && isReviewOpen}
+        storageReview={storageReview}
+        description={typeof description === "string" ? description : null}
+        unlockAt={typeof unlockAt === "number" ? unlockAt : null}
+        walletMismatch={walletMismatch}
+        sealError={sealError}
+        isPreparing={isPreparing}
+        onConfirm={handleConfirmStoragePayment}
+        onOpenChange={(next) => {
+          if (!next) setIsReviewOpen(false);
+        }}
+      />
     </div>
   );
 }
