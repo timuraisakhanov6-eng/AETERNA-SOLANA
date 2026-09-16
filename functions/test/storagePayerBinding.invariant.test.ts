@@ -30,6 +30,16 @@ const CAPSULE_ID = "a".repeat(64);
 const LIFECYCLE_ID = "lifecycle-1";
 const AMOUNT_ATOMIC = "1000000"; // 1 USDC
 
+/**
+ * Canonical PREPARED local vault pointer.
+ *
+ * At the PREPARED boundary no Arweave/Irys txId exists — the canonical
+ * order is PREPARED → PAYMENT VERIFIED → CapsuleHold → Upload → real
+ * vaultTxId. The prepared projection therefore carries the canonical
+ * LocalVaultPointer: "aeterna-local-vault:" + 64 lowercase hex capsuleId.
+ */
+const LOCAL_VAULT_POINTER = `aeterna-local-vault:${CAPSULE_ID}`;
+
 function buildEnv() {
   return {
     CREATOR_IDENTITIES: createFakeKV(),
@@ -128,7 +138,11 @@ function solanaTx(payer: string, preAtomic: string, postPayerAtomic: string, pos
   };
 }
 
-async function submitPrepared(env: ReturnType<typeof buildEnv>, identityId = IDENTITY_ID) {
+async function submitPrepared(
+  env: ReturnType<typeof buildEnv>,
+  identityId = IDENTITY_ID,
+  pointer: string = LOCAL_VAULT_POINTER
+) {
   const { onRequestPost } = await import("./../api/capsule/prepared");
   const chunk = { chunkId: await sha256(new Uint8Array([1])), mediaId: "m1", index: 0, size: 16 };
   return onRequestPost(
@@ -139,7 +153,7 @@ async function submitPrepared(env: ReturnType<typeof buildEnv>, identityId = IDE
       encryptedSizeBytes: 16,
       vaultSha256: "a".repeat(64),
       saltBase: "b".repeat(32),
-      encryptedVaultPointer: "c".repeat(43),
+      encryptedVaultPointer: pointer,
       chunkMetadata: [chunk],
     })
   );
@@ -303,5 +317,130 @@ describe("Storage payment payer binding (creator wallet authority)", () => {
     const json = (await res.json()) as Record<string, unknown>;
     expect(json.state).toBe("FAILED");
     expect(json.reason).toBe("AMOUNT_MISMATCH");
+  });
+});
+
+/**
+ * PREPARED local vault pointer contract.
+ *
+ * The prepared projection carries a canonical LocalVaultPointer
+ * ("aeterna-local-vault:" + 64 lowercase hex capsuleId) — NOT a storage
+ * pointer. No Arweave/Irys txId can exist at the PREPARED boundary
+ * because Upload canonically follows PAYMENT VERIFIED / CapsuleHold.
+ *
+ * These tests exercise the REAL onRequestPost and pin the accepted
+ * grammar: the embedded capsuleId is validated in full, so prefix-only
+ * acceptance (arbitrary trailing text) is rejected.
+ */
+describe("Prepared local vault pointer contract", () => {
+  beforeEach(() => {
+    rpcTx = null;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("accepts the canonical LocalVaultPointer", async () => {
+    const env = buildEnv();
+    stubFetch({});
+    seedIdentity(env);
+    seedReservedLifecycle(env);
+    const res = await submitPrepared(env, IDENTITY_ID, LOCAL_VAULT_POINTER);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      preparedProjection: { encryptedVaultPointer: string };
+    };
+    expect(body.ok).toBe(true);
+    // Stored verbatim — the pointer is never converted into a TXID.
+    expect(body.preparedProjection.encryptedVaultPointer).toBe(LOCAL_VAULT_POINTER);
+  });
+
+  it("rejects malformed local pointers with INVALID_ENCRYPTED_VAULT_POINTER", async () => {
+    const malformed = [
+      // wrong length (too short / too long)
+      `aeterna-local-vault:${"a".repeat(63)}`,
+      `aeterna-local-vault:${"a".repeat(65)}`,
+      // non-hex characters after the prefix
+      `aeterna-local-vault:${"z".repeat(64)}`,
+      // uppercase hex
+      `aeterna-local-vault:${"A".repeat(64)}`,
+      // empty id
+      "aeterna-local-vault:",
+      // arbitrary text after prefix (prefix-only acceptance is forbidden)
+      "aeterna-local-vault:not-a-capsule-id",
+      // hyphenated ids are NOT canonical capsuleIds
+      "aeterna-local-vault:lifecycle-abc-123",
+      // prefix-only / bare prefix forms
+      "aeterna-local-vault",
+      `${CAPSULE_ID}`,
+    ];
+
+    for (const pointer of malformed) {
+      const env = buildEnv();
+      stubFetch({});
+      seedIdentity(env);
+      seedReservedLifecycle(env);
+      const res = await submitPrepared(env, IDENTITY_ID, pointer);
+      expect(res.status, `expected rejection for: ${JSON.stringify(pointer)}`).toBe(400);
+      expect((await res.json()).error).toBe("INVALID_ENCRYPTED_VAULT_POINTER");
+    }
+  });
+
+  it("does NOT accept a TXID as the prepared pointer", async () => {
+    const env = buildEnv();
+    stubFetch({});
+    seedIdentity(env);
+    seedReservedLifecycle(env);
+    // A well-formed Arweave/Irys TXID is NOT the prepared contract.
+    const res = await submitPrepared(env, IDENTITY_ID, "c".repeat(43));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_ENCRYPTED_VAULT_POINTER");
+  });
+
+  it("rejects arbitrary / foreign pointer schemes", async () => {
+    const foreign = [
+      "ar://pointer",
+      "https://evil.example/vault",
+      "not-a-pointer",
+      "aeterna-local-vault:/vault",
+      "local-vault:" + CAPSULE_ID,
+    ];
+
+    for (const pointer of foreign) {
+      const env = buildEnv();
+      stubFetch({});
+      seedIdentity(env);
+      seedReservedLifecycle(env);
+      const res = await submitPrepared(env, IDENTITY_ID, pointer);
+      expect(res.status, `expected rejection for: ${JSON.stringify(pointer)}`).toBe(400);
+      expect((await res.json()).error).toBe("INVALID_ENCRYPTED_VAULT_POINTER");
+    }
+  });
+
+  it("preserves the other prepared field contracts when the pointer is valid", async () => {
+    const env = buildEnv();
+    stubFetch({});
+    seedIdentity(env);
+    seedReservedLifecycle(env);
+    const res = await submitPrepared(env, IDENTITY_ID, LOCAL_VAULT_POINTER);
+    expect(res.status).toBe(200);
+    const stored = JSON.parse(
+      (await env.PREPARED_PROJECTIONS.get(`prepared-projection:${CAPSULE_ID}`))!
+    ) as {
+      encryptedSizeBytes: number;
+      vaultSha256: string;
+      saltBase: string;
+      creatorIdentityId: string;
+      lifecycleId: string;
+      capsuleId: string;
+    };
+    expect(stored.encryptedSizeBytes).toBe(16);
+    expect(stored.vaultSha256).toBe("a".repeat(64));
+    expect(stored.saltBase).toBe("b".repeat(32));
+    expect(stored.creatorIdentityId).toBe(IDENTITY_ID);
+    expect(stored.lifecycleId).toBe(LIFECYCLE_ID);
+    expect(stored.capsuleId).toBe(CAPSULE_ID);
   });
 });

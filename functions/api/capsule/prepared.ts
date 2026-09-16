@@ -19,7 +19,7 @@ import {
   CAPSULE_ID_REGEX,
   SALT_BASE_REGEX,
   SHA256_REGEX,
-  STORAGE_POINTER_REGEX,
+  LOCAL_VAULT_POINTER_REGEX,
 } from "../../../src/lib/crypto/validators";
 import { getCreatorIdentityById } from "../../../src/lib/creator/creatorIdentityStore";
 import {
@@ -299,7 +299,18 @@ export async function onRequestPost(
     return fail(origin, 400, "INVALID_VAULT_SHA256");
   }
 
-  if (!STORAGE_POINTER_REGEX.test(encryptedVaultPointer)) {
+  /* ================= PREPARED POINTER =================
+
+     The PREPARED boundary carries a canonical LocalVaultPointer, NOT a
+     storage pointer: no Arweave/Irys txId exists yet, because the
+     canonical order is PREPARED → PAYMENT VERIFIED → CapsuleHold →
+     Upload → real vaultTxId. Validating this field as a TXID would
+     reject every canonically prepared capsule.
+
+     The embedded capsuleId grammar is validated in full — prefix-only
+     acceptance is forbidden. This pointer is never authority. */
+
+  if (!LOCAL_VAULT_POINTER_REGEX.test(encryptedVaultPointer)) {
     return fail(origin, 400, "INVALID_ENCRYPTED_VAULT_POINTER");
   }
 

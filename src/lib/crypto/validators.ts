@@ -115,6 +115,31 @@ export const STORAGE_POINTER_REGEX =
 
 
 /**
+ * Canonical PREPARED local vault pointer
+ *
+ * A temporary Runtime Layer reference to the encrypted Vault held in
+ * local runtime storage BEFORE upload. It is explicitly NOT a storage
+ * pointer: at the PREPARED boundary no Arweave/Irys txId can exist,
+ * because the canonical protocol order is
+ *
+ *   PREPARED → PAYMENT VERIFIED → CapsuleHold → Upload → real vaultTxId
+ *
+ * Format:
+ *  "aeterna-local-vault:" + 64 lowercase hex capsuleId
+ *
+ * The embedded capsuleId grammar is validated in full. A prefix-only
+ * check would accept arbitrary trailing text and is forbidden: the
+ * pointer is never authority, and the value it carries must match the
+ * canonical capsule identity exactly.
+ *
+ * Used in:
+ * /api/capsule/prepared (encryptedVaultPointer)
+ */
+export const LOCAL_VAULT_POINTER_REGEX =
+  Object.freeze(/^aeterna-local-vault:[a-f0-9]{64}$/);
+
+
+/**
  * Upload token capability
  *
  * Opaque backend-issued upload authority.
