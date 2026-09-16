@@ -809,7 +809,6 @@ export default function CapsuleBuilder() {
     // The entitlement is account-bound: never restore it for a different
     // connected wallet (an account switch must re-discover).
     if (entitlement.account !== wallet.account) return;
-    if (createFlowState === "paid") return;
 
     const result: ServicePaymentResult = {
       creatorCreditId: entitlement.creatorCreditId,
@@ -821,7 +820,13 @@ export default function CapsuleBuilder() {
     }
     setServicePaymentResult(result);
     // PATCH-2F: a server-authenticated AVAILABLE entitlement restores the
-    // paid workspace (idempotent; also wins from payment-in-progress).
+    // paid workspace. PATCH-2M: this effect must also run when the flow is
+    // already "paid" — reportCreditDiscovery/reportCreditReady batch
+    // setEntitlement with the paid dispatch into ONE React commit, so an
+    // early paid-return here left servicePaymentResult null and dead-ended
+    // Create Capsule. Re-runs are safe: reduceCreateFlow treats
+    // DISCOVERY_AVAILABLE as an idempotent no-op at paid (and it still
+    // wins from payment-in-progress).
     dispatchCreateFlow("DISCOVERY_AVAILABLE");
   }, [entitlement, createFlowState, wallet]);
 
