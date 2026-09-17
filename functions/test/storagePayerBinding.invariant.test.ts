@@ -17,7 +17,13 @@ import { createFakeKV, createFakeRequest, makeEventContext } from "./harness";
 import { sha256 } from "../lib/sha256";
 
 const ORIGIN = "https://aeternacapsule.com";
-const NODE_URL = "https://node1.irys.xyz";
+/**
+ * Active Irys L1 Mainnet bundler — the ONLY host that publishes
+ * `usdc-solana`. The legacy Arweave bundler (node1.irys.xyz) does not
+ * expose that token and must never be accepted as the production rail.
+ */
+const NODE_URL = "https://uploader.irys.xyz";
+const LEGACY_NODE_URL = "https://node1.irys.xyz";
 const RPC_URL = "https://api.mainnet-beta.solana.com";
 const NOW = 1_800_000_000_000;
 
@@ -84,14 +90,23 @@ function fakeContext(env: Record<string, unknown>, body: unknown) {
 }
 
 /**
- * Routes stubbed fetch:
- *  - node1.irys.xyz /info and /price → Irys node responses;
+ * Routes stubbed fetch, but ONLY on the exact expected hosts:
+ *  - uploader.irys.xyz /info and /price/usdc-solana/<bytes> → Irys L1 responses;
  *  - RPC_URL POST → JSON-RPC getTransaction result (rpcTx);
- *  - anything else → 500.
+ *  - anything else (including the legacy Arweave bundler) → 500.
+ *
+ * The legacy host is deliberately NOT routed: if production code ever
+ * regresses back to node1.irys.xyz this mock turns it into a loud 500
+ * failure instead of a silent pass. Price requests must also carry the
+ * exact `usdc-solana` token — a wrong token is rejected, not absorbed.
  */
 function stubFetch(node: { infoAddress?: string; priceAtomic?: string; reject?: Error }) {
   const routing = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url.startsWith(LEGACY_NODE_URL)) {
+      // Legacy Arweave bundler: never a valid active rail.
+      return new Response("Currency not supported", { status: 400 });
+    }
     if (url.startsWith(NODE_URL)) {
       if (node.reject) throw node.reject;
       if (url.includes("/info")) {
@@ -100,10 +115,11 @@ function stubFetch(node: { infoAddress?: string; priceAtomic?: string; reject?: 
           { status: 200 }
         );
       }
-      if (url.includes("/price/")) {
+      if (/\/price\/usdc-solana\/\d+$/.test(url)) {
         return new Response(node.priceAtomic ?? AMOUNT_ATOMIC, { status: 200 });
       }
-      return new Response("{}", { status: 404 });
+      // Any other token path is unsupported on this node.
+      return new Response("Currency not supported", { status: 400 });
     }
     if (url === RPC_URL) {
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: rpcTx }), { status: 200 });
@@ -185,6 +201,29 @@ async function prepareAndQuote(env: ReturnType<typeof buildEnv>) {
   process.stdout.write(`DBG_Q[${q.storagePaymentId.slice(-6)}] ${quoteRes.status} wallet=${q.walletAccount ? "set" : "missing"} err=${(q as Record<string, unknown>)["error"] ?? "-"}
 `);
   return q;
+}
+
+/**
+ * Submits only the quote for an already-prepared capsule, WITHOUT
+ * re-stubbing fetch. The bundler-host regression tests install their
+ * own fetch mock (to observe the exact host/token dialed) and must not
+ * have it replaced by stubFetch() mid-test.
+ */
+async function submitQuoteOnly(env: ReturnType<typeof buildEnv>) {
+  const preparedRes = await submitPrepared(env);
+  if (preparedRes.status !== 200) return preparedRes;
+  const preparedData = (await preparedRes.json()) as {
+    preparedProjection: { preparedProjectionId: string };
+  };
+  const { onRequestPost } = await import("./../api/storage/quote");
+  return onRequestPost(
+    fakeContext(env, {
+      creatorIdentityId: IDENTITY_ID,
+      lifecycleId: LIFECYCLE_ID,
+      capsuleId: CAPSULE_ID,
+      preparedProjectionId: preparedData.preparedProjection.preparedProjectionId,
+    })
+  );
 }
 
 async function verifyPayment(env: ReturnType<typeof buildEnv>, storagePaymentId: string) {
@@ -442,5 +481,123 @@ describe("Prepared local vault pointer contract", () => {
     expect(stored.creatorIdentityId).toBe(IDENTITY_ID);
     expect(stored.lifecycleId).toBe(LIFECYCLE_ID);
     expect(stored.capsuleId).toBe(CAPSULE_ID);
+  });
+});
+
+/**
+ * Irys bundler host regression.
+ *
+ * Root cause this locks down: the storage rail previously targeted
+ * node1.irys.xyz — a legacy Arweave bundler that does NOT publish
+ * `usdc-solana`, so every /price request answered HTTP 400
+ * "Currency not supported" and /api/storage/quote failed closed with
+ * 502 IRYS_STORAGE_PRICE_UNAVAILABLE. The active rail must be the
+ * Irys L1 Mainnet bundler, which does publish that token.
+ */
+describe("Irys active bundler host (L1 mainnet, not legacy Arweave)", () => {
+  beforeEach(() => {
+    rpcTx = null;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("A. quote requests the price from uploader.irys.xyz with the usdc-solana token", async () => {
+    const env = buildEnv();
+    stubFetch({});
+    seedIdentity(env);
+    seedReservedLifecycle(env);
+    const res = await submitQuoteOnly(env);
+    expect(res.status).toBe(200);
+
+    const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const urls = calls.map((c) => String(c[0]));
+
+    expect(urls.some((u) => u.startsWith(`${NODE_URL}/price/usdc-solana/`))).toBe(true);
+    expect(urls.some((u) => u.startsWith(`${NODE_URL}/info`))).toBe(true);
+    expect(urls.some((u) => u.startsWith(`${LEGACY_NODE_URL}/`))).toBe(false);
+  });
+
+  it("B. price request path is exactly /price/usdc-solana/<bytes>", async () => {
+    const env = buildEnv();
+    stubFetch({});
+    seedIdentity(env);
+    seedReservedLifecycle(env);
+    const res = await submitQuoteOnly(env);
+    expect(res.status).toBe(200);
+
+    const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const priceUrls = calls.map((c) => String(c[0])).filter((u) => u.includes("/price/"));
+
+    expect(priceUrls.length).toBeGreaterThan(0);
+    for (const u of priceUrls) {
+      expect(u.startsWith("https://uploader.irys.xyz/price/usdc-solana/")).toBe(true);
+      expect(/^[0-9]+$/.test(u.slice("https://uploader.irys.xyz/price/usdc-solana/".length))).toBe(true);
+    }
+  });
+
+  it("C. the legacy Arweave bundler is never accepted as the active rail", async () => {
+    const env = buildEnv();
+    const routing = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith(NODE_URL)) {
+        if (url.includes("/info")) {
+          return new Response(
+            JSON.stringify({ addresses: { "usdc-solana": IRYS_DESTINATION } }),
+            { status: 200 }
+          );
+        }
+        if (url.startsWith(`${NODE_URL}/price/usdc-solana/`)) {
+          return new Response(AMOUNT_ATOMIC, { status: 200 });
+        }
+        return new Response("Currency not supported", { status: 400 });
+      }
+      // Legacy host answers exactly like the real legacy node.
+      if (url.startsWith(LEGACY_NODE_URL)) {
+        return new Response("Currency not supported", { status: 400 });
+      }
+      if (url === RPC_URL) {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: null }), { status: 200 });
+      }
+      if (url.includes("/api/time")) {
+        return new Response(JSON.stringify({ ok: true, nowUtc: NOW, now: NOW / 1000 }), { status: 200 });
+      }
+      return new Response("unexpected fetch", { status: 500 });
+    });
+    vi.stubGlobal("fetch", routing);
+
+    seedIdentity(env);
+    seedReservedLifecycle(env);
+    const res = await submitQuoteOnly(env);
+    expect(res.status).toBe(200);
+
+    // Quote succeeds on the L1 bundler; the legacy host was never used.
+    const urls = routing.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.startsWith(`${LEGACY_NODE_URL}/`))).toBe(false);
+  });
+
+  it("D. the legacy Arweave bundler refuses usdc-solana, so the rail would fail closed", async () => {
+    const env = buildEnv();
+    // Only the legacy host is reachable — mirrors the pre-patch production bug.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith(LEGACY_NODE_URL)) {
+          return new Response("Currency not supported", { status: 400 });
+        }
+        if (url.includes("/api/time")) {
+          return new Response(JSON.stringify({ ok: true, nowUtc: NOW, now: NOW / 1000 }), { status: 200 });
+        }
+        return new Response("unexpected fetch", { status: 500 });
+      })
+    );
+
+    seedIdentity(env);
+    seedReservedLifecycle(env);
+    const res = await submitQuoteOnly(env);
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toBe("IRYS_STORAGE_PRICE_UNAVAILABLE");
   });
 });

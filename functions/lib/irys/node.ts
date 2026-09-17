@@ -8,7 +8,20 @@
  * Read-only: no keys, no funding, no Executor Hot.
  */
 
-import { IRYS_NODE_URL } from "../../irys/transport";
+/**
+ * Irys L1 Mainnet bundler. This module previously imported its host
+ * from functions/irys/transport.ts, which belongs to a DIFFERENT rail
+ * (the frozen Executor transport, token `base-eth`) and points at the
+ * legacy Arweave bundler. Reusing that constant coupled a read path to
+ * an unrelated write rail, so this module now owns its host directly.
+ *
+ * Publication tx lookups target the L1 mainnet bundler because that is
+ * where new capsules publish, and because AETERNA has no historical
+ * production capsules on the legacy Arweave bundler that would require
+ * a legacy lookup path. Do not reintroduce a shared constant here: the
+ * two rails must be able to move independently.
+ */
+const IRYS_NODE_URL = "https://uploader.irys.xyz";
 
 export type IrysNodeConfirmation = "CONFIRMED" | "ABSENT" | "UNAVAILABLE";
 

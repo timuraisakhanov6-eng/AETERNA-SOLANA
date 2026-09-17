@@ -8,7 +8,17 @@
  * This module does NOT perform uploads or funding.
  */
 
-const IRYS_NODE_URL = "https://node1.irys.xyz";
+/**
+ * Irys L1 Mainnet bundler — the endpoint that actually publishes
+ * `usdc-solana` in its /info address registry.
+ *
+ * NOT node1.irys.xyz: that host is a legacy Arweave bundler which does
+ * not expose `usdc-solana` at all (its /price endpoint answers
+ * HTTP 400 "Currency not supported"), and Irys retires it on
+ * 2026-11-01. Every storage price request built here must target the
+ * L1 mainnet bundler or the storage rail fails closed with a 502.
+ */
+const IRYS_NODE_URL = "https://uploader.irys.xyz";
 const IRYS_TOKEN = "usdc-solana";
 
 const IRYS_HTTP_TIMEOUT_MS = 15_000;

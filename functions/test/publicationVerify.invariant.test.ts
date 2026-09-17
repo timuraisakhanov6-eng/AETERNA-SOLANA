@@ -34,10 +34,17 @@ function buildContext(env: PublicationVerifyEnv, body: unknown) {
 }
 
 
+/**
+ * Active Irys L1 Mainnet bundler — where new capsules publish.
+ * The legacy Arweave bundler (node1.irys.xyz) is deliberately NOT
+ * routed: a regression back to it must surface as a mismatch/failure.
+ */
+const IRYS_NODE_BASE = "https://uploader.irys.xyz/";
+
 type NodeRoute = { status: number; body?: Record<string, unknown>; reject?: Error };
 
 /**
- * Routes stubbed fetch: node1.irys.xyz requests hit the configured
+ * Routes stubbed fetch: Irys L1 bundler requests hit the configured
  * Node response; every other URL (gateways) falls through to the
  * gateway mock.
  */
@@ -46,7 +53,7 @@ function stubNodeAndGateway(
   node: NodeRoute,
 ): void {
   const routing = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (String(input).startsWith("https://node1.irys.xyz/")) {
+    if (String(input).startsWith(IRYS_NODE_BASE)) {
       if (node.reject) throw node.reject;
       return new Response(JSON.stringify(node.body ?? { id: "authoritative-tx-1" }), {
         status: node.status,
@@ -815,8 +822,8 @@ describe("Publication verification boundary", () => {
     const routing = vi.fn(async (input: RequestInfo | URL) => {
       // Even if the node WOULD confirm the forged tx, the lookup must
       // use the server-owned expectedTxId — assert that here.
-      if (String(input).startsWith("https://node1.irys.xyz/")) {
-        expect(String(input)).toBe("https://node1.irys.xyz/tx/authoritative-tx-1");
+      if (String(input).startsWith(IRYS_NODE_BASE)) {
+        expect(String(input)).toBe(`${IRYS_NODE_BASE}tx/authoritative-tx-1`);
         return new Response(JSON.stringify({ id: "authoritative-tx-1" }), { status: 200 });
       }
       return mock(input as RequestInfo);

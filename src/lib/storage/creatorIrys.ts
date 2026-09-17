@@ -20,8 +20,17 @@
 import { WebUploader } from "@irys/web-upload";
 import { PublicKey } from "@solana/web3.js";
 
-/** Canonical Irys mainnet node — same constant the server transport uses. */
-const IRYS_NODE_URL = "https://node1.irys.xyz";
+/**
+ * Irys L1 Mainnet bundler — the endpoint that actually publishes
+ * `usdc-solana` in its /info address registry, and therefore the only
+ * host that can resolve a funding destination for the Solana USDC rail.
+ *
+ * NOT node1.irys.xyz: that host is a legacy Arweave bundler with no
+ * `usdc-solana` key, so the SDK's getBundlerAddress() would throw
+ * "Specified bundler does not support token usdc-solana" before any
+ * funding transfer could be built. It also retires on 2026-11-01.
+ */
+const IRYS_NODE_URL = "https://uploader.irys.xyz";
 
 /** Irys token family used by the creator-paid Solana USDC rail. */
 const IRYS_TOKEN = "usdc-solana";

@@ -19,7 +19,13 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { createFakeKV, createFakeRequest, makeEventContext } from "./harness";
 
 const ORIGIN = "https://aeternacapsule.com";
-const NODE_URL = "https://node1.irys.xyz";
+/**
+ * Active Irys L1 Mainnet bundler — where new capsules publish.
+ * The legacy Arweave bundler is intentionally NOT routed: a regression
+ * back to it must surface as a loud failure, not a silent pass.
+ */
+const NODE_URL = "https://uploader.irys.xyz";
+const LEGACY_NODE_URL = "https://node1.irys.xyz";
 const NOW = 1_800_000_000_000;
 
 const IDENTITY_ID = "f".repeat(32);
@@ -86,6 +92,10 @@ function stubNode() {
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.startsWith(LEGACY_NODE_URL)) {
+        // Legacy Arweave bundler: never a valid active rail.
+        return new Response("unexpected legacy bundler", { status: 500 });
+      }
       if (url.startsWith(NODE_URL) && url.includes("/tx/")) {
         if (nodeStatus === 200) {
           return new Response(JSON.stringify(nodeBody), {
@@ -386,5 +396,38 @@ describe("Phase C — creator-paid publication claim", () => {
     const fs = await import("node:fs");
     const src = fs.readFileSync("functions/api/publication/claim.ts", "utf8");
     expect(src).not.toMatch(/executorHot|EXECUTOR_PRIVATE_KEY|publishCiphertext/);
+  });
+
+  it("T. Node confirmation targets the Irys L1 bundler, not the legacy Arweave bundler", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("functions/lib/irys/node.ts", "utf8");
+    expect(src).toContain('"https://uploader.irys.xyz"');
+    expect(src).not.toContain('"https://node1.irys.xyz"');
+    // The read path must not re-couple to the unrelated base-eth rail.
+    expect(src).not.toMatch(/from "\.\.\/\.\.\/irys\/transport"/);
+  });
+
+  it("U. a legacy-bundler-only node can never confirm a publication", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith(LEGACY_NODE_URL)) {
+          return new Response("legacy", { status: 404 });
+        }
+        return new Response("unexpected", { status: 500 });
+      })
+    );
+
+    const res = await claim(env);
+    // Fail closed: no authority record may be written off the legacy host.
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe("PUBLICATION_NODE_UNAVAILABLE");
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)
+    ).toBeNull();
   });
 });

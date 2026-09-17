@@ -49,14 +49,24 @@ describe("creatorIrys (Phase A capability)", () => {
     ).rejects.toThrow(/invalid payload size/);
   });
 
-  it("builder chain instantiates with the Solana USDC token config", async () => {
+  it("builder chain instantiates with the Solana USDC token config on the L1 bundler", async () => {
     const { WebUploader } = await import("@irys/web-upload");
     const { WebUSDCSolana } = await import("@irys/web-upload-solana");
-    const builder = WebUploader({ url: "https://node1.irys.xyz", token: "usdc-solana" })
+    // Active production rail host: Irys L1 Mainnet (publishes usdc-solana).
+    // The legacy Arweave bundler node1.irys.xyz does not expose that token.
+    const builder = WebUploader({ url: "https://uploader.irys.xyz", token: "usdc-solana" })
       .withProvider(walletWithSigner() as never);
     expect(typeof builder.withAdapter).toBe("function");
     expect(typeof builder.build).toBe("function");
     expect(() => new WebUSDCSolana({} as never)).not.toThrow();
+  });
+
+  it("uses the Irys L1 mainnet bundler host, never the legacy Arweave bundler", async () => {
+    const source = await import("node:fs").then((fs) =>
+      fs.readFileSync("src/lib/storage/creatorIrys.ts", "utf8")
+    );
+    expect(source).toContain('"https://uploader.irys.xyz"');
+    expect(source).not.toContain('"https://node1.irys.xyz"');
   });
 
   it("upload without a proper Irys session fails closed (no silent success)", async () => {
