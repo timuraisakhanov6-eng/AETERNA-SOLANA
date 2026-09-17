@@ -274,6 +274,82 @@ describe("Prepared Projection persistence invariants", () => {
   });
 });
 
+/* ================= TEXT-ONLY CAPSULE (EMPTY CHUNK METADATA) ================= */
+
+describe("Prepared Projection accepts canonical text-only capsules", () => {
+  it("ACCEPTS a prepared request with chunkMetadata = [] (HTTP 200)", async () => {
+    const env = buildEnv();
+    const res = await submitValid(env, {
+      encryptedSizeBytes: 550,
+      chunkMetadata: [],
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  it("persists chunkCount === 0", async () => {
+    const env = buildEnv();
+    const res = await submitValid(env, { encryptedSizeBytes: 550, chunkMetadata: [] });
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse(
+      (await env.PREPARED_PROJECTIONS.get(`prepared-projection:${CAPSULE_ID}`))!
+    ) as { chunkCount: number };
+
+    expect(stored.chunkCount).toBe(0);
+  });
+
+  it("persists totalChunkSizeBytes === 0", async () => {
+    const env = buildEnv();
+    const res = await submitValid(env, { encryptedSizeBytes: 550, chunkMetadata: [] });
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse(
+      (await env.PREPARED_PROJECTIONS.get(`prepared-projection:${CAPSULE_ID}`))!
+    ) as { totalChunkSizeBytes: number };
+
+    expect(stored.totalChunkSizeBytes).toBe(0);
+  });
+
+  it("keeps encryptedSizeBytes an independent field (not derived from chunks)", async () => {
+    const env = buildEnv();
+    const res = await submitValid(env, { encryptedSizeBytes: 550, chunkMetadata: [] });
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse(
+      (await env.PREPARED_PROJECTIONS.get(`prepared-projection:${CAPSULE_ID}`))!
+    ) as { encryptedSizeBytes: number; totalChunkSizeBytes: number };
+
+    // The vault size survives intact with zero media chunks. No equality
+    // between the two is asserted or enforced — they are independent.
+    expect(stored.encryptedSizeBytes).toBe(550);
+    expect(stored.totalChunkSizeBytes).toBe(0);
+  });
+
+  it("never returns CHUNK_METADATA_EMPTY", async () => {
+    const env = buildEnv();
+    const res = await submitValid(env, { encryptedSizeBytes: 550, chunkMetadata: [] });
+    const raw = await res.text();
+    expect(raw).not.toContain("CHUNK_METADATA_EMPTY");
+    expect(res.status).toBe(200);
+  });
+
+  it("ACCEPTS a text-only capsule whose vault size differs from the chunk sum", async () => {
+    const env = buildEnv();
+    // Text-only: vault 550 bytes, zero media chunks (sum 0).
+    const res = await submitValid(env, { encryptedSizeBytes: 550, chunkMetadata: [] });
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse(
+      (await env.PREPARED_PROJECTIONS.get(`prepared-projection:${CAPSULE_ID}`))!
+    ) as { encryptedSizeBytes: number; totalChunkSizeBytes: number };
+
+    expect(stored.encryptedSizeBytes).not.toBe(stored.totalChunkSizeBytes);
+  });
+});
+
 /* ================= CHUNK METADATA VALIDATION STILL ENFORCED ================= */
 
 describe("Prepared Projection chunkMetadata validation is still enforced", () => {
@@ -285,16 +361,32 @@ describe("Prepared Projection chunkMetadata validation is still enforced", () =>
     expect((await res.json()).error).toBe("INVALID_FIELDS");
   });
 
-  it("rejects an empty chunkMetadata array", async () => {
+  it("still accepts a single-chunk payload", async () => {
     const env = buildEnv();
-    const res = await submitValid(env, { chunkMetadata: [] });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("CHUNK_METADATA_EMPTY");
+    const res = await submitValid(env, {
+      encryptedSizeBytes: 714,
+      chunkMetadata: [buildChunk(0, 4096)],
+    });
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse(
+      (await env.PREPARED_PROJECTIONS.get(`prepared-projection:${CAPSULE_ID}`))!
+    ) as { chunkCount: number; totalChunkSizeBytes: number };
+
+    expect(stored.chunkCount).toBe(1);
+    expect(stored.totalChunkSizeBytes).toBe(4096);
   });
 
   it("rejects malformed chunkMetadata items", async () => {
     const env = buildEnv();
     const res = await submitValid(env, { chunkMetadata: [{ mediaId: "m1" }] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_CHUNK_METADATA_ITEM_0");
+  });
+
+  it("rejects an empty-object chunkMetadata item", async () => {
+    const env = buildEnv();
+    const res = await submitValid(env, { chunkMetadata: [{}] });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("INVALID_CHUNK_METADATA_ITEM_0");
   });

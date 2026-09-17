@@ -111,10 +111,37 @@ function validateChunkMetadata(
     return { valid: false, error: "INVALID_CHUNK_METADATA_ARRAY" };
   }
 
+  /* ================= EMPTY CHUNK METADATA =================
+
+     An empty array is VALID and is the canonically correct value for a
+     text-only capsule.
+
+     Canonical basis:
+
+       AETERNA_COMPLETE_SYSTEM_LOGIC.md:17
+         "Canonical item types: text, media."
+         Media is one of TWO item types — not mandatory.
+
+       AETERNA_COMPLETE_SYSTEM_LOGIC.md:396-397
+         "Chunk metadata describes the structure of encrypted media."
+         No media ⇒ nothing for chunk metadata to describe ⇒ [] is both
+         valid and complete.
+
+     The runtime already treats zero chunks as a normal success path:
+       uploadPreparedChunks.ts  — returns Object.freeze([]) for length 0
+       sealCapsuleCore.ts       — the 0 !== 0 count invariant does not throw
+       chunk-pointers.ts        — "a text-only capsule legitimately has an
+                                   empty Registry"
+
+     This block previously failed closed with CHUNK_METADATA_EMPTY, which
+     rejected every canonically valid text-only capsule.
+
+     An empty array therefore falls through to the canonical success
+     return below: { valid: true, count: 0, totalSize: 0 }.
+
+     There is deliberately NO minimum-length requirement here. */
+
   const chunks = chunkMetadata as unknown[];
-  if (chunks.length === 0) {
-    return { valid: false, error: "CHUNK_METADATA_EMPTY" };
-  }
 
   let totalSize = 0;
 
