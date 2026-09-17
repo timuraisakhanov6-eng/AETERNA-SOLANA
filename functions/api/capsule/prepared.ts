@@ -181,36 +181,44 @@ function validateChunkMetadata(
   return { valid: true, count: chunks.length, totalSize };
 }
 
-/* ================= LIFECYCLE VALIDATION ================= */
+/* ================= LIFECYCLE ORDERING =================
 
-async function validateLifecycleBinding(
-  env: PreparedEnv,
-  creatorIdentityId: string,
-  lifecycleId: string
-): Promise<{ ok: boolean; error?: string }> {
-  const lifecycleKey = `creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`;
-  const lifecycleRaw = await env.CREATOR_CREDITS.get(lifecycleKey);
+   There is deliberately NO lifecycle reservation check here.
 
-  if (!lifecycleRaw) {
-    return { ok: false, error: "LIFECYCLE_NOT_RESERVED" };
-  }
+   This endpoint is the PREPARED metadata/ciphertext projection:
+   it binds size, hashes, salt, pointer and chunk metadata, and it
+   feeds the Storage Quote endpoint. It is NOT an authority domain.
 
-  let creditRecord: { id?: string; status?: string; creatorIdentityId?: string } | null = null;
-  try {
-    creditRecord = JSON.parse(lifecycleRaw) as typeof creditRecord;
-  } catch {
-    return { ok: false, error: "CREDIT_STORAGE_CORRUPTED" };
-  }
+   Canonical order (AETERNA_COMPLETE_SYSTEM_LOGIC.md:140-192
+   "Creation Pipeline" / :84-113 "Creator Path"):
 
-  if (
-    typeof creditRecord?.creatorIdentityId === "string" &&
-    creditRecord.creatorIdentityId.trim() !== creatorIdentityId.trim()
-  ) {
-    return { ok: false, error: "CREATOR_IDENTITY_MISMATCH" };
-  }
+     PREPARED
+     -> service payment -> Creator Credit
+     -> final CREATE CAPSULE
+     -> Creator Credit consumed
+     -> Lifecycle reservation      <-- happens HERE, after CREATE
+     -> Calculate Billable Storage -> Capsule Storage Quote
+     -> storage payment -> PAYMENT VERIFIED
+     -> CapsuleHold -> Upload -> SEALED
 
-  return { ok: true };
-}
+   Lifecycle reservation happens AFTER final CREATE CAPSULE, and the
+   storage quote is derived FROM this projection — so /prepared
+   necessarily runs BEFORE the reservation exists. Requiring the
+   reservation here demanded a lifecycle record that canonically
+   cannot exist yet, and rejected every canonically valid capsule
+   with 403 LIFECYCLE_NOT_RESERVED.
+
+   lifecycleId itself is still REQUIRED and still PERSISTED below:
+   the Storage Quote endpoint binds it authoritatively against this
+   projection (projection.lifecycleId === request.lifecycleId).
+
+   The reservation itself remains enforced, in its canonical place,
+   by the real post-reservation gates:
+     upload-token.ts      -- record exists AND status === "CONSUMING"
+     seal/verify.ts       -- record exists AND status === "CONSUMING"
+     publication/claim.ts -- record exists
+     publication/verify.ts-- record exists
+   Those gates are untouched. */
 
 /* ================= ENDPOINT ================= */
 
@@ -379,12 +387,13 @@ export async function onRequestPost(
      CHUNK_SIZE_MISMATCH, which rejected every canonically prepared
      capsule that contained media. */
 
-  /* ================= LIFECYCLE BINDING ================= */
+  /* ================= LIFECYCLE BINDING =================
 
-  const lifecycleResult = await validateLifecycleBinding(env, creatorIdentityId, lifecycleId);
-  if (!lifecycleResult.ok) {
-    return fail(origin, 403, lifecycleResult.error ?? "LIFECYCLE_INVALID");
-  }
+     lifecycleId is carried through verbatim — it is required and
+     persisted below — but its reservation state is NOT consulted
+     here. See "LIFECYCLE ORDERING" above: the reservation is
+     canonically established after final CREATE CAPSULE, i.e. after
+     this projection and after the storage quote it feeds. */
 
   /* ================= DUPLICATE PROJECTION ================= */
 

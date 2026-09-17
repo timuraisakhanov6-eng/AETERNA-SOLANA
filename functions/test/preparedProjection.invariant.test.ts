@@ -513,13 +513,99 @@ describe("Prepared Projection endpoint authorization", () => {
     expect((await res.json()).error).toBe("IDENTITY_NOT_FOUND");
   });
 
-  it("rejects a missing reserved lifecycle", async () => {
+  it("ACCEPTS a prepared request whose lifecycle reservation does not exist yet", async () => {
     const env = buildEnv();
     seedIdentity(env);
-    // Lifecycle deliberately NOT seeded.
-    const res = await submitPrepared(env);
-    expect(res.status).toBe(403);
-    expect((await res.json()).error).toBe("LIFECYCLE_NOT_RESERVED");
+    // Lifecycle deliberately NOT reserved: canonically, the reservation
+    // happens AFTER final CREATE CAPSULE, while /prepared (the metadata
+    // projection that feeds the storage quote) necessarily runs BEFORE it.
+    // Requiring the reservation here was a false rejection.
+    const res = await submitPrepared(env, {
+      lifecycleId: LIFECYCLE_ID,
+      encryptedSizeBytes: 714,
+      chunkMetadata: [buildChunk(0, 4096)],
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  it("persists lifecycleId verbatim even when no reservation exists", async () => {
+    const env = buildEnv();
+    seedIdentity(env);
+    const res = await submitPrepared(env, {
+      lifecycleId: LIFECYCLE_ID,
+      encryptedSizeBytes: 714,
+      chunkMetadata: [buildChunk(0, 4096)],
+    });
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse(
+      (await env.PREPARED_PROJECTIONS.get(`prepared-projection:${CAPSULE_ID}`))!
+    ) as {
+      lifecycleId: string;
+      capsuleId: string;
+      chunkCount: number;
+      totalChunkSizeBytes: number;
+      encryptedSizeBytes: number;
+    };
+
+    // lifecycleId survives: the Storage Quote endpoint binds it against
+    // this projection (projection.lifecycleId === request.lifecycleId).
+    expect(stored.lifecycleId).toBe(LIFECYCLE_ID);
+    expect(stored.capsuleId).toBe(CAPSULE_ID);
+    expect(stored.chunkCount).toBe(1);
+    expect(stored.totalChunkSizeBytes).toBe(4096);
+    // Vault size stays an independent field — no equality with the chunk sum.
+    expect(stored.encryptedSizeBytes).toBe(714);
+    expect(stored.encryptedSizeBytes).not.toBe(stored.totalChunkSizeBytes);
+  });
+
+  it("never returns LIFECYCLE_NOT_RESERVED for an unreserved lifecycle", async () => {
+    const env = buildEnv();
+    seedIdentity(env);
+    const res = await submitPrepared(env, {
+      lifecycleId: LIFECYCLE_ID,
+      encryptedSizeBytes: 714,
+      chunkMetadata: [buildChunk(0, 4096)],
+    });
+
+    const raw = await res.text();
+    expect(raw).not.toContain("LIFECYCLE_NOT_RESERVED");
+    expect(res.status).toBe(200);
+  });
+
+  it("produces the same result whether or not the lifecycle is reserved", async () => {
+    const unreserved = buildEnv();
+    seedIdentity(unreserved);
+    const reserved = buildEnv();
+    seedIdentity(reserved);
+    seedReservedLifecycle(reserved);
+
+    const body = {
+      lifecycleId: LIFECYCLE_ID,
+      encryptedSizeBytes: 714,
+      chunkMetadata: [buildChunk(0, 4096)],
+    };
+
+    const a = await submitPrepared(unreserved, body);
+    const b = await submitPrepared(reserved, body);
+
+    // Reservation state is irrelevant at this boundary.
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+  });
+
+  it("still rejects an empty lifecycleId with INVALID_FIELDS", async () => {
+    const env = buildEnv();
+    seedIdentity(env);
+    const res = await submitPrepared(env, {
+      lifecycleId: "",
+      chunkMetadata: [buildChunk(0, 4096)],
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_FIELDS");
   });
 });
 
