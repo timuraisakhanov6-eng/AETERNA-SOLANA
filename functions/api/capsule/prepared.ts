@@ -327,9 +327,30 @@ export async function onRequestPost(
     return fail(origin, 400, chunkValidation.error);
   }
 
-  if (chunkValidation.totalSize !== encryptedSizeBytes) {
-    return fail(origin, 400, "CHUNK_SIZE_MISMATCH");
-  }
+  /* ================= CHUNK SIZE MODEL =================
+
+     There is deliberately NO comparison between the media chunk sum
+     (chunkValidation.totalSize) and encryptedSizeBytes.
+
+     They are different object classes and are canonically independent:
+
+       chunkMetadata[].size  = per-MEDIA-chunk ciphertext length
+                               (encryptChunk output), summed here.
+       encryptedSizeBytes    = the encrypted VAULT blob length
+                               (encryptVault output) — metadata JSON only.
+
+     constants.ts states: "Vault contains metadata JSON only. Binary
+     payload stored separately as encrypted chunks." The canon lists
+     `chunkMetadata core fields (chunkId, mediaId, index, size)` and
+     `encryptedSizeBytes` as separate immutables and never defines an
+     equality between them.
+
+     The media chunk sum is still persisted as `totalChunkSizeBytes`
+     below. It is informational and carries no authority.
+
+     This block previously compared the two and failed closed with
+     CHUNK_SIZE_MISMATCH, which rejected every canonically prepared
+     capsule that contained media. */
 
   /* ================= LIFECYCLE BINDING ================= */
 
