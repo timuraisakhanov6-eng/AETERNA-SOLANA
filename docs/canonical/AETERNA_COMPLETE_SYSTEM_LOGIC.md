@@ -792,7 +792,7 @@ B. Storage Payment failure
 - No Manifest.
 - No SEALED.
 
-AETERNA does not subsidize storage costs. Infrastructure-funded operational publication is distinct from creator-funded storage settlement.
+Creator pays Irys directly. Irys determines the storage/publication amount. AETERNA coordinates and validates the required payment and publication flow. AETERNA does not finance or subsidize storage/publication.
 Creator Service Quote Authority
 Creator Service Quote is the canonical commercial entitlement object for AETERNA service access.
 Creator Service Quote is created exactly once after PREPARED for the AETERNA service entitlement flow.
@@ -809,6 +809,8 @@ Creator Service Quote expires after the payment lifecycle completes.
 
 Capsule Storage Quote Authority
 Capsule Storage Quote is the canonical commercial object for permanent storage of a specific capsule.
+AETERNA obtains the storage/publication quote from the Irys storage layer. The storage/publication amount is determined by Irys.
+The Creator pays that amount directly to Irys. AETERNA does not finance or subsidize the Irys cost.
 Capsule Storage Quote is created after PREPARED based on actual billable storage size.
 Capsule Storage Quote becomes immutable immediately after creation.
 Storage payment verification consumes Capsule Storage Quote.

@@ -69,8 +69,8 @@ This specification defines only the rule:
 
 - Creator Credit belongs to the authenticated creator identity.
 
-The concrete wallet provider, wallet protocol, blockchain, payment asset,
-signature scheme, and wallet authentication mechanism are NOT YET SELECTED.
+The active Creator payment rail is Solana Mainnet with native USDC. Base is
+frozen/reserved and is not an active Creator payment rail.
 
 Do NOT hardcode:
 - legacy Paddle;
@@ -224,8 +224,14 @@ It does NOT represent:
 
 Irys publication/storage is a separate layer.
 
-The actual Irys payment flow remains pending the finalized Irys
-production architecture.
+Irys storage/publication payment is a separate Creator-paid event. The Creator
+pays the amount quoted/provided by Irys. AETERNA coordinates and verifies the
+payment as required by the protocol; AETERNA does not finance or pay the Irys
+cost on behalf of the Creator.
+
+Protocol/runtime status: the Creator-paid Irys boundary is ACTIVE in the current
+runtime. This statement is limited to protocol/runtime status — it is NOT a claim
+that a full live real-money end-to-end validation has been completed.
 
 ## 14. USER MODEL
 

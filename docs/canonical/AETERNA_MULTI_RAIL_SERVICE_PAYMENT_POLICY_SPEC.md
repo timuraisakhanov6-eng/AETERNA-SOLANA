@@ -202,9 +202,12 @@ Canonical rule:
 - DO NOT claim that $1 includes Irys;
 - DO NOT claim that AETERNA service payment pays for storage.
 
-Current implementation disclosure:
-- CURRENT IMPLEMENTATION uses server-side Executor Hot-funded Irys publication.
-- TARGET BUSINESS BOUNDARY is separate Irys economics from the AETERNA Service Payment.
+Current implementation status:
+- the Executor Hot code path has been REMOVED; it is historical/retired only and is
+  NOT part of the active business model;
+- AETERNA does not finance, subsidize, front, or reimburse Irys costs;
+- ACTIVE BUSINESS BOUNDARY is separate Irys economics from the AETERNA Service Payment:
+  the Creator pays the Irys storage/publication amount quoted by Irys directly;
 - Base rail is frozen and reserved for future activation; active canonical creator rail is a supported Solana-compatible wallet.
 - This document does NOT redesign Irys implementation.
 

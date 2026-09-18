@@ -99,7 +99,7 @@ Client-supplied publicationId / txHash / providerRef:
 - evidence references only;
 - MUST NOT be treated as authority.
 
-The exact Irys Node/API endpoint/response fields remain implementation-selection PENDING.
+The active production Irys rail uses uploader.irys.xyz. This is the current deployed endpoint for the active Creator-paid Irys flow.
 
 ### 3.3 Payment and publication authority separation
 
@@ -118,7 +118,7 @@ Executor Hot:
 - NOT AETERNA payment authority;
 - NOT canonical publication authority;
 - NOT canonical verifier;
-- current presence in implementation is implementation residue only.
+- Executor Hot is retired and removed from the active implementation. Any remaining references are historical documentation/dead-rail commentary only.
 
 No implementation may treat Executor Hot as canonical publication verification source.
 

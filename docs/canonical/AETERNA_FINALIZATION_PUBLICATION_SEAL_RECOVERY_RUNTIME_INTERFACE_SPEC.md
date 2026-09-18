@@ -127,7 +127,7 @@ Client-supplied publicationId / txHash / providerRef:
 - evidence references only;
 - MUST NOT be treated as authority.
 
-The exact Irys Node/API endpoint/response fields remain implementation-selection PENDING.
+The active production Irys rail uses uploader.irys.xyz. This is the current deployed endpoint for the active Creator-paid Irys flow.
 
 ---
 
@@ -455,13 +455,15 @@ Current responsibility:
 - ciphertext/chunk ingestion;
 - storage pointer registry.
 
-CURRENT IMPLEMENTATION RESIDUE:
-- current code may still reference Executor Hot for publication;
-- this is CURRENT IMPLEMENTATION RESIDUE, not canonical target.
+EXECUTOR HOT STATUS:
+- the Executor Hot code path has been REMOVED from the runtime; it is historical/retired only;
+- it is NOT part of the active business model;
+- it is NOT a storage payer, treasury, or publication funder.
 
 CANONICAL TARGET:
-- Creator-paid Irys publication;
+- Creator-paid Irys publication (Creator pays Irys directly; amount determined by Irys);
 - server-side authoritative publication verification;
+- AETERNA coordinates and verifies; AETERNA does not finance Irys;
 - Executor Hot is not canonical publication authority.
 
 Missing responsibility:

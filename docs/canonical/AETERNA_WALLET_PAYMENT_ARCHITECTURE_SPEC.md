@@ -279,7 +279,9 @@ Irys publication/storage:
 
 - determines actual publication/storage cost;
 - is paid by the creator through the supported Irys flow;
-- remains pending final Irys production architecture confirmation.
+- Irys creator-paid storage/publication flow is implemented and deployed in the current runtime;
+- protocol/runtime implementation = ACTIVE;
+- live real-money end-to-end validation = NOT YET COMPLETED.
 
 Wallet identity rule:
 

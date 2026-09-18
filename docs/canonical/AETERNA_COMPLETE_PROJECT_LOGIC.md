@@ -263,9 +263,10 @@ After successful publication, Runtime ends the temporary session and completely 
 
 Executor
 
-Current implementation residue:
-- current runtime may use Executor Hot for publication;
-- this is CURRENT IMPLEMENTATION RESIDUE, not canonical target.
+Executor Hot status:
+- the Executor Hot code path has been REMOVED from the runtime; it is historical/retired only;
+- it is NOT part of the active business model;
+- no active production path depends on it.
 
 Executor Hot:
 - is NOT canonical target architecture;
@@ -455,9 +456,9 @@ Canonical economics:
 - AETERNA $1 does NOT include Irys storage/publication/network fees.
 - Irys economics are separate from AETERNA service economics.
 
-Current implementation disclosure:
-- current runtime may use Executor Hot for publication;
-- this is CURRENT IMPLEMENTATION RESIDUE, not canonical target.
+Executor Hot status:
+- the Executor Hot code path has been REMOVED from the runtime; it is historical/retired only;
+- it is NOT part of the active business model.
 
 AETERNA's core promise
 

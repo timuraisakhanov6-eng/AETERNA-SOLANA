@@ -35,7 +35,8 @@ Business rule context:
 Network is a payment-rail policy, not the business price.
 
 Current implementation status:
-- ACTIVE: Base Mainnet / native USDC via minimal EIP-1193 browser provider.
+- ACTIVE: supported Solana-compatible wallet for Solana Mainnet / native USDC.
+- FROZEN / RESERVED: Base Mainnet / native USDC via minimal EIP-1193 browser provider.
 - PENDING: additional wallet/provider expansions.
 
 ## 3. CONFIRMED IRYS FACTS USED
@@ -53,9 +54,8 @@ source of truth for this specification:
 - Devnet uses faucet tokens.
 - Production AETERNA must target Mainnet.
 - AETERNA must not become Solana-only.
-|- AETERNA initial production service payment is selected as Solana Mainnet + native USDC.
-|- Base Mainnet + native USDC is frozen and reserved for future reactivation.
-  + native USDC.
+- AETERNA initial production service payment is selected as Solana Mainnet + native USDC.
+- Base Mainnet + native USDC is frozen and reserved for future reactivation.
 - AETERNA is NOT permanently USDC-only; additional assets/networks may be
   added through explicit future canonical selection.
 
@@ -151,7 +151,10 @@ This document does NOT select:
 - specific message format;
 - specific provider challenge protocol.
 
-Those remain pending official provider/Irys confirmation.
+Those provider-specific details remain unselected. This does not affect the Irys
+creator-paid storage/publication flow, which is implemented and deployed in the
+current runtime (protocol/runtime implementation = ACTIVE); live real-money
+end-to-end validation = NOT YET COMPLETED.
 
 ## 8. PAYMENT IDENTITY RULE
 
@@ -181,8 +184,10 @@ Wallet binding rule:
 - Irys publication cost is paid by the creator through the supported Irys flow.
 - AETERNA does NOT bundle Irys cost into the $1 service fee.
 - Executor Hot is NOT the canonical target creator-payment architecture.
-- Current implementation may use Executor Hot as publication authority; target is creator-paid Irys economics.
-- STATUS: IRYS DIRECT CREATOR PAYMENT = PENDING IMPLEMENTATION
+- The Executor Hot code path has been REMOVED; it is historical/retired only and is NOT part of the active business model.
+- AETERNA does not finance, subsidize, front, or reimburse Irys costs.
+- Target is creator-paid Irys economics: the Creator pays the Irys amount quoted by Irys directly.
+- STATUS: IRYS DIRECT CREATOR PAYMENT = ACTIVE in the current runtime (Creator pays Irys directly).
 
 ## 10. SECURITY REQUIREMENTS
 

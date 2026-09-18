@@ -271,13 +271,17 @@ Storage Layer never performs encryption or decryption.
 
 ## Executor
 
-Executor Hot = current implementation residue for publication;
+Executor Hot = historical / retired implementation. NOT part of the active business model.
+The Executor Hot code path has been removed from the runtime; any remaining
+reference to it in the codebase is historical/dead-rail only.
 NOT canonical target;
 NOT AETERNA payment authority;
 NOT business authority;
 NOT canonical publication authority;
 NOT verifier;
-target publication economics = creator-paid Irys.
+NOT a storage payer, treasury, or publication funder;
+AETERNA does not finance, subsidize, front, or reimburse Irys costs.
+target publication economics = creator-paid Irys (Creator pays Irys directly; the amount is determined by Irys).
 
 Executor accepts only already encrypted data.
 

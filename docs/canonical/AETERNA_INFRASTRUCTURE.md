@@ -404,7 +404,7 @@ Does not know:
 | AETERNA_SETTLEMENT_WALLET | AETERNA-owned recipient for $1 service payments; grants Creator Credit via verified quote |
 | CREATOR_IDENTITY | Server-verifiable creator principal; not raw address or provider session |
 | CREATOR_CREDIT | Server-authoritative entitlement for one capsule lifecycle; bound to Creator Identity |
-| AETERNA_EXECUTOR_HOT | PENDING selection; publication execution component; not canonical AETERNA service-payment receiver or Irys funder |
+| AETERNA_EXECUTOR_HOT | RETIRED / REMOVED — historical publication execution mechanism; not part of the active runtime or business model |
 | Alchemy | Access to supported blockchains and transaction verification |
 | Minimal EIP-1193 browser provider | Base Mainnet / native USDC wallet connect and signing; currently frozen/reserved |
 | MetaMask | Storing keys and signing transactions |

@@ -60,26 +60,26 @@ Target status:
 - CREATOR-PAID IRYS = APPROVED CANONICAL TARGET.
 
 Implementation status:
-- CREATOR-PAID IRYS IMPLEMENTATION = PENDING.
+- Irys creator-paid storage/publication flow is implemented and deployed in the current runtime.
+- Protocol/runtime implementation = ACTIVE.
+- Live real-money end-to-end validation = NOT YET COMPLETED.
 
 ---
 
 ## 4. EXECUTOR HOT BOUNDARY
 
 Executor Hot:
-- CURRENT IMPLEMENTATION: server-side publication authority;
-- CANONICAL TARGET BUSINESS ROLE: excluded from target business payment model.
-- Current normal creator flow uses a supported Solana-compatible wallet for service payment and identity.
-- Base payment rail is frozen and reserved for future activation.
-
-Executor Hot:
+- STATUS: REMOVED from the runtime; historical/retired only;
+- NOT part of the active business model;
 - is NOT the AETERNA Service Payment recipient;
 - is NOT the target business payment authority;
+- is NOT a storage payer, treasury, or publication funder;
 - does NOT define AETERNA pricing.
 
-If current runtime uses Executor Hot-funded publication:
-- document it as CURRENT IMPLEMENTATION GAP only;
-- do not present it as canonical business model.
+Current normal creator flow uses a supported Solana-compatible wallet for service payment and identity.
+Base payment rail is frozen and reserved for future activation.
+
+AETERNA does not finance, subsidize, front, or reimburse Irys costs on the Creator's behalf.
 
 ---
 
@@ -152,18 +152,23 @@ Block pricing / MB tiers / progressive AETERNA pricing:
 
 ---
 
-## 9. CURRENT IMPLEMENTATION GAP
+## 9. IMPLEMENTATION STATUS vs THIS CANONICAL POLICY
 
-Current implementation gaps vs this canonical policy:
-- Executor Hot currently performs publication authority;
-- Irys economics are not yet separated from AETERNA $1 in runtime;
+Resolved in the runtime:
+- the Executor Hot code path has been REMOVED; it is historical/retired only and is
+  not part of the active business model;
+- Irys economics are separated from the AETERNA $1: the verified $1 service payment
+  produces a Creator Credit, while the Irys storage/publication amount is quoted by
+  Irys and paid directly by the Creator;
+- active canonical creator rail is a supported Solana-compatible wallet; Base is frozen/reserved.
+
+Remaining gaps vs this canonical policy:
 - paymentIntentId migration is pending;
 - chunk-level AETERNA payment UX is not implemented and must remain pending.
-- Active canonical creator rail is a supported Solana-compatible wallet; Base is frozen/reserved.
 
 These gaps:
 - do NOT change the canonical target policy;
-- do NOT make current Executor Hot publication the canonical business model;
+- do NOT make Executor Hot publication the canonical business model;
 - do NOT justify per-chunk AETERNA payments.
 
 ---
