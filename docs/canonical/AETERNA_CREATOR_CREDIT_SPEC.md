@@ -49,6 +49,15 @@ Repeated verification of the same payment must return the existing
 entitlement or an equivalent already-processed result rather than
 minting another Credit.
 
+The Business Quote TTL gates payment verification only. After a payment has
+been successfully verified, the VerifiedPayment record is the authority for
+Creator Credit issuance: a later Business Quote expiry cannot invalidate the
+verified payment or the resulting Creator Credit.
+
+One verified service payment produces exactly one Creator Credit. The mint is
+serialized per creatorIdentityId + quoteId, so concurrent or repeated grant
+attempts converge on the same Credit rather than minting another.
+
 ## 5. IDENTITY
 
 Creator Credit is bound to one authenticated creator wallet identity.

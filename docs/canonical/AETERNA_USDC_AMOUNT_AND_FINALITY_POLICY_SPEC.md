@@ -303,8 +303,11 @@ Quote lifecycle:
 Quote rules:
 - once created, immutable fields MUST NOT change;
 - single-use: each quote consumed at most once;
-- after successful verification, quote status -> used;
-- expired quote MUST NOT grant Creator Credit.
+- an expired quote MUST NOT verify a payment;
+- Business Quote TTL gates PAYMENT VERIFICATION only. After a payment has been
+  successfully verified, the VerifiedPayment record is the authority for
+  Creator Credit issuance: a later quote expiry neither invalidates the
+  verified payment nor the resulting Creator Credit.
 
 ---
 

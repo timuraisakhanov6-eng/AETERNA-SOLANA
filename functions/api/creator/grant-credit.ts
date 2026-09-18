@@ -5,21 +5,20 @@
  *
  * Hard invariant:
  * - ONLY independently VERIFIED payment may grant Creator Credit.
+ * - ONE verified service payment -> EXACTLY ONE Creator Credit.
+ *
+ * Post-verification authority:
+ * - Business Quote expiry gates payment verification ONLY
+ *   (enforced in /api/service-payment/verify).
+ * - After successful verification the VerifiedPayment record is sufficient
+ *   authority for Creator Credit issuance, so a later Business Quote expiry
+ *   cannot invalidate the verified payment or its Credit.
  *
  * Quote existence alone is NOT sufficient.
  */
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
-import { getTrustedTime } from "../time";
-import {
-  getBusinessQuote,
-} from "../../lib/business/businessQuoteStore";
-import {
-  getCreatorCreditByIndex,
-  createCreatorCredit,
-  generateCreditId,
-} from "../../../src/lib/creator/creatorCreditStore";
 import {
   checkPaymentTransactionBinding,
   resolvePaymentNetwork,
@@ -29,9 +28,6 @@ interface GrantCreditEnv {
   CREATOR_CREDITS: {
     get(key: string): Promise<string | null>;
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
-  };
-  BUSINESS_QUOTES: {
-    get(key: string): Promise<string | null>;
   };
   VERIFIED_PAYMENTS: {
     get(key: string): Promise<string | null>;
@@ -128,15 +124,13 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 400, "INVALID_FIELDS");
   }
 
-  /* ================= QUOTE ================= */
+  /* ================= POST-VERIFICATION AUTHORITY =================
 
-  const quote = await getBusinessQuote(env as { BUSINESS_QUOTES: { get(key: string): Promise<string | null> } }, paymentIntentId);
-  if (!quote) {
-    return fail(origin, 402, "BUSINESS_QUOTE_NOT_FOUND");
-  }
-
-  const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
-  const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
+  The Business Quote is deliberately NOT read here. Its TTL gates payment
+  verification only (enforced in /api/service-payment/verify). After
+  successful verification the VerifiedPayment record — identity, quoteId and
+  transactionId — is sufficient authority for Creator Credit issuance, so a
+  later Business Quote expiry cannot strand an already-verified payment. */
 
   /* ================= VERIFIED PAYMENT ================= */
 
@@ -182,8 +176,8 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 403, "CREATOR_IDENTITY_MISMATCH");
   }
 
-  if (verifiedPayment.quoteId !== quote.paymentIntentId) {
-    return fail(origin, 409, "QUOTE_MISMATCH");
+  if (typeof verifiedPayment.quoteId !== "string" || !verifiedPayment.quoteId) {
+    return fail(origin, 409, "VERIFIED_PAYMENT_QUOTE_ID_MISSING");
   }
 
   /* ================= GLOBAL TRANSACTION UNIQUENESS ================= */
@@ -232,37 +226,76 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     );
   }
 
-  /* ================= IDEMPOTENCY ================= */
+  /* ================= ATOMIC GRANT (single-writer) =================
 
-  const existing = await getCreatorCreditByIndex(
-    env as { CREATOR_CREDITS: { get(key: string): Promise<string | null> } },
-    creatorIdentityId,
-    quote.paymentIntentId
-  );
+  The mint is serialized by the CREDIT_OP_COORDINATOR Durable Object,
+  addressed per creatorIdentityId + quoteId. The DO owns the grant claim,
+  generates the single creatorCreditId for this verified payment, and writes
+  the KV credit record plus the quote-keyed credit index. Replay reuses the
+  stored id and repairs any missing KV artifact, so concurrent or repeated
+  grants can never mint a second Credit.
 
-  if (existing) {
-    return new Response(
-      JSON.stringify({ ok: true, creatorCreditId: existing.id, status: existing.status }),
-      { status: 200, headers: baseHeaders(origin) }
+  The verified-payment identity used here is verifiedPayment.quoteId, which
+  /api/service-payment/verify records from the Business Quote at verification
+  time — so no live Business Quote read is required after verification. */
+
+  const coordinatorBinding = env.CREDIT_OP_COORDINATOR;
+  if (!coordinatorBinding) {
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+  }
+
+  const quoteId = verifiedPayment.quoteId;
+  const coordinatorId = coordinatorBinding.idFromName(`${creatorIdentityId}:${quoteId}`);
+  const coordinator = coordinatorBinding.get(coordinatorId);
+
+  let grantResponse: Response;
+  try {
+    grantResponse = await coordinator.fetch(
+      new Request("https://aeterna-credit-coordinator.invalid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          op: "grant",
+          creatorIdentityId,
+          quoteId,
+          paymentIntentId,
+          transactionId: recordedTransactionId,
+          evidenceId: verifiedPaymentId,
+        }),
+      })
+    );
+  } catch {
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+  }
+
+  let grantData: {
+    ok?: boolean;
+    outcome?: string;
+    status?: string;
+    creatorCreditId?: string;
+    error?: string;
+  } | null = null;
+  try {
+    grantData = (await grantResponse.json()) as typeof grantData;
+  } catch {
+    grantData = null;
+  }
+
+  if (
+    !grantResponse.ok ||
+    !grantData?.ok ||
+    typeof grantData.creatorCreditId !== "string" ||
+    !grantData.creatorCreditId
+  ) {
+    return fail(
+      origin,
+      grantResponse.status === 400 ? 400 : 409,
+      grantData?.error || "CREDIT_GRANT_FAILED"
     );
   }
 
-  /* ================= GRANT CREDIT ================= */
-
-  const id = generateCreditId();
-  const record = {
-    id,
-    creatorIdentityId,
-    status: "AVAILABLE" as const,
-    quoteId: quote.paymentIntentId,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await createCreatorCredit(env as { CREATOR_CREDITS: { get(key: string): Promise<string | null>; put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> } }, record);
-
   return new Response(
-    JSON.stringify({ ok: true, creatorCreditId: id, status: "AVAILABLE" }),
+    JSON.stringify({ ok: true, creatorCreditId: grantData.creatorCreditId, status: "AVAILABLE" }),
     { status: 200, headers: baseHeaders(origin) }
   );
 }

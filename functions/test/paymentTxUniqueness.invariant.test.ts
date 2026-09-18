@@ -15,7 +15,8 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { createFakeKV, createFakeRequest, makeEventContext, createFakeCreditCoordinatorBinding } from "./harness";
+import { createFakeKV, createFakeRequest, makeEventContext, createFakeCreditCoordinatorBinding, createFakeDurableObjectStorage } from "./harness";
+import { CreditOperationCoordinator } from "../do/creditOperationCoordinator";
 import { createBusinessQuote } from "./../lib/business/businessQuoteStore";
 import { onRequestPost as servicePaymentVerifyPost } from "./../api/service-payment/verify";
 import { onRequestPost as grantCreditPost } from "./../api/creator/grant-credit";
@@ -59,12 +60,78 @@ function createFakeCreatorIdentityKV() {
   };
 }
 
+/**
+ * KV-wired CREDIT_OP_COORDINATOR binding.
+ *
+ * Mirrors the harness binding's Durable Object semantics — one instance per
+ * idFromName, plus a per-instance fetch queue emulating the DO input gate —
+ * but wires the Durable Object's CREATOR_CREDITS env to the SAME fake KV the
+ * endpoint under test uses. That makes the grant op's KV credit-record and
+ * quote-index writes observable, exactly as they are in production.
+ */
+function createKvWiredCreditCoordinatorBinding(
+  creditsKv: ReturnType<typeof createFakeKV>
+) {
+  const instances = new Map<string, CreditOperationCoordinator>();
+  const queues = new Map<string, Promise<unknown>>();
+  const storages = new Map<string, ReturnType<typeof createFakeDurableObjectStorage>>();
+
+  function instanceFor(id: string): CreditOperationCoordinator {
+    let instance = instances.get(id);
+    if (!instance) {
+      const storage = createFakeDurableObjectStorage();
+      storages.set(id, storage);
+      instance = new CreditOperationCoordinator(
+        { storage } as never,
+        {
+          CREATOR_CREDITS: {
+            get: (key: string) => creditsKv.get(key),
+            put: (key: string, value: string) => creditsKv.put(key, value),
+            delete: (key: string) => creditsKv.delete(key),
+          },
+          PUBLICATION_VERIFICATIONS: { get: async () => null },
+          SEAL_VERIFICATIONS: { get: async () => null },
+        } as never
+      );
+      instances.set(id, instance);
+    }
+    return instance;
+  }
+
+  return {
+    idFromName(name: string) {
+      return { id: name };
+    },
+    get(binding: { id: string }) {
+      const id = binding.id;
+      instanceFor(id);
+      return {
+        async fetch(request: Request): Promise<Response> {
+          const tail = queues.get(id) ?? Promise.resolve();
+          const run = tail.then(() => instances.get(id)!.fetch(request));
+          queues.set(
+            id,
+            run.then(
+              () => undefined,
+              () => undefined
+            )
+          );
+          return run;
+        },
+      };
+    },
+    /** Direct access to per-instance DO storage for assertions. */
+    storages,
+  };
+}
+
 function buildEnv() {
-  const coordinator = createFakeCreditCoordinatorBinding();
+  const creditsKv = createFakeKV();
+  const coordinator = createKvWiredCreditCoordinatorBinding(creditsKv);
   const env = {
     BUSINESS_QUOTES: createFakeKV(),
     CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
-    CREATOR_CREDITS: createFakeKV(),
+    CREATOR_CREDITS: creditsKv,
     UPLOAD_TOKENS: createFakeKV(),
     VERIFIED_PAYMENTS: createFakeKV(),
     SOLANA_MAINNET_RPC_URL: "https://solana-rpc.example.com",
@@ -728,5 +795,94 @@ describe("Global payment transaction uniqueness invariants", () => {
     };
     expect(conflictData.outcome).toBe("ALREADY_CLAIMED_OTHER_PAYMENT");
     expect(conflictData.claim?.paymentIntentId).toBe("intent-a");
+  });
+
+  it("GAP 3: a verified payment still grants a Credit after the Business Quote is gone", async () => {
+    const { env } = buildEnv();
+    mockSolanaTransaction(successfulSolanaTransaction());
+    await seedQuote(env.BUSINESS_QUOTES, "intent-gap3");
+
+    const verifyRes = await verifyPayment(env, {
+      paymentIntentId: "intent-gap3",
+      evidenceId: "ev-gap3",
+      transactionId: SOLANA_TX,
+    });
+    expect(verifyRes.status).toBe(200);
+    expect(((await verifyRes.json()) as { status: string }).status).toBe("VERIFIED");
+
+    // Simulate the 30-minute Business Quote TTL elapsing AFTER verification.
+    await env.BUSINESS_QUOTES.delete("quote:intent-gap3");
+
+    const grantRes = await grantCredit(env, {
+      paymentIntentId: "intent-gap3",
+      evidenceId: "ev-gap3",
+      transactionId: SOLANA_TX,
+    });
+
+    expect(grantRes.status).toBe(200);
+    const grantData = (await grantRes.json()) as { ok: boolean; creatorCreditId: string };
+    expect(grantData.ok).toBe(true);
+    expect(creditRecordIds(env.CREATOR_CREDITS)).toEqual([grantData.creatorCreditId]);
+  });
+
+  it("GAP 3: an UNVERIFIED expired Business Quote is still rejected at verification, granting no Credit", async () => {
+    const { env } = buildEnv();
+    mockSolanaTransaction(successfulSolanaTransaction());
+
+    await createBusinessQuote(
+      { BUSINESS_QUOTES: env.BUSINESS_QUOTES },
+      {
+        paymentIntentId: "intent-expired",
+        expectedAmount: 1,
+        currency: "USDC",
+        createdAt: Date.now() - 60_000,
+        expiresAt: Date.now() - 1_000,
+      }
+    );
+
+    const verifyRes = await verifyPayment(env, {
+      paymentIntentId: "intent-expired",
+      evidenceId: "ev-expired",
+      transactionId: SOLANA_TX,
+    });
+
+    expect(verifyRes.status).toBe(402);
+    expect(((await verifyRes.json()) as { error: string }).error).toBe("QUOTE_EXPIRED");
+    expect(creditRecordIds(env.CREATOR_CREDITS)).toEqual([]);
+  });
+
+  it("client reload after verification: grant stays recoverable while the VerifiedPayment record is valid", async () => {
+    const { env } = buildEnv();
+    mockSolanaTransaction(successfulSolanaTransaction());
+    await seedQuote(env.BUSINESS_QUOTES, "intent-reload");
+
+    const verifyRes = await verifyPayment(env, {
+      paymentIntentId: "intent-reload",
+      evidenceId: "ev-reload",
+      transactionId: SOLANA_TX,
+    });
+    expect(verifyRes.status).toBe(200);
+
+    // Original page load mints the Credit.
+    const first = await grantCredit(env, {
+      paymentIntentId: "intent-reload",
+      evidenceId: "ev-reload",
+      transactionId: SOLANA_TX,
+    });
+    expect(first.status).toBe(200);
+    const firstId = ((await first.json()) as { creatorCreditId: string }).creatorCreditId;
+
+    // Client reloads: a fresh grant request reuses the same VerifiedPayment
+    // and must converge on the SAME Creator Credit — never a second one.
+    const afterReload = await grantCredit(env, {
+      paymentIntentId: "intent-reload",
+      evidenceId: "ev-reload",
+      transactionId: SOLANA_TX,
+    });
+    expect(afterReload.status).toBe(200);
+    const reloadId = ((await afterReload.json()) as { creatorCreditId: string }).creatorCreditId;
+
+    expect(reloadId).toBe(firstId);
+    expect(creditRecordIds(env.CREATOR_CREDITS)).toEqual([firstId]);
   });
 });

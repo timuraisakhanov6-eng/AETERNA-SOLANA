@@ -559,7 +559,8 @@ Fail-closed behavior:
 
 - invalid Creator Identity -> no quote, no verification, no Credit;
 - invalid quote -> no verification, no Credit;
-- expired quote -> no verification, no Credit;
+- expired quote -> no verification, and therefore no Credit; a payment already
+  verified while its quote was valid still yields its Credit;
 - unsupported network -> no quote, no verification, no Credit;
 - unsupported asset -> no quote, no verification, no Credit;
 - fabricated transaction ID -> payment NOT verified -> no Credit;

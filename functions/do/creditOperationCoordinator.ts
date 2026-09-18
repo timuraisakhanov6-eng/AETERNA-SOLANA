@@ -51,12 +51,20 @@ type Operation =
       creatorIdentityId: string;
       claimedAt: number;
     }
-  | {
-      op: "payment-tx-check";
-      network: string;
-      transactionId: string;
-      paymentIntentId: string;
-    };
+| {
+op: "payment-tx-check";
+network: string;
+transactionId: string;
+paymentIntentId: string;
+}
+| {
+op: "grant";
+creatorIdentityId: string;
+quoteId: string;
+paymentIntentId: string;
+transactionId: string;
+evidenceId: string;
+};
 
 /**
  * AETERNA — Global payment transaction uniqueness record.
@@ -864,6 +872,173 @@ async function handlePaymentTxCheck(
   );
 }
 
+/* ================= CREATOR CREDIT GRANT (mint claim) ================= */
+
+/**
+ * AETERNA — Creator Credit grant claim.
+ *
+ * Canonical invariant: ONE verified AETERNA service payment, identified by
+ * creatorIdentityId + quoteId, produces EXACTLY ONE Creator Credit.
+ *
+ * One CreditOperationCoordinator instance is addressed per
+ * creatorIdentityId + quoteId, so the single-threaded execution model
+ * serializes concurrent grants for the same verified payment, and the claim
+ * survives in Durable Object storage.
+ *
+ * The claim is deliberately NOT subject to the VERIFIED_PAYMENTS KV TTL.
+ */
+export interface GrantClaimRecord {
+  creatorIdentityId: string;
+  quoteId: string;
+  creatorCreditId: string;
+  createdAt: number;
+}
+
+function grantClaimKey(creatorIdentityId: string, quoteId: string): string {
+  return `credit-grant:${creatorIdentityId}:${quoteId}`;
+}
+
+async function getGrantClaim(
+  state: DurableObjectState,
+  creatorIdentityId: string,
+  quoteId: string
+): Promise<GrantClaimRecord | null> {
+  const raw = await state.storage.get<GrantClaimRecord>(
+    grantClaimKey(creatorIdentityId, quoteId)
+  );
+  return raw ?? null;
+}
+
+/**
+ * Credit id generator.
+ *
+ * Deliberately inlined rather than imported from
+ * src/lib/creator/creatorCreditStore.ts: this Durable Object worker declares no
+ * path-alias configuration, and this module has always been import-free. The
+ * output shape (32 lowercase hex chars) matches generateCreditId() there.
+ */
+function generateGrantCreditId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+/** The existing quote-keyed credit index consumed by grant-credit lookups. */
+function quoteCreditIndexKey(creatorIdentityId: string, quoteId: string): string {
+  return `creator:credit:index:${creatorIdentityId}:${quoteId}`;
+}
+
+/**
+ * Ensure the KV credit record and the quote-keyed credit index exist for a
+ * claim.
+ *
+ * This is NOT a distributed transaction: Durable Object storage and KV are
+ * separate systems. The DO claim is the serialization point, and this repair
+ * step is what makes replay converge on the same externally visible state —
+ * whichever KV artifact is missing is rewritten with the SAME
+ * creatorCreditId.
+ *
+ * Durable Object storage is deliberately NOT written here: the credit record
+ * in DO storage is established lazily by handleReserve(), which is also what
+ * binds capsuleId. Writing it here would make a later reserve fail with
+ * CAPSULE_MISMATCH.
+ */
+async function repairCreditArtifacts(
+  env: CoordinatorEnv,
+  claim: GrantClaimRecord
+): Promise<void> {
+  await env.CREATOR_CREDITS.put(
+    `creator:credit:${claim.creatorCreditId}`,
+    JSON.stringify({
+      id: claim.creatorCreditId,
+      creatorIdentityId: claim.creatorIdentityId,
+      status: "AVAILABLE",
+      quoteId: claim.quoteId,
+      createdAt: claim.createdAt,
+      updatedAt: claim.createdAt,
+    })
+  );
+
+  await env.CREATOR_CREDITS.put(
+    quoteCreditIndexKey(claim.creatorIdentityId, claim.quoteId),
+    claim.creatorCreditId
+  );
+}
+
+/**
+ * Atomic Creator Credit grant for one verified service payment.
+ *
+ * The read below and the conditional write are separated by NO other await:
+ * under the Durable Object input gate the get -> (synchronous decision) -> put
+ * sequence is atomic with respect to every other request, so at most ONE
+ * concurrent grant can win for a given creatorIdentityId + quoteId.
+ *
+ * Replay never mints a second id. Every replay reuses the stored
+ * creatorCreditId and repairs missing KV artifacts, so the operation is
+ * idempotent-repairing across the two storage systems.
+ */
+async function handleGrant(
+  state: DurableObjectState,
+  env: CoordinatorEnv,
+  request: Operation & { op: "grant" }
+): Promise<Response> {
+  const { creatorIdentityId, quoteId, paymentIntentId, transactionId, evidenceId } = request;
+
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof quoteId !== "string" || !quoteId ||
+    typeof paymentIntentId !== "string" || !paymentIntentId ||
+    typeof transactionId !== "string" || !transactionId ||
+    typeof evidenceId !== "string" || !evidenceId
+  ) {
+    return failureResponse("INVALID_FIELDS", 400);
+  }
+
+  const existing = await getGrantClaim(state, creatorIdentityId, quoteId);
+
+  if (existing) {
+    if (
+      existing.creatorIdentityId !== creatorIdentityId ||
+      existing.quoteId !== quoteId
+    ) {
+      return failureResponse("GRANT_CLAIM_IDENTITY_MISMATCH", 409);
+    }
+
+    // Replay: reuse the SAME creatorCreditId and repair KV state.
+    await repairCreditArtifacts(env, existing);
+
+    return successResponse({
+      ok: true,
+      outcome: "ALREADY_GRANTED",
+      status: "AVAILABLE",
+      creatorCreditId: existing.creatorCreditId,
+      lifecycleId: null,
+      revision: 1,
+    });
+  }
+
+  const claim: GrantClaimRecord = {
+    creatorIdentityId,
+    quoteId,
+    creatorCreditId: generateGrantCreditId(),
+    createdAt: Date.now(),
+  };
+
+  // Atomic claim — no await between the read above and this write.
+  await state.storage.put(grantClaimKey(creatorIdentityId, quoteId), claim);
+
+  await repairCreditArtifacts(env, claim);
+
+  return successResponse({
+    ok: true,
+    outcome: "GRANTED",
+    status: "AVAILABLE",
+    creatorCreditId: claim.creatorCreditId,
+    lifecycleId: null,
+    revision: 1,
+  });
+}
+
 export class CreditOperationCoordinator {
   constructor(private state: DurableObjectState, private env: CoordinatorEnv) {}
 
@@ -892,6 +1067,8 @@ export class CreditOperationCoordinator {
         return handlePaymentTxClaim(this.state, body);
       case "payment-tx-check":
         return handlePaymentTxCheck(this.state, body);
+      case "grant":
+        return handleGrant(this.state, this.env, body);
       case "read": {
         const credit = await getCreditRecord(this.state, body.creatorCreditId);
         if (!credit) {
