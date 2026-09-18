@@ -50,6 +50,10 @@ id = "2a3a051a0e2a4935a941b24d838e8762"
 binding = "PREPARED_PROJECTIONS"
 id = "cdf53f4586574d7b9285c55565c45d58"
 
+[[kv_namespaces]]
+binding = "STORAGE_PAYMENTS"
+id = "3edb0287ecf64017843e89a72a5bb3a4"
+
 # ─────────────────────────────────────────────
 # Authoritative Publication / Seal Verification stores
 #
@@ -164,6 +168,10 @@ id = "2a3a051a0e2a4935a941b24d838e8762"
 [[env.production.kv_namespaces]]
 binding = "PREPARED_PROJECTIONS"
 id = "cdf53f4586574d7b9285c55565c45d58"
+
+[[env.production.kv_namespaces]]
+binding = "STORAGE_PAYMENTS"
+id = "3edb0287ecf64017843e89a72a5bb3a4"
 
 [[env.production.kv_namespaces]]
 binding = "CREATOR_IDENTITIES"
