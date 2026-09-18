@@ -832,8 +832,8 @@ async function resolveCreatorIdentity(
     return fail(origin, 400, "INVALID_TX_HASH");
   }
 
-  if (quote.expectedAmount !== 1 || quote.currency !== "USD") {
-    return fail(origin, 402, "QUOTE_NOT_1_USD");
+  if (quote.expectedAmount !== 1 || quote.currency !== "USDC") {
+    return fail(origin, 402, "QUOTE_NOT_1_USDC");
   }
 
   const expectedPayer = resolvedIdentity ? resolvedIdentity.account : null;

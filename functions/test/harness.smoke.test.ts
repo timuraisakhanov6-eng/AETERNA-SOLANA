@@ -36,7 +36,7 @@ function buildContext(overrides?: {
 }
 
 describe("create-quote handler smoke coverage", () => {
-  it("canonical service-payment create-quote returns immutable 1 USD quote", async () => {
+  it("canonical service-payment create-quote returns immutable 1 USDC quote", async () => {
     const { context } = buildContext();
 
     const response = await onRequestPost(context);
@@ -53,7 +53,7 @@ describe("create-quote handler smoke coverage", () => {
 
     expect(payload.ok).toBe(true);
     expect(payload.expectedAmount).toBe(1);
-    expect(payload.currency).toBe("USD");
+    expect(payload.currency).toBe("USDC");
   });
 
   it("returns 204 for allowed-origin OPTIONS preflight", async () => {

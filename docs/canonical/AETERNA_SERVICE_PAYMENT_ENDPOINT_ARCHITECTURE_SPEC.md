@@ -90,7 +90,7 @@ Base rail:
 ### 4.1 Create Service Payment Quote
 
 Purpose:
-Issue an immutable server-side AETERNA Service Payment Quote for the $1
+Issue an immutable server-side AETERNA Service Payment Quote for the 1 USDC
 service payment.
 
 Authoritative inputs:
@@ -111,7 +111,7 @@ Required server checks:
 - Creator Identity is valid and authenticated;
 - selected asset/network is in the AETERNA approved allowlist;
 - selected asset/network combination is supported;
-- exact atomic amount is derived server-side from canonical USD 1.00;
+- exact atomic amount is fixed at 1,000,000 atomic units (1 USDC);
 - recipient is the canonical AETERNA Settlement Wallet;
 - quote is created server-side and persisted authoritatively.
 
@@ -427,10 +427,10 @@ The server MUST independently establish payment facts from:
 
 - direct network/blockchain queries;
 OR
-- a trusted verification/oracle service that independently derives the
-  payment facts.
+- a trusted verification service that independently derives the
+payment facts.
 
-The exact provider/oracle remains implementation-selection PENDING.
+The exact verification provider remains implementation-selection PENDING.
 
 ## 6. CREATOR IDENTITY CONTRACT
 
@@ -740,7 +740,6 @@ Genuinely unresolved and implementation-selection PENDING:
 
 - exact supported networks;
 - exact supported assets;
-- exact exchange-rate/oracle provider for USD 1.00 conversion;
 - exact confirmation/finality thresholds per supported network;
 - exact payment evidence formats per network/provider;
 - exact blockchain RPC/provider;

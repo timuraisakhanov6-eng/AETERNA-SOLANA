@@ -241,9 +241,9 @@ It is never recalculated.
 
 ---
 
-## USD 1.00 Creator Credit
+## 1 USDC Creator Credit
 
-USD 1.00 is the fixed AETERNA service fee.
+1 USDC is the fixed AETERNA service fee.
 
 It is fixed before preparation.
 

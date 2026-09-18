@@ -104,7 +104,7 @@ The active production Irys rail uses uploader.irys.xyz. This is the current depl
 ### 3.3 Payment and publication authority separation
 
 AETERNA Service Payment:
-- $1.00 USDC;
+- 1 USDC;
 - exactly 1 Creator Credit;
 - exactly 1 capsule creation entitlement.
 

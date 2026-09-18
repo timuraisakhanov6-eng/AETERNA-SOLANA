@@ -83,7 +83,7 @@ async function seedQuote(
     {
       paymentIntentId,
       expectedAmount: 1,
-      currency: "USD",
+      currency: "USDC",
       createdAt: Date.now(),
       expiresAt: Date.now() + 30 * 60 * 1000,
     }

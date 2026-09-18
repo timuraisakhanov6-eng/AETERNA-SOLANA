@@ -16,11 +16,15 @@ Reference:
 
 ## 1. BUSINESS AMOUNT
 
-Fixed commercial denomination:
-- USD 1.00.
+Canonical AETERNA creation fee denomination:
+- exactly 1 USDC.
 
 Business rule:
 - exactly 1 USDC = one capsule creation entitlement.
+
+The AETERNA service fee is natively denominated and settled in USDC. It is NOT a
+USD amount and is NOT derived from any USD→USDC conversion, exchange rate,
+oracle, or price source.
 
 Network does NOT change the business amount.
 Network is a payment-rail policy, not the business price.
@@ -73,25 +77,25 @@ Standard USDC property:
 Implication for atomic amount:
 - 1 USDC = 1,000,000 atomic units.
 
-This document does not assume 1 USD = 1 USDC for conversion.
-See Section 6 for conversion policy.
+The AETERNA service fee is natively denominated in USDC; no USD→USDC
+conversion applies. See Section 6.
 
 ---
 
 ## 4. EXACT ATOMIC AMOUNT
 
 Network payment amount:
-- exact atomic USDC amount = server-calculated value based on canonical price source.
+- exact atomic USDC amount = 1,000,000 atomic units (fixed 1 USDC).
 
 Quote locking:
 - exactAtomicAmount is server-calculated and locked in the immutable quote;
 - exactAtomicAmount MUST be recorded in the immutable quote at quote creation time;
 - the frontend MUST NOT choose exactAtomicAmount;
-- the frontend MAY display the converted amount for informational purposes.
+- the frontend MAY display the amount for informational purposes.
 
 Quote fields locked:
 - creatorIdentityId;
-- serviceFeeUsd = 1.00;
+- serviceFeeUsdc = 1;
 - selectedPaymentAsset = native USDC;
 - selectedNetwork = chosen supported rail;
 - exactAtomicAmount = server-calculated;
@@ -99,35 +103,32 @@ Quote fields locked:
 
 ---
 
-## 5. $1 COMMERCIAL MODEL
+## 5. AETERNA CREATION FEE MODEL
 
 The AETERNA service fee is:
-- fixed commercial denomination: USD 1.00;
+- exactly 1 USDC;
 - not dependent on capsule size, Irys cost, network fees, or payment asset.
 
-The USD 1.00 is:
-- a commercial label;
-- converted to exact atomic USDC amount by server-side logic.
+The 1 USDC is:
+- the canonical settlement denomination;
+- represented as 1,000,000 atomic units.
+
+There is no USD denomination and no USD→USDC conversion step.
 
 ---
 
-## 6. USD → USDC CONVERSION POLICY
+## 6. NO USD → USDC CONVERSION
 
-Required properties for the canonical price source:
-- provides USD/USDC exchange rate for the selected rail;
-- snapshot timing is defined server-side;
-- quote locking occurs at quote creation;
-- rounding rules are defined server-side;
-- stale-data behavior is fail-closed;
-- fail-closed behavior when source is unavailable.
+The AETERNA service fee is natively denominated in USDC.
 
-Current status:
-- exact price source/oracle for USD 1.00 conversion is PENDING CANONICAL DECISION.
+Consequently, for the AETERNA service payment:
+- no USD→USDC conversion exists or is required;
+- no exchange rate, oracle, or price source is consulted;
+- no price-source snapshot, rounding, or stale-data policy applies;
+- the atomic amount is fixed: 1 USDC = 1,000,000 atomic units.
 
-Canonical rule:
-- AETERNA does not currently treat 1 USDC as exactly 1 USD-equivalent by default.
-- The conversion requires an explicit canonical price source/oracle.
-- In the absence of an approved canonical price source, no production quote may be issued.
+Irys storage/publication pricing is a separate, Irys-determined layer and is
+unaffected by this rule.
 
 ---
 
@@ -265,8 +266,7 @@ Solana rail provider policy:
 
 Any of the following => NO VERIFIED PAYMENT => NO Creator Credit:
 
-- price source/oracle unavailable;
-- exact atomic amount cannot be calculated;
+- the canonical fixed 1 USDC denomination is unavailable;
 - settlement wallet not yet declared canonical for selected rail;
 - unsupported rail selected;
 - unsupported asset selected;
@@ -289,7 +289,7 @@ Any of the following => NO VERIFIED PAYMENT => NO Creator Credit:
 
 Immutable quote fields:
 - creatorIdentityId;
-- serviceFeeUsd = 1.00;
+- serviceFeeUsdc = 1;
 - selectedPaymentAsset = native USDC;
 - selectedNetwork = chosen supported rail;
 - exactAtomicAmount = server-calculated;
@@ -311,13 +311,13 @@ Quote rules:
 ## 13. REMAINING PENDING DECISIONS
 
 PENDING CANONICAL DECISION:
-- exact price source/oracle for USD 1.00 conversion;
 - exact finality threshold for Base Mainnet;
 - exact finality threshold for Solana Mainnet;
 - exact reconciliation/refund policy for reorged/misdirected/expired payments;
 - exact legal review outcome for service entitlement in selected jurisdictions.
 
-No production payment verification may finalize until these PENDING items are resolved and documented.
+These pending items do not block the AETERNA service payment: the fee is natively
+denominated in USDC and requires no conversion or price source.
 
 ---
 
@@ -327,7 +327,7 @@ SPEC-WP-26 = COMPLETE
 
 Reason:
 - exact USDC identity policy is defined; exact contract/mint identifiers are documented as pending official source retrieval;
-- atomic amount rule is unambiguous: server-calculated, locked in quote, requires canonical price source;
+- atomic amount rule is unambiguous: fixed 1 USDC = 1,000,000 atomic units, locked in quote, no price source required;
 - finality policy is defined as explicit rail-specific state machines with thresholds documented as PENDING NETWORK POLICY / PENDING IMPLEMENTATION POLICY;
 - multi-rail model is explicit: Base + Solana;
 - no contradictions with WP-18R..WP-25 or current multi-rail canonical documents;

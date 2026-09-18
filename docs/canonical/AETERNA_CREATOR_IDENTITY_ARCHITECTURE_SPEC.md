@@ -361,8 +361,8 @@ AETERNA service payment flow:
 1. Creator connects initial wallet/provider.
 2. Creator Identity is established or retrieved.
 3. AETERNA server creates Creator Service Payment Quote:
-   - USD 1.00;
-   - selected AETERNA payment asset;
+- 1 USDC;
+- selected AETERNA payment asset;
    - exact atomic amount;
    - immutable quote.
 4. Wallet confirms payment in the selected network/asset.
@@ -463,7 +463,7 @@ User-facing principles:
 
 - "Connect Wallet" establishes your creator identity.
 - Your creator identity follows you through the whole capsule journey.
-- AETERNA service fee: $1, shown in your selected asset.
+- AETERNA service fee: exactly 1 USDC.
 - Irys publication cost: shown separately, may use a different asset.
 - If you change wallet or network, you may need to confirm your identity
   again.

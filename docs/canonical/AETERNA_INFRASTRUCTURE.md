@@ -83,7 +83,7 @@ Type: AETERNA-owned public Solana service-payment recipient
 
 Purpose
 
-Receives the $1.00 USDC AETERNA Service Payment from creators on Solana Mainnet.
+Receives the 1 USDC AETERNA Service Payment from creators on Solana Mainnet.
 
 Public address:
 
@@ -253,7 +253,7 @@ Does not:
 
 Purpose
 
-The $1 USD-equivalent AETERNA service payment that grants one Creator Credit.
+The 1 USDC AETERNA service payment that grants one Creator Credit.
 
 Performs:
 - creates immutable Creator Service Quote;
@@ -455,7 +455,7 @@ Current canonical creator model:
 
 Creator Identity
 → immutable Creator Service Quote
-→ $1 USD-equivalent AETERNA service payment
+→ 1 USDC AETERNA service payment
 → independently verified payment
 → Creator Credit AVAILABLE
 → later capsule lifecycle reservation
@@ -466,7 +466,7 @@ Creator Identity
 → Credit CONSUMED
 
 Hard rules:
-- $1 USD = 1 Creator Credit.
+- 1 USDC = 1 Creator Credit.
 - Creator Credit does not expire.
 - Creator Credit is not storage pricing, Irys payment, gas, or capsule-size pricing.
 - One verified AETERNA service payment -> maximum one Creator Credit.

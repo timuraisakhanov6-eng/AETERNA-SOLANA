@@ -341,7 +341,7 @@ describe("PATCH-2M service-payment result batch race", () => {
             ok: true,
             paymentIntentId: "payment-intent-2m",
             expectedAmount: 1,
-            currency: "USD",
+            currency: "USDC",
             expiresAt: Date.now() + 600_000,
           }),
       },

@@ -56,12 +56,15 @@ Network is a payment-rail policy, not the business price.
 ## 3. EXACT 1 USDC
 
 The AETERNA service fee is:
-- fixed commercial denomination: USD 1.00;
+- exactly 1 USDC;
 - not dependent on capsule size, Irys cost, network fees, or payment asset.
 
-The USD 1.00 is:
-- a commercial label;
-- converted to exact atomic token amount by server-side logic per rail.
+The 1 USDC is:
+- the canonical settlement denomination;
+- represented as 1,000,000 atomic units.
+
+No USD denomination, USD→USDC conversion, exchange rate, oracle, or price
+source applies to the AETERNA service fee.
 
 Frontend MUST NOT choose the authoritative amount.
 Frontend MAY display the amount for informational purposes.
@@ -129,7 +132,7 @@ choose supported payment rail
 connect supported Solana-compatible wallet
 ↓
 automatic amount:
-$1.00 USDC
+1 USDC
 ↓
 user confirms
 ↓
@@ -189,7 +192,7 @@ Base rail:
 AETERNA Service Payment and Irys publication/storage are architecturally and economically independent layers.
 
 AETERNA payment:
-- $1 USDC;
+- exactly 1 USDC;
 - paid to AETERNA;
 - grants one capsule creation entitlement.
 
@@ -317,14 +320,14 @@ Wallet signing remains in the user-controlled environment.
 
 PENDING CANONICAL DECISION:
 - exact Settlement Wallet addresses per rail;
-- exact price source/oracle for USD 1.00 conversion;
 - exact confirmation/finality thresholds per supported rail;
 - exact payment evidence formats per rail/provider;
 - exact Cloudflare Pages/Workers route and data-store architecture;
 - exact reconciliation/refund policy;
 - exact legal review outcome.
 
-No production payment verification may finalize until required pending items are resolved and documented.
+These pending items do not block the AETERNA service payment: the fee is natively
+denominated in USDC and requires no conversion or price source.
 
 ---
 

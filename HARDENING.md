@@ -151,7 +151,7 @@ Payment integrations SHOULD preserve:
 - upload-after-payment enforcement
 - replay resistance
 - environment isolation
-- fixed USD 1.00 service fee
+- fixed 1 USDC service fee
 
 Payment integrations MUST remain non-authoritative.
 

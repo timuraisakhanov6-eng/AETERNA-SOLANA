@@ -47,7 +47,14 @@ function isAllowedOrigin(origin: string): boolean {
   return false;
 }
 
-const SERVICE_FEE_USD = 1.0;
+/**
+ * Canonical AETERNA service fee.
+ *
+ * Natively denominated and settled in USDC — this is NOT a USD amount
+ * and is NOT derived from any USD→USDC conversion, exchange rate,
+ * oracle, or price source. 1 USDC = 1,000,000 atomic units.
+ */
+const SERVICE_FEE_USDC = 1;
 const QUOTE_TTL_MS = 30 * 60 * 1000;
 
 function baseHeaders(origin: string): Record<string, string> {
@@ -143,8 +150,8 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   const quote = {
     paymentIntentId,
-    expectedAmount: SERVICE_FEE_USD,
-    currency: "USD" as const,
+    expectedAmount: SERVICE_FEE_USDC,
+    currency: "USDC" as const,
     createdAt: now,
     expiresAt: now + QUOTE_TTL_MS,
   };

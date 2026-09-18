@@ -147,9 +147,9 @@ The following abstract fields represent a payment asset:
 
 The concrete asset allowlist is a separate configuration decision.
 
-## 8. AETERNA $1 QUOTE
+## 8. AETERNA SERVICE FEE QUOTE
 
-AETERNA service price is fixed at USD 1.00.
+AETERNA service price is fixed at exactly 1 USDC.
 
 AETERNA uses a server-side commercial entitlement object for payment
 validation:
@@ -163,7 +163,7 @@ verification and entitlement:
 
 - quoteId
 - creator identity binding
-- serviceFeeUsd = 1.00
+- serviceFeeUsdc = 1
 - selected payment asset
 - exact atomic payment amount
 - recipient
@@ -182,35 +182,28 @@ concepts.
 A Creator Credit is granted only after a verified payment against an
 immutable quote.
 
-## 9. PRICE CONVERSION
+## 9. NO PRICE CONVERSION
 
-The canonical price conversion principle is:
+The AETERNA service fee is natively denominated and settled in USDC. No price
+conversion applies:
 
-USD 1.00
--> server-side price conversion
--> exact amount in selected supported asset
+1 USDC
+-> fixed atomic amount (1,000,000 atomic units)
 -> immutable payment quote
 
 ### 9.1 Requirements
 
-The price source MUST be:
-
-- trusted;
-- server-side;
-- time-bounded;
-- deterministic for a quote;
-- resistant to client manipulation;
-- captured exactly in the quote at creation.
+There is no price source, exchange rate, or oracle for the AETERNA service fee.
 
 ### 9.2 Frontend Role
 
-The frontend MAY DISPLAY the converted amount.
+The frontend MAY DISPLAY the amount.
 
 The frontend does NOT determine the authoritative amount.
 
 ### 9.3 Pending Decisions
 
-The exact price source/provider is NOT YET SELECTED.
+None for the AETERNA service fee denomination: it is fixed at exactly 1 USDC.
 
 ## 10. PAYMENT VERIFICATION
 
@@ -267,7 +260,7 @@ Creator Credit Specification, not this document.
 
 AETERNA service payment and Irys publication/storage are separate layers.
 
-AETERNA $1 service payment:
+AETERNA 1 USDC service payment:
 
 - grants Creator Credit;
 - is NOT a storage price;
@@ -323,7 +316,7 @@ The canonical human-readable flow is:
 2. User enters /create and prepares the capsule.
 3. User clicks the first-stage creation action.
 4. If no valid AETERNA Creator Credit is available for the creator's final creation action, the AETERNA Service Payment flow appears.
-5. User sees fixed $1 AETERNA service fee.
+5. User sees fixed 1 USDC AETERNA service fee.
 6. System displays exact amount in selected supported asset.
 7. User confirms in wallet.
 8. AETERNA verifies payment.
@@ -365,7 +358,7 @@ The architecture MUST include:
 
 AETERNA sells a digital service entitlement:
 
-- $1 Creator Credit.
+- 1 USDC Creator Credit.
 
 AETERNA does not price storage by capsule size.
 
@@ -385,7 +378,6 @@ The following decisions remain unresolved:
 - wallet authentication/signing standard;
 - supported asset allowlist;
 - blockchain/network set;
-- price oracle/source;
 - settlement recipient model;
 - payment transaction format;
 - exact Irys browser flow;

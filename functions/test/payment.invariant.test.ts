@@ -52,7 +52,7 @@ async function seedBusinessQuote(
   await createBusinessQuote(kv, {
     paymentIntentId,
     expectedAmount: 1,
-    currency: "USD",
+    currency: "USDC",
     createdAt: Date.now(),
     expiresAt: Date.now() + 30 * 60 * 1000,
   });
@@ -361,14 +361,14 @@ describe("Payment authorization / replay protection invariants", () => {
       expect((await res.json()).error).toBe("BUSINESS_QUOTE_NOT_FOUND");
     });
 
-    it("FAIL-CLOSED: rejects verification when quote is not exactly 1 USD", async () => {
+    it("FAIL-CLOSED: rejects verification when quote is not exactly 1 USDC", async () => {
       const env = {
         BUSINESS_QUOTES: {
           get: async () =>
             JSON.stringify({
               paymentIntentId: PAYMENT_INTENT_ID,
               expectedAmount: 2,
-              currency: "USD",
+              currency: "USDC",
               expiresAt: Date.now() + 60_000,
             }),
         },
@@ -389,8 +389,39 @@ describe("Payment authorization / replay protection invariants", () => {
       const context = makeEventContext({ request, env });
       const res = await servicePaymentVerifyPost(context);
       expect(res.status).toBe(402);
-      expect((await res.json()).error).toBe("QUOTE_NOT_1_USD");
+    expect((await res.json()).error).toBe("QUOTE_NOT_1_USDC");
+  });
+
+  it("Model B: rejects a USD-denominated service quote", async () => {
+    const env = {
+      BUSINESS_QUOTES: {
+        get: async () =>
+          JSON.stringify({
+            paymentIntentId: PAYMENT_INTENT_ID,
+            expectedAmount: 1,
+            currency: "USD",
+            expiresAt: Date.now() + 60_000,
+          }),
+      },
+      CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
+      VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
+    };
+
+    const request = createFakeRequest({
+      headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: {
+        paymentIntentId: PAYMENT_INTENT_ID,
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        evidenceId: "ev-usd-denomination",
+        txHash: TX_HASH,
+      },
     });
+
+    const context = makeEventContext({ request, env });
+    const res = await servicePaymentVerifyPost(context);
+    expect(res.status).toBe(402);
+    expect((await res.json()).error).toBe("QUOTE_NOT_1_USDC");
+  });
 
     it("FAIL-CLOSED: rejects invalid txHash", async () => {
       const env = {
@@ -399,7 +430,7 @@ describe("Payment authorization / replay protection invariants", () => {
             JSON.stringify({
               paymentIntentId: PAYMENT_INTENT_ID,
               expectedAmount: 1,
-              currency: "USD",
+              currency: "USDC",
               expiresAt: Date.now() + 60_000,
             }),
         },
@@ -430,7 +461,7 @@ describe("Payment authorization / replay protection invariants", () => {
             JSON.stringify({
               paymentIntentId: PAYMENT_INTENT_ID,
               expectedAmount: 1,
-              currency: "USD",
+              currency: "USDC",
               expiresAt: Date.now() + 60_000,
             }),
         },
@@ -506,7 +537,7 @@ describe("Payment authorization / replay protection invariants", () => {
             JSON.stringify({
               paymentIntentId: PAYMENT_INTENT_ID,
               expectedAmount: 1,
-              currency: "USD",
+              currency: "USDC",
               expiresAt: Date.now() + 60_000,
             }),
         },
@@ -573,7 +604,7 @@ describe("Payment authorization / replay protection invariants", () => {
             JSON.stringify({
               paymentIntentId: PAYMENT_INTENT_ID,
               expectedAmount: 1,
-              currency: "USD",
+              currency: "USDC",
               expiresAt: Date.now() + 60_000,
             }),
         },
@@ -604,7 +635,7 @@ describe("Payment authorization / replay protection invariants", () => {
             JSON.stringify({
               paymentIntentId: PAYMENT_INTENT_ID,
               expectedAmount: 1,
-              currency: "USD",
+              currency: "USDC",
               expiresAt: Date.now() + 60_000,
             }),
         },
@@ -679,7 +710,7 @@ describe("Payment authorization / replay protection invariants", () => {
             JSON.stringify({
               paymentIntentId: PAYMENT_INTENT_ID,
               expectedAmount: 1,
-              currency: "USD",
+              currency: "USDC",
               expiresAt: Date.now() + 60_000,
             }),
         },
@@ -722,7 +753,7 @@ describe("Payment authorization / replay protection invariants", () => {
             JSON.stringify({
               paymentIntentId: PAYMENT_INTENT_ID,
               expectedAmount: 1,
-              currency: "USD",
+              currency: "USDC",
               expiresAt: Date.now() + 60_000,
             }),
         },

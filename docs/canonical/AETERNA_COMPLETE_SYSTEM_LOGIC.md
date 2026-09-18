@@ -92,7 +92,7 @@ choose supported payment rail
 connect supported Solana-compatible wallet
 ↓
 automatic amount:
-$1.00 USDC
+1 USDC
 ↓
 user confirms
 ↓

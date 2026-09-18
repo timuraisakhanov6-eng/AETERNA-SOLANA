@@ -60,7 +60,7 @@ function buildEnv() {
         JSON.stringify({
           paymentIntentId: PAYMENT_INTENT_ID,
           expectedAmount: 1,
-          currency: "USD",
+          currency: "USDC",
           expiresAt: Date.now() + 60_000,
         }),
     },

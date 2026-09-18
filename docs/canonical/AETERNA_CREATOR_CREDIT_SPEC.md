@@ -22,8 +22,7 @@ cost, or Irys payment instrument.
 
 ## 3. PRICE
 
-The AETERNA service fee for one Creator Credit is fixed at USD 1.00
-equivalent.
+The AETERNA service fee for one Creator Credit is fixed at exactly 1 USDC.
 
 The Creator Credit price:
 
@@ -154,7 +153,7 @@ If anything fails before successful final seal:
 the Creator Credit remains AVAILABLE or is safely restored to AVAILABLE
 from CONSUMING.
 
-A creator must NOT have to pay another USD 1.00 merely because the system
+A creator must NOT have to pay another 1 USDC merely because the system
 failed before producing the successful capsule result.
 
 ## 9. CONCURRENCY / DOUBLE-SPEND
@@ -237,7 +236,7 @@ that a full live real-money end-to-end validation has been completed.
 
 Human-readable explanation:
 
-- USD 1.00 gives the creator one right to successfully create one
+- 1 USDC gives the creator one right to successfully create one
   capsule.
 - The credit has no expiration.
 - The creator can take as long as needed.
@@ -253,7 +252,6 @@ This specification does NOT define:
 - wallet provider;
 - wallet connection UI;
 - supported payment assets;
-- price oracle;
 - payment quote implementation;
 - blockchain;
 - Irys uploader;

@@ -97,7 +97,7 @@ While the capsule is still in this editable, pre-PREPARED phase, there are no re
 Cost is shown as a fixed service fee.
 
 AETERNA uses a Creator Credit model:
-- one fixed USD 1.00 service fee;
+- one fixed 1 USDC service fee;
 - one Creator Credit gives the creator the right to attempt to create one successful capsule;
 - capsule size does not change the AETERNA service fee;
 - storage volume does not change the AETERNA service fee;
@@ -115,7 +115,7 @@ Pricing logic
 Cost is shown as a fixed service fee.
 
 AETERNA uses a Creator Credit model:
-- one fixed USD 1.00 service fee;
+- one fixed 1 USDC service fee;
 - one Creator Credit gives the creator the right to attempt to create one successful capsule;
 - capsule size does not change the AETERNA service fee;
 - storage volume does not change the AETERNA service fee;
@@ -221,7 +221,7 @@ The person pays nothing.
 Payment
 
 Once preparation completes successfully, the backend creates a Creator Service Quote.
-This quote records the fixed USD 1.00 service fee, the selected payment asset, the exact crypto amount, the recipient, and wallet binding metadata.
+This quote records the fixed 1 USDC service fee, the selected payment asset, the exact crypto amount, the recipient, and wallet binding metadata.
 It does not record capsule size or storage-block pricing.
 This becomes the commercial entitlement for this capsule attempt and is used at every subsequent payment stage.
 
@@ -229,7 +229,7 @@ The Creator Service Quote is the sole commercial source of truth within Business
 
 The payment window then opens.
 
-The creator sees the fixed USD 1.00 service fee. This amount no longer changes during payment.
+The creator sees the fixed 1 USDC service fee. This amount no longer changes during payment.
 
 There are no hidden service fees or sudden price increases.
 Payment is performed through the approved AETERNA service-payment flow and grants one Creator Credit.
@@ -451,7 +451,7 @@ The user never sees the project's internal economics.
 They only know the cost of their capsule.
 
 Canonical economics:
-- Creator pays AETERNA exactly $1.00 USDC for one Creator Credit / one capsule entitlement.
+- Creator pays AETERNA exactly 1 USDC for one Creator Credit / one capsule entitlement.
 - Creator pays Irys separately for publication/storage.
 - AETERNA $1 does NOT include Irys storage/publication/network fees.
 - Irys economics are separate from AETERNA service economics.

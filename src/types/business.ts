@@ -17,9 +17,13 @@ export interface BusinessQuote {
   expectedAmount: number;
 
   /**
-   * ISO currency code.
+   * Denomination of the canonical AETERNA service fee.
+   *
+   * The AETERNA service fee is natively denominated and settled in
+   * USDC. It is NOT a USD amount and is NOT produced by any USD→USDC
+   * conversion, exchange rate, oracle, or price source.
    */
-  currency: "USD";
+  currency: "USDC";
 
   /**
    * Quote creation time (UTC ms).

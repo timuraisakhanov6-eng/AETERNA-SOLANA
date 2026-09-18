@@ -170,7 +170,7 @@ Payment systems MUST preserve:
 - payment verification ordering
 - upload-after-payment enforcement
 - transaction verification integrity
-- USD 1.00 fixed service fee
+- 1 USDC fixed service fee
 - one verified payment → at most one Creator Credit
 - frontend non-authority
 

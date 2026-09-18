@@ -207,7 +207,6 @@ The following remain unresolved:
 - Final wallet provider selection for initial launch.
 - Final wallet authentication/signing standard.
 - Final supported asset allowlist.
-- Final price source/oracle for USD 1.00 conversion.
 - Exact Irys browser flow for AETERNA capsule pipeline.
 - Whether AETERNA $1 and Irys publication can be combined into one user wallet flow.
 - Final API boundaries between payment, credit, and publication.

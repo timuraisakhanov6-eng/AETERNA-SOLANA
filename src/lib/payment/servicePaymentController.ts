@@ -423,7 +423,7 @@ export function createServicePaymentController(
       const q: ServicePaymentQuote = {
         paymentIntentId: typeof data.paymentIntentId === "string" ? data.paymentIntentId : paymentIntentId,
         expectedAmount: Number(data.expectedAmount ?? 1),
-        currency: String(data.currency ?? "USD"),
+        currency: typeof data.currency === "string" ? data.currency : "",
         expiresAt: Number(data.expiresAt),
       }
       patch({ quote: q, phase: "quote_ready", isProcessing: false })

@@ -36,7 +36,7 @@ const QUOTE_BODY = {
   ok: true,
   paymentIntentId: "pi-1",
   expectedAmount: 1,
-  currency: "USD",
+  currency: "USDC",
   expiresAt: 1893456000000,
 };
 const ISSUE_BODY = {
