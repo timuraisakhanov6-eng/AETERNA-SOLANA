@@ -18,6 +18,7 @@ dist/
 dist-ssr/
 build/
 .cloudflare/
+_worker.bundle
 
 
 # ================================
