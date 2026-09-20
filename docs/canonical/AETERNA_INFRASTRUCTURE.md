@@ -327,6 +327,18 @@ Executes exclusively in the user's local environment. The server is not a Runtim
 
 The server boundary hosts only Business Layer and Storage Layer. It never hosts cryptography or Runtime execution.
 
+### Deployment & Origin Policy
+
+Canonical production host:
+https://aeterna-solana.pages.dev
+
+Production API origin allowlist:
+- https://aeternacapsule.com
+- https://www.aeternacapsule.com
+- https://aeterna-solana.pages.dev
+
+The production API accepts requests only from the configured allowlist above. This documents the current deployment/origin policy; it does not change the implementation.
+
 ### Business Layer
 
 Creates:
