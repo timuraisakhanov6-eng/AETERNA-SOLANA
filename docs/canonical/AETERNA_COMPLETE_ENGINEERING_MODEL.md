@@ -390,6 +390,17 @@ Cryptography exists to guarantee:
 Cryptographic algorithms are defined exclusively by canonical specifications.
 
 Engineering implementation shall never substitute cryptographic primitives for convenience.
+Canonical cryptographic parameters for this protocol version:
+- algorithm: AES-256-GCM;
+- vault key derivation: PBKDF2-SHA256;
+- PBKDF2 iteration count: 600000;
+- saltBase length: 16 bytes;
+- vault AAD: Uint8Array([1]);
+- recipient secret format: HEX64.
+
+Key derivation binding inputs: recipient secret, saltBase, openAt, capsuleId. Trusted Time is not a key derivation input.
+
+These values are implementation parameters, not protocol wire-format invariants.
 
 ---
 
