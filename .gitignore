@@ -107,6 +107,11 @@ desktop.ini
 # Test artifacts (future-proof)
 # ================================
 
+/.tmp-*
+/AETERNA_*.md
+/*.timestamp-*.mjs
+/.git.*
+/.workbuddy-ai/
 coverage/
 .playwright/
 test-results/
