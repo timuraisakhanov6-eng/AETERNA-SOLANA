@@ -64,7 +64,6 @@ const ALLOWED_ORIGINS = [
 ];
 
 const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
-const NEW_PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-solana-btt\.pages\.dev$/;
 
 const QUOTE_TTL_MS = 30 * 60 * 1000;
 
@@ -360,7 +359,7 @@ function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
   try {
     const url = new URL(origin);
-    if (url.protocol === "https:" && (PAGES_PREVIEW_REGEX.test(url.hostname) || NEW_PAGES_PREVIEW_REGEX.test(url.hostname)))
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname))
       return true;
   } catch {
     // ignore
