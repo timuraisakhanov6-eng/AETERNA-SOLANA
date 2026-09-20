@@ -154,7 +154,7 @@ export const executorStorage: ExecutorReadStorageAdapter = {
   name: "executor-hot",
 
 
-  async download(txId: StoragePointer): Promise<Uint8Array> {
+  async download(txId: StoragePointer): Promise<Uint8Array<ArrayBuffer>> {
     assertStoragePointer(txId);
 
     for (const gateway of GATEWAYS) {

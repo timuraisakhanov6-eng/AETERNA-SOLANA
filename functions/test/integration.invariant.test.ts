@@ -23,12 +23,12 @@ import type { OpenableMediaItem } from "../../src/lib/capsule/open/openTypes";
    ========================================================= */
 
 interface FakeMediaSession {
-  read(_start: number, _end: number): Promise<Uint8Array>;
+  read(_start: number, _end: number): Promise<Uint8Array<ArrayBuffer>>;
   dispose(): void;
 }
 
 function createFakeMediaSession(
-  readImpl?: (_start: number, _end: number) => Promise<Uint8Array>,
+  readImpl?: (_start: number, _end: number) => Promise<Uint8Array<ArrayBuffer>>,
 ): FakeMediaSession {
   return {
     read: readImpl ?? (() => Promise.resolve(new Uint8Array())),
@@ -36,7 +36,7 @@ function createFakeMediaSession(
   };
 }
 
-function buildFakeRuntime(getBytesImpl: () => Promise<Uint8Array>) {
+function buildFakeRuntime(getBytesImpl: () => Promise<Uint8Array<ArrayBuffer>>) {
   return {
     getBytes: getBytesImpl,
     dispose: () => {},

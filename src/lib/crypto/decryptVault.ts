@@ -64,7 +64,7 @@ function isBase64(str: string): boolean {
 }
 
 
-function buildVaultAAD(): Uint8Array {
+function buildVaultAAD(): Uint8Array<ArrayBuffer> {
 
   const aad = getVaultAAD();
 
@@ -83,7 +83,7 @@ function buildVaultAAD(): Uint8Array {
 
 function decodeBase64Canonical(
   str: string
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
 
   try {
 
@@ -259,7 +259,7 @@ export async function decryptVault(
    */
   let decryptedBuffer: ArrayBuffer | undefined;
 
-  let aad: Uint8Array | null = null;
+  let aad: Uint8Array<ArrayBuffer> | null = null;
 
   try {
 

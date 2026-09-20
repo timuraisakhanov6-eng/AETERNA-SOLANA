@@ -13,7 +13,8 @@ export default tseslint.config(
       ".vite",
       ".cloudflare",
       ".wrangler",
-      "coverage"
+      "coverage",
+      ".tmp-*"
     ],
   },
 

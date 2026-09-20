@@ -530,7 +530,10 @@ describe("Payment authorization / replay protection invariants", () => {
       vi.restoreAllMocks();
     });
 
-    it("ACCEPTS: EVM txHash in txHash fallback field", async () => {
+    it("FROZEN RAIL: EVM/Base txHash is rejected before any Base RPC query or state write", async () => {
+      const verifiedPaymentPuts: string[] = [];
+      const coordinator = createFakeCreditCoordinatorBinding();
+
       const env = {
         BUSINESS_QUOTES: {
           get: async () =>
@@ -542,41 +545,19 @@ describe("Payment authorization / replay protection invariants", () => {
             }),
         },
         CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
-        VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
+        VERIFIED_PAYMENTS: {
+          get: async () => null,
+          put: async (key: string) => {
+            verifiedPaymentPuts.push(key);
+          },
+        },
+        // Base RPC env IS configured on purpose: the rail freeze must NOT
+        // depend on its absence.
         ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
-        CREDIT_OP_COORDINATOR: createFakeCreditCoordinatorBinding(),
+        CREDIT_OP_COORDINATOR: coordinator,
       };
 
-      const fakeFetch = vi.fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: "0x2105" }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            result: {
-              status: "0x1",
-              blockNumber: "0x10",
-              logs: [
-                {
-                  address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-                  topics: [
-                    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-                    "0x000000000000000000000000" + "0".repeat(40),
-                    "0x" + "0".repeat(24) + "b0d9e5d93c1fecfa78479f23d283eaa652ee3755",
-                  ],
-                  data: "0x" + "0".repeat(59) + "f4240",
-                },
-              ],
-            },
-          }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: "0x11" }),
-        });
-
+      const fakeFetch = vi.fn();
       vi.stubGlobal("fetch", fakeFetch);
 
       const request = createFakeRequest({
@@ -591,13 +572,23 @@ describe("Payment authorization / replay protection invariants", () => {
 
       const context = makeEventContext({ request, env });
       const res = await servicePaymentVerifyPost(context);
-      expect(res.status).toBe(200);
-      expect((await res.json()).status).toBe("VERIFIED");
+
+      // (1) Base-shaped transaction is rejected with the canonical frozen-rail error.
+      expect(res.status).toBe(402);
+      expect((await res.json()).error).toBe("UNSUPPORTED_RAIL");
+      // (2) No Base RPC provider was queried.
+      expect(fakeFetch).not.toHaveBeenCalled();
+      // (3) No payment-transaction claim occurred (no DO instance was addressed).
+      expect(coordinator.storages.size).toBe(0);
+      // (4) No KV economic state mutation occurred.
+      expect(verifiedPaymentPuts).toHaveLength(0);
 
       vi.unstubAllGlobals();
     });
 
-    it("FAIL-CLOSED: rejects when both providers are unavailable", async () => {
+    it("FROZEN RAIL: rejection does not depend on Base provider availability (no Base RPC env)", async () => {
+      const coordinator = createFakeCreditCoordinatorBinding();
+
       const env = {
         BUSINESS_QUOTES: {
           get: async () =>
@@ -610,7 +601,11 @@ describe("Payment authorization / replay protection invariants", () => {
         },
         CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
+        CREDIT_OP_COORDINATOR: coordinator,
       };
+
+      const fakeFetch = vi.fn();
+      vi.stubGlobal("fetch", fakeFetch);
 
       const request = createFakeRequest({
         headers: { origin: ALLOWED_ORIGIN, "content-type": "application/json" },
@@ -624,11 +619,20 @@ describe("Payment authorization / replay protection invariants", () => {
 
       const context = makeEventContext({ request, env });
       const res = await servicePaymentVerifyPost(context);
-      expect(res.status).toBe(503);
-      expect((await res.json()).error).toBe("PROVIDERS_UNAVAILABLE");
+
+      // The frozen-rail rejection replaces the old provider-resolution path:
+      // it is no longer "providers unavailable" (503).
+      expect(res.status).toBe(402);
+      expect((await res.json()).error).toBe("UNSUPPORTED_RAIL");
+      expect(fakeFetch).not.toHaveBeenCalled();
+      expect(coordinator.storages.size).toBe(0);
+
+      vi.unstubAllGlobals();
     });
 
-    it("FAIL-CLOSED: rejects when providers disagree on chain", async () => {
+    it("FROZEN RAIL: rejection precedes Base provider query even when both providers are configured", async () => {
+      const coordinator = createFakeCreditCoordinatorBinding();
+
       const env = {
         BUSINESS_QUOTES: {
           get: async () =>
@@ -641,38 +645,15 @@ describe("Payment authorization / replay protection invariants", () => {
         },
         CREATOR_IDENTITIES: createFakeCreatorIdentityKV(),
         VERIFIED_PAYMENTS: { get: async () => null, put: async () => {} },
+        // Both Base providers configured: the freeze must precede resolution.
         ALCHEMY_BASE_RPC_URL: "https://base-rpc.example.com",
         CHAINSTACK_BASE_RPC_URL: "https://chainstack.example.com",
         CHAINSTACK_BASE_RPC_USERNAME: "user",
         CHAINSTACK_BASE_RPC_PASSWORD: "pass",
+        CREDIT_OP_COORDINATOR: coordinator,
       };
 
-      const fakeFetch = vi.fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: "0x2105" }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: { status: "0x1", blockNumber: "0x10", logs: [] } }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: "0x1" }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: "0x1" }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: "0x2104" }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: "0x10" }),
-        });
-
+      const fakeFetch = vi.fn();
       vi.stubGlobal("fetch", fakeFetch);
 
       const request = createFakeRequest({
@@ -687,8 +668,11 @@ describe("Payment authorization / replay protection invariants", () => {
 
       const context = makeEventContext({ request, env });
       const res = await servicePaymentVerifyPost(context);
-      expect(res.status).toBe(503);
-      expect((await res.json()).error).toBe("PROVIDER_DISAGREEMENT");
+
+      expect(res.status).toBe(402);
+      expect((await res.json()).error).toBe("UNSUPPORTED_RAIL");
+      expect(fakeFetch).not.toHaveBeenCalled();
+      expect(coordinator.storages.size).toBe(0);
 
       vi.unstubAllGlobals();
     });

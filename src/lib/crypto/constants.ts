@@ -129,7 +129,7 @@ export const DOMAIN_VAULT_AAD =
  * Uint8Array([1])
  */
 
-export function getVaultAAD(): Uint8Array {
+export function getVaultAAD(): Uint8Array<ArrayBuffer> {
 
   return new Uint8Array([1]);
 

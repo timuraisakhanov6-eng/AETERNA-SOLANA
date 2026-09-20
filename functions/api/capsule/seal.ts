@@ -8,6 +8,18 @@
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
+import { sha256 } from "../../lib/sha256";
+
+/**
+ * F-2 — SHA-256 digest of a UTF-8 string, lowercase hex, for the
+ * authority-token record. Wraps the canonical helper with an explicit
+ * byte copy so the input never crosses a realm-sensitive
+ * instanceof boundary.
+ */
+async function authorityDigest(value: string): Promise<string> {
+  const encoded = new TextEncoder().encode(value);
+  return sha256(new Uint8Array(encoded));
+}
 import {
   CAPSULE_ID_REGEX,
   SALT_BASE_REGEX,
@@ -104,6 +116,22 @@ const HEARTBEAT_INTERVAL_MIN =
 
 const HEARTBEAT_INTERVAL_MAX =
   3153600000000;
+
+/* ================= AUTHORITY TOKEN LIMITS ================= */
+
+/**
+ * F-2 — server-side persistence bound for the authority-token digest.
+ *
+ * Heartbeat confirmation authority collapses permanently once
+ * effectiveOpenAt is reached (canonical v1.3, INVARIANTS §3.3), and
+ * effectiveOpenAt can never exceed manifest.openAt — which is itself
+ * bounded by MAX_TIME. 400 days comfortably exceeds the longest
+ * reachable confirmation window while still guaranteeing the digest
+ * does not persist indefinitely. Persisting the digest beyond the
+ * point where confirmation is possible would be dead authority state.
+ */
+const AUTHORITY_TOKEN_TTL_SEC =
+  400 * 24 * 60 * 60;
 
 /* ================= ORIGINS ================= */
 
@@ -465,7 +493,7 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
 
   if (paymentIntentId) {
     boundEvidenceId = await env.VERIFIED_PAYMENTS.get(
-      `payment-intent:${paymentIntentId}:latest`
+      `payment-intent:${paymentIntentId}`
     );
     if (typeof boundEvidenceId === "string") {
       const paymentRaw = await env.VERIFIED_PAYMENTS.get(
@@ -585,11 +613,34 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
 
   await env.CAPSULE_MANIFESTS.put(capsuleId, normalized);
 
+  /**
+   * F-2 — Authority token is stored as a SHA-256 DIGEST, never as the
+   * plaintext creatorAuthorityFragment.
+   *
+   * The fragment is a bearer capability: whoever holds the stored value
+   * can present it to /api/heartbeat. Persisting it in plaintext made
+   * the server a holder of replayable creator authority. Storing only
+   * the digest means a KV read (or a KV leak) yields a verification
+   * artifact rather than a usable capability, while the confirmation
+   * path keeps exactly the same semantics: hash the incoming fragment,
+   * compare digests.
+   *
+   * The TTL bounds authority-token persistence server-side. It is set
+   * well beyond any reachable heartbeat confirmation window so the
+   * existing authority lifecycle and recovery behaviour are unchanged:
+   * confirmations are already refused once effectiveOpenAt is reached
+   * (canonical v1.3), and effectiveOpenAt can never exceed
+   * manifest.openAt, which is itself bounded by MAX_TIME.
+   */
+  const authorityFragmentDigest =
+    await authorityDigest(creatorAuthorityFragment);
+
   await env.AUTHORITY_TOKENS.put(
     capsuleId,
     JSON.stringify({
-      fragment: creatorAuthorityFragment
-    })
+      digest: authorityFragmentDigest
+    }),
+    { expirationTtl: AUTHORITY_TOKEN_TTL_SEC }
   );
 
   // Best-effort: failures here are non-fatal. The manifest is already
@@ -599,7 +650,7 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
       `verified-payment:${paymentIntentId}:${boundEvidenceId}`
     ).catch(() => {});
     await env.VERIFIED_PAYMENTS.delete(
-      `payment-intent:${paymentIntentId}:latest`
+      `payment-intent:${paymentIntentId}`
     ).catch(() => {});
   }
 

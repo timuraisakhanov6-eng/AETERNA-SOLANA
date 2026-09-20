@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { sendSolanaUSDCPayment } from "./solanaWallet";
 
 const FIXED_PUBLIC_KEY = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
@@ -216,5 +217,95 @@ describe("sendSolanaUSDCPayment", () => {
 
     expect(signature).toBe(FIXED_SIGNATURE);
     expect(signAndSendTransaction).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * REQUIRED callback contract (latent-defect regression).
+ *
+ * The module previously had an unreachable fallback that referenced an
+ * undefined `connection` symbol (ReferenceError if ever reached). The
+ * fallback is removed and `signAndSendTransaction` is now REQUIRED:
+ *   - the valid callback path still signs and sends;
+ *   - a missing callback is rejected with an explicit typed error, and the
+ *     guard fires BEFORE any network work (fail-closed, never ReferenceError);
+ *   - the source contains no reference to `connection` and no browser RPC.
+ */
+describe("sendSolanaUSDCPayment — required signAndSendTransaction contract", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00Z"));
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("valid callback path still sends the transaction and returns its signature", async () => {
+    const signAndSendTransaction = buildSignAndSendTransaction();
+    // Locally-typed mock (no weak vi.fn cast) so this test adds no new type
+    // errors.
+    const fetchMock = vi.fn(async () =>
+      ({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          blockhash: FIXED_BLOCKHASH,
+          lastValidBlockHeight: FIXED_LAST_VALID_BLOCK_HEIGHT,
+        }),
+      }) as unknown as Response
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const signature = await sendSolanaUSDCPayment({
+      destination: FIXED_DESTINATION,
+      amountAtomic: "1000000",
+      publicKey: FIXED_PUBLIC_KEY,
+      signAndSendTransaction,
+    });
+
+    expect(signature).toBe(FIXED_SIGNATURE);
+    expect(signAndSendTransaction).toHaveBeenCalledTimes(1);
+    // The callback receives the assembled transaction object.
+    expect(signAndSendTransaction.mock.calls[0]?.[0]).toBeTruthy();
+  });
+
+  it("rejects a missing callback explicitly — typed error, never ReferenceError, no network work", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    let caught: unknown;
+    try {
+      await sendSolanaUSDCPayment({
+        destination: FIXED_DESTINATION,
+        amountAtomic: "1000000",
+        publicKey: FIXED_PUBLIC_KEY,
+        signAndSendTransaction: undefined as never,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).not.toBe("ReferenceError");
+    expect((caught as Error).message).toContain(
+      "signAndSendTransaction is required"
+    );
+    // Fail-closed BEFORE any transaction is built or any request is made.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("source contains no reference to an undefined `connection` and no browser RPC", () => {
+    const src = readFileSync(
+      new URL("./solanaWallet.ts", import.meta.url),
+      "utf8"
+    );
+
+    // No identifier access to `connection` (the old broken fallback).
+    expect(src).not.toMatch(/\bconnection\s*\./);
+    // No raw send / no self-opened RPC connection.
+    expect(src).not.toContain("sendRawTransaction");
+    expect(src).not.toMatch(/new\s+Connection\s*\(/);
   });
 });

@@ -609,35 +609,11 @@ describe("Global payment transaction uniqueness invariants", () => {
     expect(creditRecordIds(env.CREATOR_CREDITS)).toHaveLength(0);
   });
 
-  it("INVALID AMOUNT: rejected with no uniqueness binding established", async () => {
-    const { env, coordinator } = buildEnv();
+  it("FROZEN RAIL: EVM/Base transaction is rejected before amount evaluation (no uniqueness binding)", async () => {
+    const { env } = buildEnv();
     await seedQuote(env.BUSINESS_QUOTES, "intent-a");
 
-    const fakeFetch = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ result: "0x2105" }) })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          result: {
-            status: "0x1",
-            blockNumber: "0x10",
-            logs: [
-              {
-                address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-                topics: [
-                  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-                  "0x000000000000000000000000" + "0".repeat(40),
-                  "0x" + "0".repeat(24) + "b0d9e5d93c1fecfa78479f23d283eaa652ee3755",
-                ],
-                // 2 USDC instead of 1 USDC.
-                data: "0x" + "0".repeat(58) + "1e8480",
-              },
-            ],
-          },
-        }),
-      })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ result: "0x11" }) });
-
+    const fakeFetch = vi.fn();
     vi.stubGlobal("fetch", fakeFetch);
 
     const res = await verifyPayment(env, {
@@ -649,41 +625,19 @@ describe("Global payment transaction uniqueness invariants", () => {
     vi.unstubAllGlobals();
 
     expect(res.status).toBe(402);
-    expect(((await res.json()) as { error: string }).error).toContain("TRANSFER_NOT_FOUND");
+    expect(((await res.json()) as { error: string }).error).toBe("UNSUPPORTED_RAIL");
+    // No Base RPC provider was queried, and no uniqueness binding was established.
+    expect(fakeFetch).not.toHaveBeenCalled();
     expect(
       await claimRecordFor(env.CREDIT_OP_COORDINATOR, "base", EVM_TX)
     ).toBeUndefined();
   });
 
-  it("WRONG DESTINATION: rejected with no uniqueness binding established", async () => {
-    const { env, coordinator } = buildEnv();
+  it("FROZEN RAIL: EVM/Base transaction is rejected before destination evaluation (no uniqueness binding)", async () => {
+    const { env } = buildEnv();
     await seedQuote(env.BUSINESS_QUOTES, "intent-a");
 
-    const fakeFetch = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ result: "0x2105" }) })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          result: {
-            status: "0x1",
-            blockNumber: "0x10",
-            logs: [
-              {
-                address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-                topics: [
-                  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-                  "0x000000000000000000000000" + "0".repeat(40),
-                  // Transfer to some OTHER address, not the settlement wallet.
-                  "0x" + "0".repeat(24) + "c0ffee0000000000000000000000000000000001",
-                ],
-                data: "0x" + "0".repeat(59) + "f4240",
-              },
-            ],
-          },
-        }),
-      })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ result: "0x11" }) });
-
+    const fakeFetch = vi.fn();
     vi.stubGlobal("fetch", fakeFetch);
 
     const res = await verifyPayment(env, {
@@ -695,7 +649,9 @@ describe("Global payment transaction uniqueness invariants", () => {
     vi.unstubAllGlobals();
 
     expect(res.status).toBe(402);
-    expect(((await res.json()) as { error: string }).error).toContain("TRANSFER_NOT_FOUND");
+    expect(((await res.json()) as { error: string }).error).toBe("UNSUPPORTED_RAIL");
+    // No Base RPC provider was queried, and no uniqueness binding was established.
+    expect(fakeFetch).not.toHaveBeenCalled();
     expect(
       await claimRecordFor(env.CREDIT_OP_COORDINATOR, "base", EVM_TX)
     ).toBeUndefined();

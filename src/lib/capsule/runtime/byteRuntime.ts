@@ -541,7 +541,7 @@ export function createByteRuntime(
         async getBytes(
             start: number,
             end: number,
-        ): Promise<Uint8Array> {
+        ): Promise<Uint8Array<ArrayBuffer>> {
 
             const plan =
                 resolveRange(byteMap, start, end);

@@ -128,13 +128,13 @@ function encodeBase64(
 export async function encryptVault(
   plaintext: Uint8Array,
   key: CryptoKey
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
 
   let data: Uint8Array | null = null;
   let iv: Uint8Array | null = null;
   let aad: Uint8Array | null = null;
   let ciphertext: Uint8Array | null = null;
-  let encoded: Uint8Array | null = null;
+  let encoded: Uint8Array<ArrayBuffer> | null = null;
 
   try {
 

@@ -845,74 +845,30 @@ async function resolveCreatorIdentity(
   const isBaseEvmSignature = txHash.startsWith("0x") && txHash.length === 66;
   const isSolanaSignature = /^[A-Za-z0-9]{64,88}$/.test(txHash) && !isBaseEvmSignature;
 
+  /**
+   * CANONICAL RAIL FREEZE — Base is FROZEN / RESERVED.
+   *
+   * Solana Mainnet + native USDC is the ONLY active service-payment rail
+   * (AETERNA_MULTI_RAIL_SERVICE_PAYMENT_POLICY_SPEC.md §6/§10;
+   * AETERNA_USDC_AMOUNT_AND_FINALITY_POLICY_SPEC.md §1; Base is NOT the
+   * active canonical creator rail).
+   *
+   * The EVM/Base transaction shape is therefore rejected HERE — BEFORE:
+   *   - any Base RPC provider resolution or query,
+   *   - the global transaction-uniqueness claim,
+   *   - any KV / Durable Object state mutation.
+   *
+   * This makes the freeze STRUCTURAL: the frozen rail can no longer become
+   * active merely because a Base RPC variable is later configured. The
+   * reserved Base helpers in this module are retained (and are now
+   * unreachable) for a future explicit canonical re-activation.
+   * Fail-closed: no state is touched.
+   */
   if (isBaseEvmSignature) {
-    /* ================= PROVIDER QUERY ================= */
+    return fail(origin, 402, "UNSUPPORTED_RAIL");
+  }
 
-    const primary = await queryPrimary(env, txHash);
-    const secondary = await querySecondary(env, txHash);
-
-    const providers = [primary, secondary].filter((p) => !!p.chainId || !!p.receipt);
-
-    if (providers.length === 0) {
-      return fail(origin, 503, "PROVIDERS_UNAVAILABLE");
-    }
-
-    const uniqueChainIds = new Set(
-      providers
-        .map((p) => typeof p.chainId === "string" ? p.chainId.toLowerCase() : "")
-        .filter(Boolean)
-    );
-
-    if (uniqueChainIds.size > 1) {
-      return fail(origin, 503, "PROVIDER_DISAGREEMENT");
-    }
-
-    const agreedChainId = providers[0]?.chainId?.toLowerCase();
-    if (agreedChainId !== BASE_CHAIN_ID.toLowerCase()) {
-      return fail(origin, 503, "WRONG_CHAIN");
-    }
-
-    const receiptResults = providers
-      .map((p) => findTransferLog(p.receipt))
-      .filter((r) => r.found);
-
-    if (receiptResults.length === 0) {
-      const reasons = providers
-        .map((p) => findTransferLog(p.receipt).reason)
-        .filter(Boolean);
-      return fail(origin, 402, `TRANSFER_NOT_FOUND: ${reasons[0] ?? "unknown"}`);
-    }
-
-    const receipt = providers.find((p) => findTransferLog(p.receipt).found)?.receipt;
-
-    if (!receipt || receipt.status !== "0x1") {
-      return fail(origin, 402, "TX_NOT_SUCCESSFUL");
-    }
-
-    if (!receipt.blockNumber || typeof receipt.blockNumber !== "string") {
-      return fail(origin, 503, "INVALID_BLOCK_NUMBER");
-    }
-
-    const latestBlocks = providers
-      .map((p) => p.latestBlock)
-      .filter((b): b is string => typeof b === "string");
-
-    if (latestBlocks.length === 0) {
-      return fail(origin, 503, "CHAIN_HEAD_UNAVAILABLE");
-    }
-
-    const latestBlock = latestBlocks[0];
-    if (!/^0x[0-9a-f]+$/i.test(latestBlock) || !/^0x[0-9a-f]+$/i.test(receipt.blockNumber)) {
-      return fail(origin, 503, "INVALID_BLOCK_HEX");
-    }
-
-    const confirmationCount =
-      hexToBigInt(latestBlock) - hexToBigInt(receipt.blockNumber);
-
-    if (confirmationCount < MIN_CONFIRMATIONS) {
-      return fail(origin, 202, "PENDING");
-    }
-  } else if (isSolanaSignature) {
+  if (isSolanaSignature) {
     const solanaVerification = await verifySolanaPayment(env, txHash, expectedPayer);
     if (!solanaVerification.ok) {
       return fail(
@@ -989,15 +945,15 @@ async function resolveCreatorIdentity(
       { expirationTtl: VERIFIED_PAYMENT_TTL_SEC }
     );
 
+    // Canonical intent -> evidence pointer (single key, no `:latest`
+    // suffix). `/api/capsule/seal` reads this ONE key to locate the
+    // server-persisted VerifiedPayment evidence for the intent. One
+    // paymentIntentId maps to at most one verified payment (enforced by
+    // global transaction uniqueness), so a "latest" suffix would be an
+    // orphan contract and is deliberately NOT written.
     await env.VERIFIED_PAYMENTS.put(
       `payment-intent:${paymentIntentId}`,
-      JSON.stringify({
-        paymentIntentId,
-        transactionId: txHash,
-        ok: true,
-        creatorIdentityId,
-        expiresAt,
-      }),
+      evidenceId,
       { expirationTtl: VERIFIED_PAYMENT_TTL_SEC }
     );
   } catch {

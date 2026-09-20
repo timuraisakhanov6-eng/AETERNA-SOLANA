@@ -239,6 +239,26 @@ describe("POST /api/heartbeat", () => {
   const capsuleId = "a".repeat(64);
   const fragment = "a".repeat(64);
 
+  /**
+   * F-2 — the authority token is stored as a SHA-256 digest of the
+   * fragment. This stub mirrors the canonical record shape so the
+   * fragment-verification step succeeds and each test reaches the
+   * guard it actually targets.
+   */
+  let fragmentDigestPromise: Promise<string> | null = null;
+  function fragmentDigest(): Promise<string> {
+    if (!fragmentDigestPromise) {
+      fragmentDigestPromise = crypto.subtle
+        .digest("SHA-256", new TextEncoder().encode(fragment))
+        .then((d) =>
+          Array.from(new Uint8Array(d))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("")
+        );
+    }
+    return fragmentDigestPromise;
+  }
+
   function manifestEnv(heartbeatInterval = 86400000) {
     return {
       HEARTBEAT_CONFIRMATIONS: undefined,
@@ -252,7 +272,8 @@ describe("POST /api/heartbeat", () => {
           }),
       },
       AUTHORITY_TOKENS: {
-        get: async () => fragment,
+        get: async () =>
+          JSON.stringify({ digest: await fragmentDigest() }),
       },
     };
   }

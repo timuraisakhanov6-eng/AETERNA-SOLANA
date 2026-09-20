@@ -50,7 +50,7 @@ function constantTimeHexEqual(
  * === manifest.ext.vaultSha256
  */
 export async function verifyVaultSha256(
-  ciphertextVaultBytes: Uint8Array,
+  ciphertextVaultBytes: Uint8Array<ArrayBuffer>,
   manifestVaultSha256: string
 ): Promise<void> {
 

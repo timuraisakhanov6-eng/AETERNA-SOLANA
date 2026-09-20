@@ -191,6 +191,28 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     }
   }
 
+  /**
+   * Canonical payment binding (server-derived).
+   *
+   * The payment intent identifier is derived EXCLUSIVELY from the
+   * server-persisted credit record's quote binding — the Credit Record
+   * canonically carries "quote/payment binding identifiers"
+   * (Finalization/Publication/Seal/Recovery Runtime Interface Spec §5.1).
+   * It is NEVER taken from the client.
+   *
+   * This is what allows /api/upload-token (and therefore /api/capsule/seal)
+   * to resolve the SAME server-persisted VerifiedPayment evidence for this
+   * flow, without trusting any client-supplied identifier and without
+   * re-reading the Business Quote after successful verification.
+   *
+   * A missing binding is carried as null and fails closed downstream.
+   */
+  const derivedPaymentIntentId =
+    typeof creditRecord.quoteId === "string" &&
+    creditRecord.quoteId.trim().length > 0
+      ? creditRecord.quoteId.trim()
+      : null;
+
   if (creditRecord.status === "CONSUMING") {
     const coordinatorId = bindings.CREDIT_OP_COORDINATOR.idFromName(creatorCreditId);
     const coordinator = bindings.CREDIT_OP_COORDINATOR.get(coordinatorId);
@@ -204,6 +226,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
           creatorIdentityId,
           lifecycleId,
           capsuleId,
+          paymentIntentId: derivedPaymentIntentId,
         }),
       })
     );
@@ -223,6 +246,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
         creatorIdentityId,
         lifecycleId,
         capsuleId,
+        paymentIntentId: derivedPaymentIntentId,
       }),
     })
   );

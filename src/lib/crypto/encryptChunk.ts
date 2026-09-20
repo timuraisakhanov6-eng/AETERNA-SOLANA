@@ -169,7 +169,7 @@ export async function encryptChunk(
   baseIV: Uint8Array,
   index: number,
   capsuleId: string
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
 
   let payload: Uint8Array | null = null;
 

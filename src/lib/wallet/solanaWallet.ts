@@ -293,7 +293,15 @@ export interface SendSolanaUSDCPaymentOptions {
   readonly destination?: string
   readonly amountAtomic?: string
   readonly publicKey?: string
-  readonly signAndSendTransaction?: (
+  /**
+   * REQUIRED.
+   *
+   * AETERNA signs and sends EXCLUSIVELY through the wallet-adapter callback:
+   * the application never holds a signing key and never opens a browser-side
+   * Solana RPC connection of its own. There is deliberately no fallback
+   * signing/sending path.
+   */
+  readonly signAndSendTransaction: (
     transaction: import("@solana/web3.js").Transaction | import("@solana/web3.js").VersionedTransaction
   ) => Promise<{ signature: string }>
   readonly getSignatureStatus?: (
@@ -305,9 +313,9 @@ export async function sendSolanaUSDCPayment({
   destination = AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS,
   amountAtomic = "1000000",
   publicKey: publicKeyOption,
-  signAndSendTransaction: signAndSendOption,
+  signAndSendTransaction,
   getSignatureStatus: getSignatureStatusOption,
-}: SendSolanaUSDCPaymentOptions = {}): Promise<string> {
+}: SendSolanaUSDCPaymentOptions): Promise<string> {
   const web3 = await import("@solana/web3.js")
   const { Transaction, PublicKey } = web3
   const spl = await import("@solana/spl-token")
@@ -317,21 +325,23 @@ export async function sendSolanaUSDCPayment({
     TOKEN_PROGRAM_ID,
   } = spl
 
-  let publicKey = publicKeyOption
-  if (!publicKey && signAndSendOption) {
-    throw new Error("publicKey is required when using signAndSendTransaction")
+  /**
+   * Fail-closed contract guard — never a ReferenceError.
+   *
+   * `signAndSendTransaction` is a REQUIRED contract, but a JavaScript caller
+   * can still pass anything. A missing / non-function callback is rejected
+   * with an explicit typed error BEFORE any transaction is built, so a broken
+   * caller fails loudly and early instead of reaching an undefined symbol.
+   */
+  if (typeof signAndSendTransaction !== "function") {
+    throw new Error(
+      "signAndSendTransaction is required: AETERNA signs and sends through the wallet adapter only"
+    )
   }
 
-  if (!signAndSendOption) {
-    const adapter = await connectSolanaWallet()
-    publicKey = adapter.getPublicKey() ?? publicKey
-    if (!publicKey) {
-      throw new Error("Solana wallet is not connected")
-    }
-  }
-
+  const publicKey = publicKeyOption
   if (!publicKey) {
-    throw new Error("Solana wallet public key is required")
+    throw new Error("publicKey is required when using signAndSendTransaction")
   }
 
   const payer = new PublicKey(publicKey)
@@ -386,20 +396,14 @@ export async function sendSolanaUSDCPayment({
     transaction.lastValidBlockHeight = blockhashData.lastValidBlockHeight
   }
 
-  if (signAndSendOption) {
-    const result = await signAndSendOption(transaction)
-    if (!result?.signature) {
-      throw new Error("No transaction signature from wallet.")
-    }
-
-    if (getSignatureStatusOption) {
-      await waitForSignatureStatus(result.signature, getSignatureStatusOption)
-    }
-
-    return result.signature
+  const result = await signAndSendTransaction(transaction)
+  if (!result?.signature) {
+    throw new Error("No transaction signature from wallet.")
   }
 
-  const signedTransaction = (await connectSolanaWallet().then(adapter => adapter.signTransaction(transaction))) as { serialize: () => Uint8Array }
-  const signature = await connection.sendRawTransaction(signedTransaction.serialize())
-  return signature
+  if (getSignatureStatusOption) {
+    await waitForSignatureStatus(result.signature, getSignatureStatusOption)
+  }
+
+  return result.signature
 }

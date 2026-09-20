@@ -13,7 +13,7 @@ export interface ByteRuntime {
     getBytes(
         start: number,
         end: number,
-    ): Promise<Uint8Array>;
+    ): Promise<Uint8Array<ArrayBuffer>>;
 
     /**
      * Releases all runtime-owned resources.

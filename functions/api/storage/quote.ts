@@ -69,7 +69,14 @@ function isAllowedOrigin(origin: string): boolean {
     const url = new URL(origin);
     if (
       url.protocol === "https:" &&
-      (PAGES_PREVIEW_REGEX.test(url.hostname) || NEW_PAGES_PREVIEW_REGEX.test(url.hostname))
+      // Canonical symbol for THIS endpoint: PAGES_PREVIEW_REGEX (declared
+      // above). The previous reference to NEW_PAGES_PREVIEW_REGEX was a stray
+      // copy from service-payment/verify.ts, which owns a different preview
+      // allowlist; it was undefined here and its ReferenceError was swallowed
+      // by the catch below (so the origin was already rejected). Do not
+      // re-introduce it, and do not duplicate that regex here: this endpoint's
+      // preview policy is unchanged.
+      PAGES_PREVIEW_REGEX.test(url.hostname)
     )
       return true;
     if (LOCALHOST_REGEX.test(origin)) return true;

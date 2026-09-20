@@ -999,14 +999,20 @@ export async function sealCapsuleCore(
         nowUtc.nowUtc
       );
 
+    /**
+     * Canonical heartbeatInterval (Complete System Logic, "Heartbeat
+     * Specification"; ManifestV1.heartbeatInterval is UtcMs).
+     *
+     * The value is the RAW originally-selected opening interval
+     * (openAt - sealedAt) in UTC MILLISECONDS, fixed at sealing time.
+     *
+     * There is deliberately NO division by 60000, NO rounding, and NO
+     * Math.max(1, …) clamp: the previous minutes conversion contradicted
+     * the canonical millisecond semantics and produced a value below the
+     * canonical lower bound (1 day) enforced by the seal endpoint.
+     */
     const heartbeatInterval =
-      Math.max(
-        1,
-        Math.floor(
-          (openAt - sealedAt) /
-            60000
-        )
-      ) as HeartbeatInterval;
+      (openAt - sealedAt) as HeartbeatInterval;
 
     /**
      * Vault upload with lost-response retry cache.

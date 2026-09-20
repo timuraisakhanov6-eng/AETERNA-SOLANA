@@ -18,7 +18,7 @@ function isDetachedBuffer(
 }
 
 export async function sha256(
-  data: Uint8Array
+  data: Uint8Array<ArrayBuffer>
 ): Promise<string> {
 
   let bytes: Uint8Array | null = null;

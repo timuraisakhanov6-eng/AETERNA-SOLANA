@@ -319,7 +319,7 @@ export interface StorageAdapter {
 
   download(
     pointer: StoragePointer
-  ): Promise<Uint8Array>;
+  ): Promise<Uint8Array<ArrayBuffer>>;
 
 
   /* =========================

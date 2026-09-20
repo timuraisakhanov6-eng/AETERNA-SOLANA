@@ -197,11 +197,28 @@ export const onRequestPost = async (
     return fail(origin, 403);
   }
 
+  /**
+   * Canonical payment binding (server-authoritative).
+   *
+   * The intent is derived EXCLUSIVELY from the server-persisted credit
+   * record's payment binding (Credit Record carries "quote/payment binding
+   * identifiers" — Finalization/Publication/Seal/Recovery Runtime Interface
+   * Spec §5.1). A client-supplied paymentIntentId is a HINT only: it is
+   * accepted only when it MATCHES the server value, and any mismatch fails
+   * closed. The server value — never the client value — is what is persisted
+   * on the upload token, so /api/capsule/seal resolves the SAME
+   * server-persisted VerifiedPayment evidence without trusting client input.
+   */
+  const serverPaymentIntentId =
+    typeof credit.paymentIntentId === "string" &&
+    credit.paymentIntentId.trim().length > 0
+      ? credit.paymentIntentId.trim()
+      : null;
+
   if (
     typeof paymentIntentId === "string" &&
     paymentIntentId.trim().length > 0 &&
-    typeof credit.paymentIntentId === "string" &&
-    credit.paymentIntentId !== paymentIntentId.trim()
+    paymentIntentId.trim() !== serverPaymentIntentId
   ) {
     return fail(origin, 403);
   }
@@ -264,9 +281,7 @@ export const onRequestPost = async (
       JSON.stringify({
         canonicalLifecycleId,
         creatorIdentityId,
-        paymentIntentId: paymentIntentId
-          ? String(paymentIntentId).trim()
-          : credit.paymentIntentId ?? null,
+        paymentIntentId: serverPaymentIntentId,
         correlationTransactionId: correlationTransactionId ?? "",
         issuedAt: now,
         expiresAt,

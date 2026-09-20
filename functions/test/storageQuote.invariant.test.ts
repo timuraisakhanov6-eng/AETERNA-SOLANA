@@ -3,6 +3,87 @@
  */
 
 import { describe, it, expect } from "vitest";
+import {
+  createFakeKV,
+  createFakeRequest,
+  makeEventContext,
+} from "./harness";
+import { onRequestPost as storageQuotePost } from "./../api/storage/quote";
+
+/* ───────────────── real-handler origin gate ─────────────────
+ *
+ * Regression guard for functions/api/storage/quote.ts:72.
+ *
+ * That line referenced NEW_PAGES_PREVIEW_REGEX, which is declared ONLY in
+ * service-payment/verify.ts (a different preview allowlist). The symbol was
+ * undefined here and its ReferenceError was swallowed by the enclosing
+ * try/catch, so the origin was silently rejected. The fix removes the stray
+ * clause and relies on this endpoint's own PAGES_PREVIEW_REGEX.
+ *
+ * This endpoint's preview policy is therefore exactly ONE host family
+ * (*.aeterna-capsule.pages.dev). These tests pin that policy against the
+ * real handler: they would fail if the btt host were ever allowed here by
+ * duplicating verify.ts's regex.
+ */
+
+function buildQuoteEnv() {
+  return {
+    PREPARED_PROJECTIONS: { get: async () => null },
+    STORAGE_QUOTES: createFakeKV(),
+  };
+}
+
+function quoteContext(origin: string, env: unknown) {
+  const request = createFakeRequest({
+    headers: {
+      origin,
+      "content-type": "application/json",
+    },
+    body: {
+      creatorIdentityId: "creator-1",
+      lifecycleId: "lifecycle-1",
+      capsuleId: "a".repeat(64),
+      preparedProjectionId: "prep-1",
+    },
+  });
+  return makeEventContext({ request, env: env as never });
+}
+
+const postStorageQuote = storageQuotePost as unknown as (
+  ctx: unknown
+) => Promise<Response>;
+
+describe("Storage Quote origin policy (real handler)", () => {
+  it("accepts this endpoint's own preview host family", async () => {
+    const res = await postStorageQuote(
+      quoteContext("https://feature-x.aeterna-capsule.pages.dev", buildQuoteEnv())
+    );
+
+    // The origin gate passed; the request then fails later on the missing
+    // projection (404), which is expected. It must NOT be a 403.
+    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects an unknown origin fail-closed", async () => {
+    const res = await postStorageQuote(
+      quoteContext("https://evil.example", buildQuoteEnv())
+    );
+
+    expect(res.status).toBe(403);
+  });
+
+  it("does not extend this endpoint's preview policy to the btt host", async () => {
+    const res = await postStorageQuote(
+      quoteContext(
+        "https://feature-x.aeterna-solana-btt.pages.dev",
+        buildQuoteEnv()
+      )
+    );
+
+    expect(res.status).toBe(403);
+  });
+});
 
 describe("Storage Quote schema / invariants", () => {
   it("requires immutable fields after creation", () => {

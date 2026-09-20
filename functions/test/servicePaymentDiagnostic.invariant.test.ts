@@ -3,6 +3,23 @@ import { createFakeRequest, makeEventContext, createFakeCreditCoordinatorBinding
 import { onRequestPost as servicePaymentVerifyPost } from "./../api/service-payment/verify";
 import * as solanaRpc from "./../lib/solana/rpc";
 
+/**
+ * Response shape for the 402 service-payment diagnostic assertions.
+ *
+ * Replaces a `Record<string, any>` assertion so the payload accessors
+ * below stay typed without an explicit `any`.
+ */
+type ServicePaymentDiagnosticPayload = {
+  ok?: boolean;
+  error?: string;
+  diagnostic: {
+    hasMetaErr?: boolean;
+    metaErr?: unknown;
+    balances: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+};
+
 /*
  * TEMPORARY DIAGNOSTIC invariants.
  *
@@ -158,7 +175,7 @@ describe("Service payment TX_FAILED diagnostic invariants", () => {
     const res = await requestVerifyWithSolanaSignature();
 
     expect(res.status).toBe(402);
-    const payload = (await res.json()) as Record<string, any>;
+    const payload = (await res.json()) as ServicePaymentDiagnosticPayload;
     expect(payload.ok).toBe(false);
     expect(payload.error).toBe("TX_FAILED");
     expect(payload.diagnostic).toBeDefined();
@@ -236,7 +253,7 @@ describe("Service payment TX_FAILED diagnostic invariants", () => {
     const res = await requestVerifyWithSolanaSignature();
 
     expect(res.status).toBe(402);
-    const payload = (await res.json()) as Record<string, any>;
+    const payload = (await res.json()) as ServicePaymentDiagnosticPayload;
     expect(payload.error).toBe("TX_FAILED");
     expect(payload.diagnostic.hasMetaErr).toBe(true);
     expect(payload.diagnostic.metaErr).toBe("InsufficientFundsForFee");

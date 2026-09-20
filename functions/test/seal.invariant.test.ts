@@ -10,6 +10,20 @@ import { onRequestPost as sealPostRaw } from "./../api/capsule/seal";
 
 const ALLOWED_ORIGIN = "https://aeternacapsule.com";
 
+/**
+ * F-2 — expected server-side authority digest for a fragment.
+ * Mirrors the canonical seal.ts write: SHA-256 over the UTF-8 bytes.
+ */
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value)
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 interface SealEnv {
   CAPSULE_MANIFESTS: ReturnType<typeof createFakeKV>;
   VERIFIED_PAYMENTS: ReturnType<typeof createFakeKV>;
@@ -91,7 +105,7 @@ function seedVerifiedPayment(
     })
   );
   kv.put(
-    `payment-intent:${paymentIntentId}:latest`,
+    `payment-intent:${paymentIntentId}`,
     evidenceId
   );
 }
@@ -204,12 +218,20 @@ describe("Seal-Once invariants", () => {
     expect(stored).toBeTruthy();
     expect(JSON.parse(stored!)).toEqual(manifest);
 
-    expect(await env.AUTHORITY_TOKENS.get(capsuleId)).toBe(
-      JSON.stringify({ fragment: creatorAuthorityFragment })
+    /**
+     * F-2 — the authority token is persisted as a SHA-256 DIGEST of the
+     * fragment, never as the plaintext fragment.
+     */
+    const storedAuthority = await env.AUTHORITY_TOKENS.get(capsuleId);
+    expect(storedAuthority).toBe(
+      JSON.stringify({
+        digest: await sha256Hex(creatorAuthorityFragment),
+      })
     );
+    expect(storedAuthority).not.toContain(creatorAuthorityFragment);
 
     expect(await env.VERIFIED_PAYMENTS.get(`verified-payment:${paymentIntentId}:${evidenceId}`)).toBeNull();
-    expect(await env.VERIFIED_PAYMENTS.get(`payment-intent:${paymentIntentId}:latest`)).toBeNull();
+    expect(await env.VERIFIED_PAYMENTS.get(`payment-intent:${paymentIntentId}`)).toBeNull();
     expect(await env.UPLOAD_TOKENS.get(uploadToken)).toBeNull();
   });
 
@@ -353,10 +375,11 @@ describe("Seal-Once invariants", () => {
 
     const env = buildSealEnv();
     await env.CAPSULE_MANIFESTS.put(capsuleId, JSON.stringify(original));
-    await env.AUTHORITY_TOKENS.put(
-      capsuleId,
-      JSON.stringify({ fragment: "original-fragment" })
-    );
+    // F-2 — the persisted authority record is a digest, not a fragment.
+    const originalAuthority = JSON.stringify({
+      digest: await sha256Hex("original-fragment"),
+    });
+    await env.AUTHORITY_TOKENS.put(capsuleId, originalAuthority);
 
     const body = {
       uploadToken: "a".repeat(32),
@@ -369,7 +392,7 @@ describe("Seal-Once invariants", () => {
 
     expect(res.status).toBe(409);
     expect(await env.AUTHORITY_TOKENS.get(capsuleId)).toBe(
-      JSON.stringify({ fragment: "original-fragment" })
+      originalAuthority
     );
   });
 
@@ -430,7 +453,7 @@ describe("Seal-Once invariants", () => {
   it("PAYMENT AUTHORIZATION: rejects invalid payment record", async () => {
     const env = buildSealEnv();
     const evidenceId = "evidence-1";
-    env.VERIFIED_PAYMENTS.put(`payment-intent:intent-1:latest`, evidenceId);
+    env.VERIFIED_PAYMENTS.put(`payment-intent:intent-1`, evidenceId);
     env.VERIFIED_PAYMENTS.put(
       `verified-payment:intent-1:${evidenceId}`,
       JSON.stringify({ ok: false })
@@ -480,6 +503,214 @@ describe("Seal-Once invariants", () => {
     const context = buildSealContext(env, body);
     const res = await sealPost(context);
     expect(res.status).toBe(402);
+  });
+
+  it("PAYMENT AUTHORITY: absent intent->evidence pointer fails closed", async () => {
+    const env = buildSealEnv();
+    // The verified payment record exists, but the canonical intent->evidence
+    // pointer does NOT. Seal must not guess which evidence belongs to the
+    // intent, and must fail closed.
+    env.VERIFIED_PAYMENTS.put(
+      `verified-payment:intent-1:evidence-1`,
+      JSON.stringify({
+        ok: true,
+        paymentIntentId: "intent-1",
+        transactionId: "evidence-1",
+        expiresAt: Date.now() + 60_000,
+      })
+    );
+    const uploadToken = seedUploadToken(
+      env.UPLOAD_TOKENS,
+      "intent-1",
+      "lifecycle-1",
+      "creator-1",
+      "a".repeat(32)
+    );
+
+    const body = {
+      uploadToken,
+      manifest: validManifest("a".repeat(64), "a".repeat(43), Date.now(), Date.now() + 1000, 1024),
+      creatorAuthorityFragment: "a".repeat(64),
+    };
+
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+  });
+
+  it("PAYMENT AUTHORITY: mismatched intent->evidence pointer fails closed", async () => {
+    const env = buildSealEnv();
+    // The pointer names evidence-other, but only evidence-1 exists for this
+    // intent: a substituted pointer must not resolve to a valid payment.
+    env.VERIFIED_PAYMENTS.put(`payment-intent:intent-1`, "evidence-other");
+    env.VERIFIED_PAYMENTS.put(
+      `verified-payment:intent-1:evidence-1`,
+      JSON.stringify({
+        ok: true,
+        paymentIntentId: "intent-1",
+        transactionId: "evidence-1",
+        expiresAt: Date.now() + 60_000,
+      })
+    );
+    const uploadToken = seedUploadToken(
+      env.UPLOAD_TOKENS,
+      "intent-1",
+      "lifecycle-1",
+      "creator-1",
+      "a".repeat(32)
+    );
+
+    const body = {
+      uploadToken,
+      manifest: validManifest("a".repeat(64), "a".repeat(43), Date.now(), Date.now() + 1000, 1024),
+      creatorAuthorityFragment: "a".repeat(64),
+    };
+
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+  });
+
+  it("PAYMENT AUTHORITY: successful verification authorizes seal even with NO Business Quote", async () => {
+    stubVaultFetch();
+
+    const capsuleId = "a".repeat(64);
+    const vaultTxId = "a".repeat(43);
+    const sealedAt = Date.now();
+    const openAt = sealedAt + 1000;
+    const manifest = validManifest(capsuleId, vaultTxId, sealedAt, openAt, 1024);
+    const paymentIntentId = "intent-1";
+    const evidenceId = "evidence-1";
+
+    const env = buildSealEnv({ PUBLICATION_VERIFICATIONS: createFakeKV() });
+    env.PUBLICATION_VERIFICATIONS!.put(
+      `creator:publication:lifecycle-1`,
+      JSON.stringify({
+        lifecycleId: "lifecycle-1",
+        capsuleId,
+        creatorIdentityId: "creator-1",
+        state: "VERIFIED",
+        expectedTxId: vaultTxId,
+        expectedVaultSha256: manifest.ext.vaultSha256,
+        evidenceIds: [vaultTxId],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        verifiedAt: Date.now(),
+      })
+    );
+
+    // BUSINESS_QUOTES is deliberately left EMPTY. The Business Quote TTL gates
+    // payment verification only; a later quote expiry (or its complete
+    // absence) must NOT invalidate the VerifiedPayment / Credit / seal
+    // authority.
+    seedVerifiedPayment(
+      env.VERIFIED_PAYMENTS,
+      paymentIntentId,
+      evidenceId,
+      Date.now() + 60_000
+    );
+    const uploadToken = seedUploadToken(
+      env.UPLOAD_TOKENS,
+      paymentIntentId,
+      "lifecycle-1",
+      "creator-1",
+      "a".repeat(32)
+    );
+
+    const body = {
+      uploadToken,
+      manifest,
+      creatorAuthorityFragment: "a".repeat(64),
+    };
+
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(200);
+    expect(await env.CAPSULE_MANIFESTS.get(capsuleId)).toBeTruthy();
+  });
+
+  it("HEARTBEAT UNITS: server accepts canonical milliseconds and rejects minutes", async () => {
+    // 1. Canonical MILLISECONDS (1 day) is accepted end-to-end.
+    {
+      stubVaultFetch();
+
+      const capsuleId = "a".repeat(64);
+      const vaultTxId = "a".repeat(43);
+      const sealedAt = Date.now();
+      const manifest = validManifest(capsuleId, vaultTxId, sealedAt, sealedAt + 1000, 1024);
+      expect(manifest.heartbeatInterval).toBe(86_400_000);
+
+      const env = buildSealEnv({ PUBLICATION_VERIFICATIONS: createFakeKV() });
+      env.PUBLICATION_VERIFICATIONS!.put(
+        `creator:publication:lifecycle-1`,
+        JSON.stringify({
+          lifecycleId: "lifecycle-1",
+          capsuleId,
+          creatorIdentityId: "creator-1",
+          state: "VERIFIED",
+          expectedTxId: vaultTxId,
+          expectedVaultSha256: manifest.ext.vaultSha256,
+          evidenceIds: [vaultTxId],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          verifiedAt: Date.now(),
+        })
+      );
+      seedVerifiedPayment(
+        env.VERIFIED_PAYMENTS,
+        "intent-1",
+        "evidence-1",
+        Date.now() + 60_000
+      );
+      const uploadToken = seedUploadToken(
+        env.UPLOAD_TOKENS,
+        "intent-1",
+        "lifecycle-1",
+        "creator-1",
+        "a".repeat(32)
+      );
+
+      const res = await sealPost(
+        buildSealContext(env, {
+          uploadToken,
+          manifest,
+          creatorAuthorityFragment: "a".repeat(64),
+        })
+      );
+      expect(res.status).toBe(200);
+      expect(await env.CAPSULE_MANIFESTS.get(capsuleId)).toBeTruthy();
+    }
+
+    // 2. The pre-fix MINUTES shape (7 days -> 10080) is rejected fail-closed.
+    {
+      const capsuleId = "a".repeat(64);
+      const vaultTxId = "a".repeat(43);
+      const sealedAt = Date.now();
+      const manifest = {
+        ...validManifest(capsuleId, vaultTxId, sealedAt, sealedAt + 1000, 1024),
+        heartbeatInterval: 10080,
+      };
+
+      const env = buildSealEnv();
+      const uploadToken = seedUploadToken(
+        env.UPLOAD_TOKENS,
+        "intent-1",
+        "lifecycle-1",
+        "creator-1",
+        "a".repeat(32)
+      );
+
+      const res = await sealPost(
+        buildSealContext(env, {
+          uploadToken,
+          manifest,
+          creatorAuthorityFragment: "a".repeat(64),
+        })
+      );
+
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error?: string }).error).toBe(
+        "INVALID_HEARTBEAT"
+      );
+      expect(await env.CAPSULE_MANIFESTS.get(capsuleId)).toBeNull();
+    }
   });
 
   it("FAIL-CLOSED: rejects when CAPSULE_MANIFESTS binding missing", async () => {

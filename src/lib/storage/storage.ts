@@ -192,7 +192,7 @@ export async function download(
 
   txId: StoragePointer
 
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
 
   assertStoragePointer(txId);
 

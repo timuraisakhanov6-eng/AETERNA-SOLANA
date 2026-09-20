@@ -89,7 +89,7 @@ export interface MediaSession {
     read(
         start: number,
         end: number,
-    ): Promise<Uint8Array>;
+    ): Promise<Uint8Array<ArrayBuffer>>;
 
     /**
      * Releases all Runtime-owned resources.

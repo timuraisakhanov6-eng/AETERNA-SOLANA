@@ -26,7 +26,7 @@ const encoder =
 /**
  * strict hex → bytes
  */
-function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
 
   if (hex.length % 2 !== 0) {
     cryptoError();
@@ -95,7 +95,7 @@ function buildSaltMaterial(
   saltBase: string,
   openAt: number,
   capsuleId: string,
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
 
   const domain = encoder.encode(
     DOMAIN_VAULT_SALT
@@ -219,7 +219,7 @@ export async function generateVaultKey(params: {
   }
 
   let saltMaterial:
-    Uint8Array | null = null;
+    Uint8Array<ArrayBuffer> | null = null;
 
   let salt:
     Uint8Array | null = null;
@@ -227,10 +227,10 @@ export async function generateVaultKey(params: {
   // Tracked for wipe — holds DOMAIN_VAULT_KEY || saltHash before
   // the second SHA-256 digest. Must be zeroed on all exit paths.
   let combined:
-    Uint8Array | null = null;
+    Uint8Array<ArrayBuffer> | null = null;
 
   let pbkdfSalt:
-    Uint8Array | null = null;
+    Uint8Array<ArrayBuffer> | null = null;
 
   try {
 

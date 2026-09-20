@@ -61,7 +61,7 @@ function isCryptoKey(
 function buildChunkAAD(
   capsuleId: string,
   index: number
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
 
   if (
     typeof DOMAIN_CHUNK_AAD !== "string" ||
@@ -139,13 +139,13 @@ function buildChunkAAD(
 
 
 export async function decryptChunk(
-  payload: Uint8Array,
+  payload: Uint8Array<ArrayBuffer>,
   key: CryptoKey,
   index: number,
   capsuleId: string
 ): Promise<Uint8Array> {
 
-  let aad: Uint8Array | null = null;
+  let aad: Uint8Array<ArrayBuffer> | null = null;
 
   let decrypted: Uint8Array | null = null;
 

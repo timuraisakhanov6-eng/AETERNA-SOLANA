@@ -90,8 +90,24 @@ type LocationState = Readonly<{
 // Every field that downstream STEP 4 integrity guards / sealCapsuleCore
 // rely on must be validated here — a partially-valid object would
 // otherwise pass through and fail later with a less clear error.
+//
+// F-5 — IDENTITY BINDING.
+//
+// The payload is a RECOVERY record for one specific capsule, so the
+// record's capsuleId is bound to the route capsuleId that the caller
+// is currently recovering. A shape-only check would accept a
+// same-origin record belonging to a DIFFERENT capsule (poisoned,
+// stale, or left over from another identity) and fold another
+// capsule's secret material into this runtime. Any mismatch fails
+// closed — the caller then falls back to the fail-closed guard in
+// CapsuleHold and re-preparation is permitted, exactly as when no
+// record exists at all.
+//
+// Mirrors the identity binding already enforced by
+// CapsuleBuilder.restorePreparedFromSession().
 function isValidSessionCapsuleData(
-  parsed: unknown
+  parsed: unknown,
+  expectedCapsuleId: string
 ): parsed is SessionCapsuleData {
 
   if (!parsed || typeof parsed !== "object") return false;
@@ -120,6 +136,10 @@ function isValidSessionCapsuleData(
     typeof p.capsuleId === "string" &&
     CAPSULE_ID_REGEX.test(p.capsuleId) &&
 
+    // F-5 — identity binding: the record must belong to the capsule
+    // being recovered, not merely be a structurally valid record.
+    p.capsuleId === expectedCapsuleId &&
+
     Number.isSafeInteger(p.openAt) &&
 
     Array.isArray(p.itemIds) &&
@@ -145,7 +165,7 @@ export default function CapsuleHold() {
 
   const location = useLocation();
 
-  const { resetCapsule } = useCapsule();
+  const { resetCapsule, capsuleId: sessionCapsuleId } = useCapsule();
 
   // resetCapsule is recreated on every provider render; the seal effect
   // must never re-run on those renders, so keep it behind a stable ref.
@@ -256,7 +276,15 @@ export default function CapsuleHold() {
         const saved = sessionStorage.getItem("aeterna-prepared-capsule");
         if (saved) {
           const parsed: unknown = JSON.parse(saved);
-          if (isValidSessionCapsuleData(parsed)) {
+          // F-5 — the recovery record must be bound to the capsule this
+          // creator session is actually working on. A record belonging
+          // to any other capsuleId is not usable here and fails closed.
+          if (
+            isValidSessionCapsuleData(
+              parsed,
+              sessionCapsuleId
+            )
+          ) {
             resolved = {
               billableSizeBytes: parsed.billableSizeBytes,
               expectedAmount: parsed.expectedAmount,
@@ -486,8 +514,14 @@ export default function CapsuleHold() {
                 },
                 body:
                   JSON.stringify({
-                    capsuleId:
-                      holdState.prepared.capsuleId,
+                    // Canonical upload-token contract
+                    // (functions/api/upload-token.ts ALLOWED_BODY_FIELDS):
+                    // the creator is identified by creatorIdentityId, NOT by
+                    // capsuleId. The endpoint resolves capsule/lifecycle
+                    // authority server-side from the CONSUMING Creator
+                    // Credit; a client-supplied capsuleId is neither
+                    // accepted nor authority.
+                    creatorIdentityId,
                     canonicalLifecycleId,
                     correlationTransactionId:
                       correlationTransactionId ?? "",

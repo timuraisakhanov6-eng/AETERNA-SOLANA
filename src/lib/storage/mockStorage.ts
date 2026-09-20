@@ -317,7 +317,7 @@ StorageAdapter & {
 
   async download(
     pointer: StoragePointer
-  ): Promise<Uint8Array> {
+  ): Promise<Uint8Array<ArrayBuffer>> {
 
     assertStoragePointer(pointer);
 

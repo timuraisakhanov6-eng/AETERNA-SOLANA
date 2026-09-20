@@ -746,7 +746,7 @@ function createEmergencyMediaSession(args: {
 
   let disposed = false;
 
-  const read = async (start: number, end: number): Promise<Uint8Array> => {
+  const read = async (start: number, end: number): Promise<Uint8Array<ArrayBuffer>> => {
     if (disposed) {
       throw new Error(
         "Emergency media session has been disposed.",
@@ -954,7 +954,7 @@ function emergencyMediaSourceStream(args: {
               args.size,
             );
 
-            let bytes: Uint8Array;
+            let bytes: Uint8Array<ArrayBuffer>;
 
             try {
               bytes = await args.session.read(offset, end);

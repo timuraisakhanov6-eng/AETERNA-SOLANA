@@ -6,6 +6,8 @@
  * Protocol guarantees:
  * - creatorAuthorityFragment required (capability guard)
  * - fragment secret NEVER transmitted
+ * - only a SHA-256 DIGEST of the fragment is persisted server-side (F-2);
+ *   the plaintext fragment is never stored and never compared against
  * - trusted time enforced
  * - overwrite-only semantics with monotonic enforcement
  * - manifest immutability preserved
@@ -25,6 +27,25 @@ import {
 
 import { rateLimit, getClientIp } from "../lib/rateLimit";
 
+/**
+ * F-2 — SHA-256 digest of a UTF-8 string, lowercase hex.
+ *
+ * Local to this endpoint (mirrors the canonical helper pattern used by
+ * publication/verify.ts) so the comparison operates on a TextEncoder
+ * result directly, without crossing a realm-sensitive instanceof
+ * boundary.
+ */
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  let hex = "";
+  const view = new Uint8Array(digest);
+  for (let i = 0; i < view.length; i++) {
+    hex += view[i]!.toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
 
 type HeartbeatRecord = {
 
@@ -41,7 +62,7 @@ type HeartbeatRecord = {
 
 type AuthorityTokenRecord = {
 
-  fragment: string;
+  digest: string;
 
 };
 
@@ -243,6 +264,14 @@ export async function onRequestPost(
 
   /**
    * Parse and validate authority token record shape.
+   *
+   * F-2 — the stored value is a SHA-256 DIGEST of the creator authority
+   * fragment, never the fragment itself. The legacy plaintext shape
+   * (`fragment`) is deliberately NOT accepted: accepting it would
+   * preserve exactly the plaintext-at-rest weakness this hardening
+   * removes, and the canonical write path (seal.ts) emits the digest
+   * form. Anything that is neither a well-formed digest record nor a
+   * bare digest is rejected as an invalid fragment — fail closed.
    */
 
   let tokenRecord: AuthorityTokenRecord;
@@ -250,7 +279,7 @@ export async function onRequestPost(
   if (SHA256_REGEX.test(storedRaw)) {
 
     tokenRecord = {
-      fragment: storedRaw,
+      digest: storedRaw,
     };
 
   } else {
@@ -261,9 +290,9 @@ export async function onRequestPost(
         JSON.parse(storedRaw);
 
       if (
-        !isPlainObject(parsed)                ||
-        typeof parsed.fragment !== "string"   ||
-        !SHA256_REGEX.test(parsed.fragment)
+        !isPlainObject(parsed)               ||
+        typeof parsed.digest !== "string"    ||
+        !SHA256_REGEX.test(parsed.digest)
       ) {
 
         return new Response(
@@ -277,7 +306,7 @@ export async function onRequestPost(
       }
 
       tokenRecord = {
-        fragment: parsed.fragment,
+        digest: parsed.digest,
       };
 
     } catch {
@@ -295,12 +324,24 @@ export async function onRequestPost(
   }
 
   /**
-   * Fragment comparison — constant-time not available in this
-   * environment, but fragment is a 64-hex SHA-256 value so
-   * timing attacks here have negligible practical surface.
+   * Fragment verification.
+   *
+   * F-2 — the incoming fragment is HASHED and the DIGESTS are compared.
+   * The plaintext fragment is never compared against, and never
+   * persisted, server-side. Comparing digests is equivalent in
+   * authority terms to comparing the fragments (SHA-256 is injective
+   * over this domain) while removing the replayable plaintext copy.
+   *
+   * Constant-time comparison remains unavailable in this environment;
+   * both operands are 64-hex SHA-256 digests, so a timing side channel
+   * here would leak digest-prefix information rather than the
+   * capability itself.
    */
 
-  if (tokenRecord.fragment !== creatorAuthorityFragment) {
+  const incomingFragmentDigest =
+    await sha256Hex(creatorAuthorityFragment);
+
+  if (tokenRecord.digest !== incomingFragmentDigest) {
 
     return new Response(
       JSON.stringify({ ok: false, code: "INVALID_FRAGMENT" }),

@@ -37,7 +37,7 @@ export async function openAudio(
         async read(
             start: number,
             end: number,
-        ): Promise<Uint8Array> {
+        ): Promise<Uint8Array<ArrayBuffer>> {
 
             if (disposed) {
                 throw new Error(

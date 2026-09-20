@@ -101,7 +101,7 @@ export async function prepareMediaChunks(
             buffer
           );
 
-        let ciphertext: Uint8Array | null = null;
+        let ciphertext: Uint8Array<ArrayBuffer> | null = null;
 
         try {
 

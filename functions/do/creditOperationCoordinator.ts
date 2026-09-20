@@ -22,6 +22,19 @@ interface CreditRecord {
   status: "AVAILABLE" | "CONSUMING" | "CONSUMED";
   capsuleId: string;
   lifecycleId: string | null;
+  /**
+   * Canonical quote/payment binding identifier (Finalization/Publication/
+   * Seal/Recovery Runtime Interface Spec §5.1: the Credit Record carries
+   * "quote/payment binding identifiers").
+   *
+   * Server-derived only: set by handleReserve from the persisted credit
+   * record's quote binding. It is the link that lets the downstream upload
+   * token (and therefore /api/capsule/seal) resolve the SAME
+   * server-persisted VerifiedPayment evidence for this flow. Never
+   * accepted from the client. Optional for backward compatibility; a
+   * missing value fails closed downstream.
+   */
+  paymentIntentId?: string | null;
   revision: number;
   updatedAt: number;
 }
@@ -37,7 +50,7 @@ interface OpResult {
 }
 
 type Operation =
-  | { op: "reserve"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string }
+  | { op: "reserve"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; paymentIntentId?: string | null }
   | { op: "finalize"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationVerified: boolean; sealVerified: boolean }
   | { op: "recover"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationState: string; sealState: string }
   | { op: "vault-publication-claim"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; outcome?: string }
@@ -180,8 +193,19 @@ function failureResponse(error: string, status = 409, creditId = "", lifecycleId
   });
 }
 
+/**
+ * Normalizes a server-derived payment intent binding. A non-string or blank
+ * value yields null (never a fabricated identifier); downstream gates fail
+ * closed on null.
+ */
+function normalizePaymentIntentId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
 async function handleReserve(state: DurableObjectState, env: CoordinatorEnv, request: Operation & { op: "reserve" }): Promise<Response> {
-  const { creatorCreditId, creatorIdentityId, lifecycleId, capsuleId } = request;
+  const { creatorCreditId, creatorIdentityId, lifecycleId, capsuleId, paymentIntentId } = request;
 
   let credit = await getCreditRecord(state, creatorCreditId);
   const idempotencyKey = opKey(creatorCreditId, "reserve", lifecycleId);
@@ -206,6 +230,7 @@ async function handleReserve(state: DurableObjectState, env: CoordinatorEnv, req
       status: "AVAILABLE",
       capsuleId,
       lifecycleId: null,
+      paymentIntentId: normalizePaymentIntentId(paymentIntentId),
       revision: 1,
       updatedAt: now,
     };
@@ -278,6 +303,13 @@ async function handleReserve(state: DurableObjectState, env: CoordinatorEnv, req
     status: "CONSUMING",
     lifecycleId,
     capsuleId,
+    // Preserve the existing server-derived binding when the request omits it
+    // (e.g. an idempotent re-reserve after the KV credit record was already
+    // rewritten). Never overwrite a known binding with null.
+    paymentIntentId:
+      normalizePaymentIntentId(paymentIntentId) ??
+      credit.paymentIntentId ??
+      null,
     revision: credit.revision + 1,
     updatedAt: Date.now(),
   };

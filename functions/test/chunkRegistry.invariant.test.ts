@@ -12,11 +12,11 @@ import { openAudio } from "../../src/lib/capsule/open/openAudio";
 import { downloadFile } from "../../src/lib/capsule/open/downloadFile";
 
 interface FakeMediaSession {
-  read(_start: number, _end: number): Promise<Uint8Array>;
+  read(_start: number, _end: number): Promise<Uint8Array<ArrayBuffer>>;
   dispose(): void;
 }
 
-function createFakeSession(readImpl?: (_start: number, _end: number) => Promise<Uint8Array>): FakeMediaSession {
+function createFakeSession(readImpl?: (_start: number, _end: number) => Promise<Uint8Array<ArrayBuffer>>): FakeMediaSession {
   return {
     read: readImpl ?? (() => Promise.resolve(new Uint8Array())),
     dispose: () => {},

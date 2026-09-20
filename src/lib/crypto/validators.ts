@@ -39,14 +39,18 @@ export const CAPSULE_ID_REGEX =
  * MUST exist only in:
  * memory
  * URL fragment
+ * tab-scoped sessionStorage (recovery continuation ONLY — the
+ *   creator's prepared-capsule recovery record, which is required to
+ *   resume sealing after a reload, a browser interruption, or a
+ *   pending finalization; it is cleared once finalization completes)
  *
  * MUST NOT exist in:
- * sessionStorage
  * localStorage
  * IndexedDB
  * backend APIs
  * logs
  * analytics
+ * query parameters
  */
 export const SECRET_REGEX =
   Object.freeze(/^[a-f0-9]{64}$/);
