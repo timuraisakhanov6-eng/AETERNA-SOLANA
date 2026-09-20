@@ -1121,6 +1121,12 @@ Plaintext is never protocol authority.
 Plaintext must not become persistent Runtime state.
 Plaintext must not be retained beyond the minimum lifetime required for rendering or export.
 Execution Layer shall release decrypted memory as soon as practical.
+ByteRuntime decrypted-chunk cache shall remain bounded.
+Maximum retained decrypted chunks: 16.
+Maximum retained decrypted plaintext cache: 20 MiB.
+LRU eviction shall be enforced on both limits.
+Evicted decrypted buffers shall be zeroized.
+These are implementation bounds, not protocol wire-format invariants.
 
 Payment Failure Law
 If payment fails:
