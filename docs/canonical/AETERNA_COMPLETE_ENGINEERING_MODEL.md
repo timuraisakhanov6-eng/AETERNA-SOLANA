@@ -400,7 +400,7 @@ Canonical cryptographic parameters for this protocol version:
 
 Key derivation binding inputs: recipient secret, saltBase, openAt, capsuleId. Trusted Time is not a key derivation input.
 
-These values are implementation parameters, not protocol wire-format invariants.
+These values are compatibility-critical protocol invariants for this protocol version. They are not merely implementation-local settings and must remain synchronized with the canonical cryptographic specification.
 
 ---
 
