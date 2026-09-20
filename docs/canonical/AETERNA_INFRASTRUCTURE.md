@@ -207,6 +207,10 @@ Current active implementation:
 - Supported Solana-compatible wallet for Solana Mainnet / native USDC.
 - Base Mainnet / native USDC via minimal EIP-1193 browser provider is frozen and reserved for future activation.
 
+Model 01 wallet policy:
+- Phantom is the sole supported wallet provider at the UX/integration layer (see AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1).
+- If Phantom is absent, Create Capsule stops before the AETERNA service payment.
+
 Pending expansions:
 - Additional wallet/provider adapters may be added only through explicit canonical selection.
 

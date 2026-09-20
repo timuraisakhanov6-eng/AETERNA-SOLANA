@@ -63,7 +63,9 @@ The Wallet Provider layer is responsible for wallet-level capabilities
 required by the service payment flow.
 
 The concrete wallet provider, wallet protocol, blockchain, and signing
-mechanism are NOT YET SELECTED.
+mechanism are NOT selected at the protocol layer. (Model 01 selects Phantom
+as its sole supported wallet provider at the UX/integration layer; see
+AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1.)
 
 This document defines only the abstract capabilities the Wallet Provider
 MUST expose:
@@ -83,13 +85,18 @@ MUST expose:
 
 - The Wallet Provider layer MUST be replaceable without changing
   Creator Credit business rules.
-- The Wallet Provider layer MUST NOT be hardcoded to:
+- The Wallet Provider layer MUST NOT be hardcoded to any specific wallet
+  provider in a way that makes the layer itself provider-dependent:
   - MetaMask;
   - Reown;
   - WalletConnect;
   - Solana wallets;
   - EVM wallets;
   - any specific wallet provider.
+- Model 01 MAY restrict the supported wallet provider to Phantom as a
+  UX/integration policy (see AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1)
+  without violating this requirement, because the layer remains replaceable
+  and Creator Credit business rules are unchanged.
 - The concrete Wallet Provider selection belongs to a separate
   implementation decision.
 
@@ -332,7 +339,7 @@ This document does NOT promise:
 
 - one transaction;
 - one signature;
-- one wallet provider;
+- one wallet provider at the protocol layer (Model 01 intentionally supports a single wallet provider; see AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1);
 - instant Irys publication;
 
 until confirmed by the final implementation.
@@ -373,7 +380,7 @@ This document does not constitute legal advice.
 
 The following decisions remain unresolved:
 
-- wallet provider;
+- wallet provider (protocol layer; Model 01 resolved as Phantom-only);
 - wallet connection protocol;
 - wallet authentication/signing standard;
 - supported asset allowlist;

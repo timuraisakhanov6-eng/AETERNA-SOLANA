@@ -244,6 +244,10 @@ describe("PATCH-2M service-payment result batch race", () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    // Model 01 wallet policy: Phantom only. These scenarios exercise the
+    // existing create/payment flow, so a Phantom provider must be present
+    // for the Create Capsule gate to admit the flow.
+    (window as unknown as { phantom?: unknown }).phantom = { solana: {} };
     // jsdom's crypto lacks randomUUID on some Node 20 combinations; the
     // controller's requestQuote needs it. No-op when the API exists.
     if (typeof globalThis.crypto?.randomUUID !== "function") {
@@ -256,6 +260,7 @@ describe("PATCH-2M service-payment result batch race", () => {
 
   afterEach(() => {
     cleanup();
+    delete (window as unknown as { phantom?: unknown }).phantom;
     // clearAllMocks (NOT restoreAllMocks): call history must reset
     // between scenarios while the hoisted implementations survive.
     vi.clearAllMocks();

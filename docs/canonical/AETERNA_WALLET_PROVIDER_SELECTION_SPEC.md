@@ -77,6 +77,30 @@ Legacy frozen rail:
 - Minimal EIP-1193 browser provider for Base Mainnet / native USDC remains
   retained for future reactivation and is NOT the active canonical rail.
 
+### 4.1 Model 01 Wallet UX/Integration Policy
+
+Model 01 uses Phantom as the sole supported wallet provider at the wallet
+UX/integration layer.
+
+- The wallet selection UI is removed for Model 01.
+- If Phantom is not available, Create Capsule MUST stop before any AETERNA
+  service payment. No AETERNA payment, no Creator Credit, and no Irys action
+  may occur.
+- The user is directed to install Phantom. An official Phantom installation
+  link MAY be presented.
+- A referral link MAY be configured separately at a later time. Referral
+  handling is marketing/UI only and MUST NOT influence identity, payment
+  verification, Creator Credit, authority, Irys economics, crypto, or
+  lifecycle.
+- This is a Model 01 UX/integration policy, not a protocol-wide provider
+  selection. The underlying AeternaWallet abstraction, Creator Identity,
+  server verification, Creator Credit authority, payment verification, the
+  Irys boundary, and protocol semantics remain unchanged and
+  provider-neutral where architecturally applicable.
+- Wallet switching is not part of the Model 01 UX. One wallet/account MUST
+  remain bound from initial identity proof through final seal;
+  wallet/account mismatch MUST remain fail-closed.
+
 ## 5. PENDING WALLET/PROVIDER EXPANSIONS
 
 The following are NOT active canonical selections:
@@ -132,7 +156,7 @@ Future expansion:
 This document does NOT promise:
 - one transaction;
 - one signature;
-- one wallet provider;
+- one wallet provider at the protocol layer (Model 01 intentionally supports a single wallet provider; see §4.1);
 - instant Irys publication;
 
 until confirmed by the final implementation.
@@ -204,7 +228,7 @@ Wallet binding rule:
 
 The following remain unresolved:
 
-- Final wallet provider selection for initial launch.
+- Final wallet provider selection for initial launch: RESOLVED for Model 01 — Phantom only (§4.1). Future additional providers remain open.
 - Final wallet authentication/signing standard.
 - Final supported asset allowlist.
 - Exact Irys browser flow for AETERNA capsule pipeline.

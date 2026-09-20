@@ -11,6 +11,12 @@ import {
 } from "@/lib/payment/servicePaymentController";
 import type { ServicePaymentController } from "@/lib/payment/servicePaymentController";
 import {
+  PHANTOM_INSTALL_URL,
+  PHANTOM_REQUIRED_BODY,
+  PHANTOM_REQUIRED_TITLE,
+  isPhantomAvailable,
+} from "@/lib/wallet/phantomProvider";
+import {
   INITIAL_CREATE_FLOW_STATE,
   reduceCreateFlow,
 } from "@/components/capsule/capsuleCreateFlow";
@@ -499,6 +505,9 @@ export default function CapsuleBuilder() {
   const [pendingLifecycleId, setPendingLifecycleId] = useState<string | null>(null);
   const [storageReviewLoading, setStorageReviewLoading] = useState(false);
   const [servicePaymentError, setServicePaymentError] = useState<string | null>(null);
+  // Model 01 wallet policy: Phantom only. True when Create Capsule was
+  // clicked without a Phantom provider present. UX gate only.
+  const [phantomRequired, setPhantomRequired] = useState(false);
   // Final Capsule Review dialog visibility. storageReview (the canonical
   // quote record) is deliberately NOT cleared on close: the dialog can be
   // re-opened without a second quote while the quote stays valid.
@@ -751,6 +760,19 @@ export default function CapsuleBuilder() {
   // is reachable only after an authoritative NO-CREDIT discovery).
   const handleFirstCreateClick = () => {
     if (createFlowState !== "ready" && createFlowState !== "error") return;
+
+    // Model 01 wallet policy: Phantom only
+    // (docs/canonical/AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1).
+    // Stop BEFORE connect, SIWS, quote, the $1 payment, Creator Credit or
+    // any Irys action when Phantom is not available.
+    // UX gate only — the server remains the sole identity/payment authority.
+    if (!isPhantomAvailable()) {
+      setPhantomRequired(true);
+      setServicePaymentError(null);
+      return;
+    }
+
+    setPhantomRequired(false);
     setServicePaymentError(null);
     dispatchCreateFlow("CREATE_CLICKED");
 
@@ -1278,6 +1300,24 @@ export default function CapsuleBuilder() {
               {sealError && (
                 <div className="p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
                   {sealError}
+                </div>
+              )}
+
+              {phantomRequired && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-500 animate-in fade-in zoom-in-95 space-y-1"
+                >
+                  <p className="font-medium">{PHANTOM_REQUIRED_TITLE}</p>
+                  <p>{PHANTOM_REQUIRED_BODY}</p>
+                  <a
+                    href={PHANTOM_INSTALL_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline underline-offset-2"
+                  >
+                    Install Phantom
+                  </a>
                 </div>
               )}
 

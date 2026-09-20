@@ -80,11 +80,14 @@ This specification defines only the rule:
 The active Creator payment rail is Solana Mainnet with native USDC. Base is
 frozen/reserved and is not an active Creator payment rail.
 
-Do NOT hardcode:
+Do NOT hardcode any wallet provider into the Creator Credit business rules:
 - legacy Paddle;
 - legacy bank-card rails;
-- legacy Web3 provider assumptions;
-- any specific wallet provider.
+- legacy Web3 provider assumptions.
+Creator Credit rules MUST remain provider-independent. A Model 01
+UX/integration policy MAY restrict the supported wallet provider (see
+AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1) without changing Creator
+Credit authority or issuance.
 
 Use an abstract concept:
 

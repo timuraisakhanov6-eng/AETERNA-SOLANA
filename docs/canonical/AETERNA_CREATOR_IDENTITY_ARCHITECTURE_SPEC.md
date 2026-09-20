@@ -204,8 +204,11 @@ Required wallet capability:
 - `solana:signMessage`
 - or equivalent SIWS/sign-in capability exposed by the wallet.
 
-Wallet brand MUST NOT be hardcoded.
-Provider-agnostic adapters are required.
+Wallet brand MUST NOT be hardcoded into the identity/verification
+architecture. Provider-agnostic adapters are required at the protocol layer.
+A Model 01 UX/integration policy MAY restrict the supported wallet provider
+(see AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1); Creator Identity
+remains provider-independent.
 
 Authentication message must be bound to:
 - AETERNA domain/application identifier;

@@ -20,6 +20,26 @@ import type { ChainAdapter } from '@reown/appkit-controllers';
 
 let cachedAppKit: AppKit | null = null;
 
+/**
+ * Model 01 wallet policy: Phantom only.
+ *
+ * WalletConnect explorer id for Phantom, taken from the installed
+ * @reown/appkit-common registry (PresetsUtil.ConnectorExplorerIds).
+ *
+ * AppKit applies `includeWalletIds` in ConnectorUtil: any connector whose
+ * wallet id is not listed is removed from the wallet list (including
+ * injected connectors with no resolvable id), so the connection surface
+ * exposes Phantom only.
+ *
+ * This is a Model 01 UX/integration policy — see
+ * docs/canonical/AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1. It does
+ * not make any wallet brand protocol authority and does not change the
+ * AeternaWallet abstraction, Creator Identity, payment verification,
+ * Creator Credit authority, or the Irys boundary.
+ */
+const MODEL_01_PHANTOM_EXPLORER_ID =
+  'a797aa35c0fadbfc1a53e7f675162ed5226968b44a19ee3d24385c64d1d3c393';
+
 function createAeternaAppKit(): AppKit {
   if (cachedAppKit) {
     return cachedAppKit;
@@ -36,7 +56,8 @@ function createAeternaAppKit(): AppKit {
     adapters: [adapter],
     networks: [network],
     defaultNetwork: network,
-    allWallets: 'ALL',
+    allWallets: 'HIDE',
+    includeWalletIds: [MODEL_01_PHANTOM_EXPLORER_ID],
     metadata: {
       name: 'AETERNA',
       description: 'AETERNA Solana Capsule Protocol',

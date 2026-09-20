@@ -35,7 +35,9 @@ declare global {
      * wallet is available.
      *
      * Supports Wallet Standard / standard Solana wallet capability
-     * detection. Brand MUST NOT be hardcoded.
+     * detection. The protocol layer does not hardcode a wallet brand;
+     * Model 01 restricts the wallet UX/integration surface to Phantom
+     * (see docs/canonical/AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1).
      */
 
     readonly solana?: {
@@ -49,6 +51,19 @@ declare global {
     };
 
     readonly solana_wallet?: Window["solana"];
+
+    /**
+     * Phantom-injected Solana provider.
+     *
+     * Model 01 supports Phantom only at the wallet UX/integration layer.
+     * Used exclusively as a UX availability gate — never as protocol
+     * authority. Prefer this namespace over `window.solana`, which another
+     * injected wallet may claim.
+     */
+
+    readonly phantom?: {
+      readonly solana?: Window["solana"];
+    };
 
   }
 
