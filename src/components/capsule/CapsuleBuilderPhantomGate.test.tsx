@@ -32,7 +32,27 @@ import {
 } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
 import CapsuleBuilder from "@/components/capsule/CapsuleBuilder";
-import { PHANTOM_INSTALL_URL } from "@/lib/wallet/phantomProvider";
+import {
+  PHANTOM_EXPLORER_ID,
+  PHANTOM_INSTALL_URL,
+  PHANTOM_MOBILE_OPEN_LABEL,
+  PHANTOM_MOBILE_TITLE,
+} from "@/lib/wallet/phantomProvider";
+
+/**
+ * Mock the PUBLIC AppKit boundary only (`CoreHelperUtil.isMobile` and
+ * `MobileWalletUtil.handleMobileDeeplinkRedirect`) — the real AETERNA gate
+ * logic runs underneath.
+ */
+const { isMobileMock, mobileDeeplinkMock } = vi.hoisted(() => ({
+  isMobileMock: vi.fn(() => false),
+  mobileDeeplinkMock: vi.fn(),
+}));
+
+vi.mock("@reown/appkit-controllers", () => ({
+  CoreHelperUtil: { isMobile: isMobileMock },
+  MobileWalletUtil: { handleMobileDeeplinkRedirect: mobileDeeplinkMock },
+}));
 
 const {
   stableWallet,
@@ -162,6 +182,10 @@ describe("Model 01 Phantom-only Create gate", () => {
     vi.stubGlobal("fetch", fetchMock);
     openWalletPickerMock.mockClear();
     sendSolanaUSDCPaymentMock.mockClear();
+    // Desktop by default; mobile tests opt in explicitly.
+    isMobileMock.mockReset();
+    isMobileMock.mockReturnValue(false);
+    mobileDeeplinkMock.mockReset();
     stableWallet.connected = false;
     stableWallet.account = null;
     stableWallet.walletName = null;
@@ -240,5 +264,102 @@ describe("Model 01 Phantom-only Create gate", () => {
     expect(PHANTOM_INSTALL_URL).toBe("https://phantom.com/download");
     expect(link.getAttribute("href")).toBe(PHANTOM_INSTALL_URL);
     expect(link.getAttribute("href")).not.toMatch(/ref=|referral|affiliate|utm_/i);
+  });
+
+  it("mobile + no injected Phantom offers 'Open in Phantom' and never connects, quotes or pays", async () => {
+    isMobileMock.mockReturnValue(true);
+    setPhantom(false);
+    render(tree());
+    await acceptProtocol();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain(PHANTOM_MOBILE_TITLE);
+    });
+
+    // Not the desktop install notice.
+    expect(screen.getByRole("alert").textContent).not.toContain(
+      "Phantom Wallet Required"
+    );
+
+    // Nothing happens before the user reaches Phantom.
+    expect(openWalletPickerMock).not.toHaveBeenCalled();
+    expect(sendSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    const urls = requestedUrls();
+    expect(urls.some((u) => u.includes("issue-challenge"))).toBe(false);
+    expect(urls.some((u) => u.includes("verify-proof"))).toBe(false);
+    expect(urls.some((u) => u.includes("create-quote"))).toBe(false);
+    expect(urls.some((u) => u.includes("service-payment/verify"))).toBe(false);
+    expect(urls.some((u) => u.includes("grant-credit"))).toBe(false);
+    expect(urls.some((u) => u.includes("storage/quote"))).toBe(false);
+
+    // No redirect until the user taps the action.
+    expect(mobileDeeplinkMock).not.toHaveBeenCalled();
+  });
+
+  it("mobile: 'Open in Phantom' invokes the installed public deeplink utility (no WalletConnect)", async () => {
+    isMobileMock.mockReturnValue(true);
+    setPhantom(false);
+    render(tree());
+    await acceptProtocol();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    await screen.findByRole("button", { name: PHANTOM_MOBILE_OPEN_LABEL });
+
+    fireEvent.click(screen.getByRole("button", { name: PHANTOM_MOBILE_OPEN_LABEL }));
+
+    expect(mobileDeeplinkMock).toHaveBeenCalledTimes(1);
+    expect(mobileDeeplinkMock).toHaveBeenCalledWith(PHANTOM_EXPLORER_ID, "solana");
+    // The generic AppKit connect path (and its WalletConnect relay) is untouched.
+    expect(openWalletPickerMock).not.toHaveBeenCalled();
+    expect(sendSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+  });
+
+  it("mobile: the fallback install link is the official Phantom URL", async () => {
+    isMobileMock.mockReturnValue(true);
+    setPhantom(false);
+    render(tree());
+    await acceptProtocol();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+
+    const link = await screen.findByRole("link", { name: "Install Phantom" });
+    expect(link.getAttribute("href")).toBe("https://phantom.com/download");
+  });
+
+  it("mobile + injected Phantom (inside Phantom's browser) keeps the normal headless flow", async () => {
+    isMobileMock.mockReturnValue(true);
+    setPhantom(true);
+    stableWallet.connected = true;
+    stableWallet.account = "7XkWqBase58WalletAccountPhantomMobile";
+
+    render(tree());
+    await acceptProtocol();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+
+    await waitFor(() => {
+      expect(requestedUrls().some((u) => u.includes("issue-challenge"))).toBe(true);
+    });
+
+    // No mobile redirect panel and no deeplink navigation.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(mobileDeeplinkMock).not.toHaveBeenCalled();
+  });
+
+  it("desktop + no Phantom still shows the install notice and never deeplinks", async () => {
+    isMobileMock.mockReturnValue(false);
+    setPhantom(false);
+    render(tree());
+    await acceptProtocol();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("Phantom Wallet Required");
+    });
+    expect(mobileDeeplinkMock).not.toHaveBeenCalled();
+    expect(openWalletPickerMock).not.toHaveBeenCalled();
   });
 });

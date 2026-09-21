@@ -12,7 +12,6 @@
 
 import React, { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  useAppKit,
   useDisconnect,
   useAppKitProvider,
   useAppKitAccount,
@@ -24,6 +23,7 @@ import {
   ensureReownAppKitInstance,
   getReownAppKitInstance,
 } from '@/lib/wallet/reownSolana';
+import { connectPhantomHeadless } from '@/lib/wallet/phantomProvider';
 import {
   clearExplicitDisconnectMarker,
   hasExplicitDisconnectMarker,
@@ -80,7 +80,6 @@ function normalizeAccount(raw: unknown): string | null {
 }
 
 function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
-  const { open } = useAppKit();
   const { disconnect: appkitDisconnect } = useDisconnect();
   const { walletProvider } = useAppKitProvider<SolanaProvider>('solana');
   const accountState = useAppKitAccount({ namespace: 'solana' });
@@ -124,18 +123,30 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
     });
   }, [accountState.address, connectionsState.connections, walletInfo]);
 
+  /**
+   * Model 01 wallet policy: Phantom only.
+   *
+   * Connects Phantom through AppKit's headless path so the generic AppKit
+   * modal is never opened — no wallet selector, no WalletConnect entry and
+   * no QR. Fails closed when no injected Phantom wallet is available
+   * instead of falling back to the modal.
+   */
+  const connectPhantom = useCallback(async () => {
+    const appKit = await ensureReownAppKitInstance();
+    clearExplicitDisconnectMarker();
+    await connectPhantomHeadless(appKit);
+  }, []);
+
   const connect = useCallback(async () => {
     try {
       setError(null);
-      await ensureReownAppKitInstance();
-      clearExplicitDisconnectMarker();
-      await open();
+      await connectPhantom();
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown wallet connection error';
       setError(message);
       setState((prev) => ({ ...prev, error: message }));
     }
-  }, [open]);
+  }, [connectPhantom]);
 
   const disconnect = useCallback(async () => {
     try {
@@ -172,27 +183,31 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
       } catch {
         // ignore public reactive reset failures
       }
-      await open();
+      // Model 01: reconnecting re-selects Phantom headlessly; the generic
+      // wallet modal is never opened.
+      await connectPhantom();
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown wallet change error';
       setError(message);
       setState((prev) => ({ ...prev, error: message }));
       throw e;
     }
-  }, [appkitDisconnect, open]);
+  }, [appkitDisconnect, connectPhantom]);
 
   const openWalletPicker = useCallback(async () => {
     setError(null);
     try {
-      clearExplicitDisconnectMarker();
-      await open();
+      // Model 01: this is the live connect entry point used by the payment
+      // controller. It connects Phantom headlessly — the AppKit modal is
+      // never opened, so no wallet selector / WalletConnect / QR appears.
+      await connectPhantom();
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown wallet picker error';
       setError(message);
       setState((prev) => ({ ...prev, error: message }));
       throw e;
     }
-  }, [open]);
+  }, [connectPhantom]);
 
   const signMessage = useCallback(async (message: string | Uint8Array) => {
     if (!walletProvider) {

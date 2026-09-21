@@ -12,9 +12,14 @@ import {
 import type { ServicePaymentController } from "@/lib/payment/servicePaymentController";
 import {
   PHANTOM_INSTALL_URL,
+  PHANTOM_MOBILE_BODY,
+  PHANTOM_MOBILE_OPEN_LABEL,
+  PHANTOM_MOBILE_TITLE,
   PHANTOM_REQUIRED_BODY,
   PHANTOM_REQUIRED_TITLE,
+  isMobileBrowser,
   isPhantomAvailable,
+  openAeternaInPhantomMobile,
 } from "@/lib/wallet/phantomProvider";
 import {
   INITIAL_CREATE_FLOW_STATE,
@@ -508,6 +513,11 @@ export default function CapsuleBuilder() {
   // Model 01 wallet policy: Phantom only. True when Create Capsule was
   // clicked without a Phantom provider present. UX gate only.
   const [phantomRequired, setPhantomRequired] = useState(false);
+  // Model 01 mobile: true when Create Capsule was clicked on a mobile
+  // browser without an injected Phantom. Phantom connects through its
+  // in-app browser on mobile, so the user is offered an explicit
+  // "Open in Phantom" action instead of the desktop install notice.
+  const [phantomMobileRequired, setPhantomMobileRequired] = useState(false);
   // Final Capsule Review dialog visibility. storageReview (the canonical
   // quote record) is deliberately NOT cleared on close: the dialog can be
   // re-opened without a second quote while the quote stays valid.
@@ -767,11 +777,24 @@ export default function CapsuleBuilder() {
     // any Irys action when Phantom is not available.
     // UX gate only — the server remains the sole identity/payment authority.
     if (!isPhantomAvailable()) {
-      setPhantomRequired(true);
       setServicePaymentError(null);
+
+      // Model 01 mobile: Phantom does not inject into mobile Safari/Chrome.
+      // It connects through its own in-app browser, so offer the official
+      // Phantom deep link instead of the desktop install notice. Nothing is
+      // connected, quoted or paid here.
+      if (isMobileBrowser()) {
+        setPhantomMobileRequired(true);
+        setPhantomRequired(false);
+        return;
+      }
+
+      setPhantomMobileRequired(false);
+      setPhantomRequired(true);
       return;
     }
 
+    setPhantomMobileRequired(false);
     setPhantomRequired(false);
     setServicePaymentError(null);
     dispatchCreateFlow("CREATE_CLICKED");
@@ -1300,6 +1323,33 @@ export default function CapsuleBuilder() {
               {sealError && (
                 <div className="p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
                   {sealError}
+                </div>
+              )}
+
+              {phantomMobileRequired && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-500 animate-in fade-in zoom-in-95 space-y-2"
+                >
+                  <p className="font-medium">{PHANTOM_MOBILE_TITLE}</p>
+                  <p>{PHANTOM_MOBILE_BODY}</p>
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    <Button
+                      type="button"
+                      onClick={openAeternaInPhantomMobile}
+                      className="h-9 px-4 text-xs"
+                    >
+                      {PHANTOM_MOBILE_OPEN_LABEL}
+                    </Button>
+                    <a
+                      href={PHANTOM_INSTALL_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline underline-offset-2"
+                    >
+                      Install Phantom
+                    </a>
+                  </div>
                 </div>
               )}
 
