@@ -289,6 +289,49 @@ async function waitForSignatureStatus(
   throw new Error("Transaction confirmation timed out.")
 }
 
+/**
+ * AETERNA — server-proxied Solana account-existence check.
+ *
+ * The browser never talks to Solana RPC directly (same policy as the
+ * blockhash fetch): the read-only check goes through the AETERNA server
+ * proxy, which uses the configured mainnet RPC.
+ *
+ * FAIL-CLOSED: if the check cannot be completed, or the response is not a
+ * well-formed answer, this throws and the payment is abandoned BEFORE any
+ * transaction is built or handed to the wallet. AETERNA never guesses about
+ * the settlement token account.
+ */
+async function fetchAccountExists(address: string): Promise<boolean> {
+  const res = await fetch(
+    `/api/solana/token-account?address=${encodeURIComponent(address)}`,
+    {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    }
+  )
+
+  if (!res.ok) {
+    const errorPayload = (await res.json().catch(() => ({}))) as {
+      error?: string
+    }
+
+    throw new Error(
+      typeof errorPayload?.error === "string"
+        ? errorPayload.error
+        : `Token account check failed: HTTP ${res.status}`
+    )
+  }
+
+  const data = (await res.json()) as { ok?: boolean; exists?: boolean }
+
+  if (typeof data?.exists !== "boolean") {
+    throw new Error("Invalid token account response.")
+  }
+
+  return data.exists
+}
+
 export interface SendSolanaUSDCPaymentOptions {
   readonly destination?: string
   readonly amountAtomic?: string
@@ -322,6 +365,7 @@ export async function sendSolanaUSDCPayment({
   const {
     getAssociatedTokenAddressSync,
     createTransferInstruction,
+    createAssociatedTokenAccountInstruction,
     TOKEN_PROGRAM_ID,
   } = spl
 
@@ -351,7 +395,35 @@ export async function sendSolanaUSDCPayment({
   const sourceAta = getAssociatedTokenAddressSync(mint, payer, false)
   const destinationAta = getAssociatedTokenAddressSync(mint, destinationWallet, false)
 
-  const instructions: unknown[] = [
+  /**
+   * The settlement wallet's USDC associated token account may not exist yet.
+   * An SPL Token `Transfer` into a non-existent token account can neither be
+   * simulated nor executed, which is exactly what makes a wallet refuse the
+   * request before signing it.
+   *
+   * The account is therefore created inside the SAME atomic transaction, and
+   * only when it is genuinely absent: an unconditional create would fail with
+   * "account already in use" once the account exists.
+   */
+  const destinationAtaExists = await fetchAccountExists(
+    destinationAta.toBase58()
+  )
+
+  const instructions: unknown[] = []
+
+  if (!destinationAtaExists) {
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payer,
+        destinationAta,
+        destinationWallet,
+        mint,
+        TOKEN_PROGRAM_ID
+      )
+    )
+  }
+
+  instructions.push(
     createTransferInstruction(
       sourceAta,
       destinationAta,
@@ -359,8 +431,8 @@ export async function sendSolanaUSDCPayment({
       BigInt(amountAtomic),
       [payer],
       TOKEN_PROGRAM_ID
-    ),
-  ]
+    )
+  )
 
   const blockhashRes = await fetch("/api/solana/blockhash", {
     method: "GET",
