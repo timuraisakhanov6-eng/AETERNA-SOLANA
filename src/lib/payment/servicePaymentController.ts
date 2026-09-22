@@ -289,6 +289,98 @@ async function discoverCreditStatus(
   }
 }
 
+/* ───────────────── VERIFICATION POLLING (D2/D3/D4) ───────────────── */
+
+const VERIFY_PENDING_RETRY_DELAY_MS = 2_000
+const VERIFY_PENDING_MAX_WINDOW_MS = 45_000
+const VERIFY_PENDING_MAX_ATTEMPTS = 23
+
+interface ServicePaymentVerificationPollBody {
+  readonly paymentIntentId: string
+  readonly creatorIdentityId: string
+  readonly evidenceId: string
+  readonly transactionId: string
+}
+
+type ServicePaymentVerificationPollResult =
+  | { readonly ok: true; readonly status: string }
+  | { readonly ok: false; readonly error: string; readonly pending: boolean }
+
+/**
+ * Bounded polling of the payment verifier.
+ *
+ * The wallet returns a signature as soon as it signs and submits — that is NOT
+ * proof the transaction landed (a blockhash can expire during the approval
+ * window, or the submission can be dropped). Verification therefore polls the
+ * SAME signature until the verifier can observe it on-chain.
+ *
+ * Only `TX_NOT_FOUND` is treated as pending: it means the verifier could not
+ * observe the transaction yet. Every other outcome is a definitive verdict and
+ * is returned immediately — a failed, misdirected or underpaid transaction is
+ * never retried into a success.
+ *
+ * This re-sends the SAME `transactionId` over the existing verify endpoint. It
+ * never signs, sends or constructs a transaction, so it cannot create a
+ * duplicate payment.
+ *
+ * The window is finite: expiry yields a recoverable error, never a payment.
+ */
+async function pollServicePaymentVerification(
+  fetchImpl: typeof fetch,
+  body: ServicePaymentVerificationPollBody
+): Promise<ServicePaymentVerificationPollResult> {
+  const deadline = Date.now() + VERIFY_PENDING_MAX_WINDOW_MS
+  let lastError = "PAYMENT_VERIFICATION_FAILED"
+
+  for (let attempt = 0; attempt < VERIFY_PENDING_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(VERIFY_PENDING_RETRY_DELAY_MS, remaining))
+      )
+    }
+
+    let res: Response
+    try {
+      res = await fetchImpl("/api/service-payment/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    } catch (err) {
+      // Transport failure — no verdict yet, keep polling within the window.
+      lastError =
+        err instanceof Error ? err.message : "PAYMENT_VERIFICATION_FAILED"
+      continue
+    }
+
+    const data = (await res.json().catch(() => null)) as {
+      ok?: boolean
+      status?: unknown
+      error?: string
+    } | null
+
+    if (res.ok && data?.ok) {
+      return {
+        ok: true,
+        status: typeof data.status === "string" ? data.status : "",
+      }
+    }
+
+    const error =
+      typeof data?.error === "string" ? data.error : "PAYMENT_VERIFICATION_FAILED"
+    lastError = error
+
+    // Only "not observable yet" is pending; anything else is definitive.
+    if (res.status !== 402 || error !== "TX_NOT_FOUND") {
+      return { ok: false, error, pending: false }
+    }
+  }
+
+  return { ok: false, error: lastError, pending: true }
+}
+
 /* ───────────────── FACTORY ───────────────── */
 
 export function createServicePaymentController(
@@ -671,23 +763,22 @@ export function createServicePaymentController(
 
       const evidenceId = `payment-modal-${quote.paymentIntentId}-${Date.now()}`
 
-      const verifyRes = await fetchImpl("/api/service-payment/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId: effectiveCreatorIdentityId,
-          evidenceId,
-          transactionId: txHash,
-        }),
+      const verifyOutcome = await pollServicePaymentVerification(fetchImpl, {
+        paymentIntentId: quote.paymentIntentId,
+        creatorIdentityId: effectiveCreatorIdentityId,
+        evidenceId,
+        transactionId: txHash,
       })
 
-      const verifyData = await verifyRes.json()
-      if (!verifyRes.ok || !verifyData?.ok) {
-        throw new Error(verifyData?.error || "PAYMENT_VERIFICATION_FAILED")
+      if (!verifyOutcome.ok) {
+        throw new Error(
+          verifyOutcome.pending
+            ? "PAYMENT_NOT_OBSERVED_ON_CHAIN: the transaction was not observed on Solana. No payment was recorded and nothing was charged — you can safely retry."
+            : verifyOutcome.error
+        )
       }
 
-      if (verifyData.status !== "VERIFIED") {
+      if (verifyOutcome.status !== "VERIFIED") {
         throw new Error("PAYMENT_NOT_VERIFIED")
       }
 

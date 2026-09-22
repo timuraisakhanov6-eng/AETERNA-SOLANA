@@ -10,7 +10,7 @@
  * All network access is injected/mocked. No production calls.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createServicePaymentController,
@@ -810,5 +810,195 @@ describe("PATCH-2K-A payment-after-discovery guard", () => {
     expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
     expect(countCalls(calls, "service-payment/verify")).toBe(0);
     expect(countCalls(calls, "grant-credit")).toBe(0);
+  });
+});
+
+/* ─────────── PAYMENT RELIABILITY: bounded verification polling ─────────── */
+
+/**
+ * D2/D3/D4 — a wallet returning a signature is NOT proof the transaction
+ * landed. Verification must poll the SAME signature within a bounded window
+ * and must never turn a non-landed transaction into a payment.
+ *
+ * The verify route is sequenced so a test can model "not observable yet, then
+ * observable" (propagation) and "never observable" (never landed).
+ */
+function createSequencedFetchStub(
+  verifyResponses: Array<{ httpOk?: boolean; status?: number; body: unknown }>
+) {
+  let verifyIndex = 0;
+  const calls: { url: string; body?: unknown }[] = [];
+
+  const fetchImpl = (async (input: unknown, init?: { body?: string }) => {
+    const url = typeof input === "string" ? input : String(input);
+    let body: unknown;
+    try {
+      body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    } catch {
+      body = init?.body;
+    }
+    calls.push({ url, body });
+
+    if (url.includes("service-payment/verify")) {
+      const index = Math.min(verifyIndex, verifyResponses.length - 1);
+      verifyIndex += 1;
+      const route = verifyResponses[index]!;
+      return {
+        ok: route.httpOk ?? true,
+        status: route.status ?? 200,
+        json: async () => route.body,
+      } as Response;
+    }
+
+    const ok = (payload: unknown) =>
+      ({ ok: true, status: 200, json: async () => payload }) as Response;
+
+    if (url.includes("create-quote")) return ok(QUOTE_BODY);
+    if (url.includes("issue-challenge")) return ok(ISSUE_BODY);
+    if (url.includes("credit-status")) return ok(CREDIT_STATUS_NONE_BODY);
+    if (url.includes("verify-proof")) return ok(PROOF_BODY);
+    if (url.includes("grant-credit"))
+      return ok({ ok: true, creatorCreditId: "credit-1", status: "AVAILABLE" });
+    if (url.includes("reserve-lifecycle"))
+      return ok({ ok: true, lifecycleId: "lifecycle-1" });
+
+    throw new Error("UNMOCKED_FETCH: " + url);
+  }) as unknown as typeof fetch;
+
+  return {
+    fetchImpl,
+    calls,
+    verifyCalls: () => calls.filter((c) => c.url.includes("service-payment/verify")),
+    grantCalls: () => calls.filter((c) => c.url.includes("grant-credit")),
+  };
+}
+
+type SequencedStub = ReturnType<typeof createSequencedFetchStub>;
+
+const TX_NOT_FOUND_RESPONSE = {
+  httpOk: false,
+  status: 402,
+  body: { ok: false, error: "TX_NOT_FOUND" },
+};
+const VERIFIED_RESPONSE = {
+  httpOk: true,
+  status: 200,
+  body: { ok: true, status: "VERIFIED" },
+};
+
+async function driveToVerifiedPayment(
+  stub: SequencedStub
+): Promise<ServicePaymentController> {
+  const controller = createServicePaymentController({ fetchImpl: stub.fetchImpl });
+  controller.setParams({
+    creatorIdentityId: null,
+    protocolAccepted: true,
+    stopAfterCredit: true,
+  });
+  await controller.requestQuote();
+  controller.syncWallet(createWalletStub());
+  await controller.connectWallet();
+  return controller;
+}
+
+describe("payment reliability — bounded verification polling (D2/D3/D4)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(sendSolanaUSDCPayment).mockResolvedValue("mock-tx-signature");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(sendSolanaUSDCPayment).mockReset();
+    vi.mocked(sendSolanaUSDCPayment).mockResolvedValue("mock-tx-signature");
+  });
+
+  it("2/5: TX_NOT_FOUND is retried, then a VERIFIED response grants exactly once", async () => {
+    const stub = createSequencedFetchStub([TX_NOT_FOUND_RESPONSE, VERIFIED_RESPONSE]);
+    const controller = await driveToVerifiedPayment(stub);
+
+    const pending = controller.confirmAndVerify();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await pending;
+
+    expect(controller.getState().phase).not.toBe("error");
+    // Pending first, then a single successful verification.
+    expect(stub.verifyCalls()).toHaveLength(2);
+    expect(stub.grantCalls()).toHaveLength(1);
+    // No second blockchain transaction was ever requested.
+    expect(vi.mocked(sendSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
+  });
+
+  it("3/7: a transaction that is never observable ends in a recoverable error, never as paid", async () => {
+    const stub = createSequencedFetchStub([TX_NOT_FOUND_RESPONSE]);
+    const controller = await driveToVerifiedPayment(stub);
+
+    const pending = controller.confirmAndVerify();
+    await vi.advanceTimersByTimeAsync(120_000);
+    await pending;
+
+    const state = controller.getState();
+    expect(state.phase).toBe("error");
+    expect(state.error).toContain("PAYMENT_NOT_OBSERVED_ON_CHAIN");
+    // Never treated as paid, no credit granted.
+    expect(stub.grantCalls()).toHaveLength(0);
+    // Bounded: it retried, but a finite number of times.
+    expect(stub.verifyCalls().length).toBeGreaterThan(1);
+    expect(stub.verifyCalls().length).toBeLessThanOrEqual(23);
+    // Still exactly one blockchain transaction attempt.
+    expect(vi.mocked(sendSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
+  });
+
+  it("a definitive verdict (TX_FAILED) is NOT retried", async () => {
+    const stub = createSequencedFetchStub([
+      { httpOk: false, status: 402, body: { ok: false, error: "TX_FAILED" } },
+    ]);
+    const controller = await driveToVerifiedPayment(stub);
+
+    const pending = controller.confirmAndVerify();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await pending;
+
+    expect(controller.getState().phase).toBe("error");
+    expect(controller.getState().error).toBe("TX_FAILED");
+    expect(stub.verifyCalls()).toHaveLength(1);
+    expect(stub.grantCalls()).toHaveLength(0);
+  });
+
+  it("6: a wallet rejection remains a rejection — no verification, no payment", async () => {
+    vi.mocked(sendSolanaUSDCPayment).mockRejectedValueOnce(
+      new Error("User rejected the request.")
+    );
+    const stub = createSequencedFetchStub([VERIFIED_RESPONSE]);
+    const controller = await driveToVerifiedPayment(stub);
+
+    const pending = controller.confirmAndVerify();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await pending;
+
+    const state = controller.getState();
+    expect(state.phase).toBe("error");
+    expect(state.error).toContain("User rejected");
+    // A cancellation never reaches verification or credit.
+    expect(stub.verifyCalls()).toHaveLength(0);
+    expect(stub.grantCalls()).toHaveLength(0);
+  });
+
+  it("8: canonical destination, amount and payer are unchanged", async () => {
+    const stub = createSequencedFetchStub([VERIFIED_RESPONSE]);
+    const controller = await driveToVerifiedPayment(stub);
+
+    const pending = controller.confirmAndVerify();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await pending;
+
+    expect(vi.mocked(sendSolanaUSDCPayment)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: DESTINATION,
+        amountAtomic: "1000000",
+        publicKey: ACCOUNT,
+        signAndSendTransaction: expect.any(Function),
+      })
+    );
   });
 });

@@ -4,13 +4,21 @@
  * Server-only helper for storage-payment verification.
  *
  * Uses the configured Solana mainnet RPC URL.
- * getTransaction uses finalized commitment with maxSupportedTransactionVersion = 0.
+ * getTransaction uses confirmed commitment with maxSupportedTransactionVersion = 0.
+ *
+ * COMMITMENT POLICY (payment reliability):
+ * A freshly submitted payment is observable at `confirmed` within a slot or two,
+ * but is not `finalized` for a further ~6-15s. Verification runs immediately
+ * after the wallet returns a signature, so a `finalized`-only lookup reports a
+ * legitimate, landed payment as missing. Lookups therefore use `confirmed`
+ * (which also returns transactions that have since finalized, since finalized
+ * is a subset of confirmed) and poll for a bounded window rather than ~3s.
  */
 
 const RPC_TIMEOUT_MS = 10_000;
-const SOLANA_LOOKUP_RETRY_DELAY_MS = 500;
-const SOLANA_LOOKUP_MAX_ATTEMPTS = 4;
-const SOLANA_LOOKUP_GLOBAL_DEADLINE_MS = 3_000;
+const SOLANA_LOOKUP_RETRY_DELAY_MS = 1_000;
+const SOLANA_LOOKUP_MAX_ATTEMPTS = 20;
+const SOLANA_LOOKUP_GLOBAL_DEADLINE_MS = 20_000;
 
 let requestId = 1;
 
@@ -68,6 +76,18 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Bounded polling lookup for a submitted transaction signature.
+ *
+ * Returns the transaction once it is observable at `confirmed` (which includes
+ * already-finalized transactions), or null if it never becomes observable
+ * within the bounded window.
+ *
+ * FAIL-CLOSED: RPC errors are never converted into success. `solanaJsonRpc`
+ * throws on transport/RPC failure and that error propagates to the caller, so
+ * an unverifiable transaction is reported as an error, never as a payment.
+ * A null result is retried; it is never treated as a successful lookup.
+ */
 export async function getSolanaTransaction(
   url: string,
   signature: string
@@ -88,7 +108,7 @@ export async function getSolanaTransaction(
     const result = await solanaJsonRpc(url, "getTransaction", [
       signature,
       {
-        commitment: "finalized",
+        commitment: "confirmed",
         encoding: "jsonParsed",
         maxSupportedTransactionVersion: 0,
       },
