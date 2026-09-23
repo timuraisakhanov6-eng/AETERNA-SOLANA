@@ -49,16 +49,42 @@ describe("creatorIrys (Phase A capability)", () => {
     ).rejects.toThrow(/invalid payload size/);
   });
 
-  it("builder chain instantiates with the Solana USDC token config on the L1 bundler", async () => {
+  it("binds the REAL WebUSDCSolana token CLASS to the builder (regression: this.token is not a constructor)", async () => {
     const { WebUploader } = await import("@irys/web-upload");
     const { WebUSDCSolana } = await import("@irys/web-upload-solana");
-    // Active production rail host: Irys L1 Mainnet (publishes usdc-solana).
-    // The legacy Arweave bundler node1.irys.xyz does not expose that token.
-    const builder = WebUploader({ url: "https://uploader.irys.xyz", token: "usdc-solana" })
-      .withProvider(walletWithSigner() as never);
+
+    // REAL package, REAL contract: `WebUploader` is the package's `Builder`,
+    // and its ONLY parameter is a token CLASS (ConstructableWebToken).
+    // Passing a config object here is the production defect.
+    const builder = WebUploader(WebUSDCSolana);
+
+    // The builder stores that argument as `this.token`, and `build()`
+    // evaluates `new this.token({...})`.
+    expect(typeof builder.token).toBe("function");
+    expect(builder.token).toBe(WebUSDCSolana);
+
+    // The precise expression `build()` performs internally must succeed.
+    const constructed = new builder.token({} as never);
+    expect(constructed).toBeInstanceOf(WebUSDCSolana);
+
+    // The full production chain shape.
+    const chained = builder
+      .withProvider(walletWithSigner() as never)
+      .withRpc("https://api.mainnet-beta.solana.com")
+      .bundlerUrl("https://uploader.irys.xyz");
+    expect(typeof chained.build).toBe("function");
     expect(typeof builder.withAdapter).toBe("function");
-    expect(typeof builder.build).toBe("function");
-    expect(() => new WebUSDCSolana({} as never)).not.toThrow();
+
+    // A real build() attempt must never fail with the constructor defect.
+    // It performs live I/O (Irys node + Solana RPC), so any OTHER failure is
+    // tolerated here — only the regression itself is forbidden.
+    const outcome = await chained.build().then(
+      () => null,
+      (e: unknown) => e
+    );
+    if (outcome instanceof Error) {
+      expect(outcome.message).not.toContain("is not a constructor");
+    }
   });
 
   it("uses the Irys L1 mainnet bundler host, never the legacy Arweave bundler", async () => {

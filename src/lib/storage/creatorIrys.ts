@@ -18,6 +18,7 @@
  */
 
 import { WebUploader } from "@irys/web-upload";
+import { WebUSDCSolana } from "@irys/web-upload-solana";
 import { PublicKey } from "@solana/web3.js";
 
 /**
@@ -117,6 +118,18 @@ function requireWallet(wallet: CreatorIrysWallet | null | undefined): CreatorIry
  * Builds a browser Irys uploader bound to the creator's wallet.
  * The wallet is passed through as the injected provider; no keys
  * are extracted, exported, or stored anywhere.
+ *
+ * The token rail is carried by the CLASS, not by a config object.
+ * `@irys/web-upload` exports `WebUploader` as its `Builder`, whose ONLY
+ * parameter is a token class (`ConstructableWebToken`); the builder stores
+ * it as `this.token` and later evaluates `new this.token({...})`. Passing a
+ * config object instead makes that expression throw
+ * "this.token is not a constructor".
+ *
+ * `WebUSDCSolana` (@irys/web-upload-solana) is the bound USDC-Solana rail:
+ * `getBoundSPL({ name: "usdc-solana", ticker: "USDC",
+ * contractAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" })` —
+ * i.e. the same token family and mint AETERNA already requires.
  */
 async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string): Promise<{
   getPrice(byteLength: number): Promise<{ toString(): string }>;
@@ -124,23 +137,23 @@ async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string):
   fund(amount: { toString(): string }): Promise<unknown>;
   upload(data: Uint8Array): Promise<{ id?: unknown }>;
 }> {
-  // The @irys factory's published typing is loose (ConstructableWebToken
-  // overload); the runtime factory accepts the node config shown here.
-  const buildUploader = WebUploader as unknown as (config: {
-    url: string;
-    token: string;
-  }) => {
-    withProvider(provider: never): {
-      withRpc(rpcUrl: string): { build(): Promise<unknown> };
-      build(): Promise<unknown>;
-    };
-  };
-  const builder = buildUploader({
-    url: IRYS_NODE_URL,
-    token: IRYS_TOKEN,
-  }).withProvider(wallet as never).withRpc(rpcUrl ?? "https://api.mainnet-beta.solana.com");
+  // Installed API: WebUploader(tokenClass) -> UploadBuilder.
+  //   withProvider(wallet)  -> the injected creator wallet
+  //   withRpc(rpcUrl)       -> irysConfig.providerUrl (Solana RPC)
+  //   bundlerUrl(node)      -> the Irys node/bundler endpoint
+  // No cast is needed here: `WebUSDCSolana` is typed `ConstructableWebToken`
+  // and `withProvider` accepts `any`.
+  const builder = WebUploader(WebUSDCSolana)
+    .withProvider(wallet)
+    .withRpc(rpcUrl ?? "https://api.mainnet-beta.solana.com")
+    .bundlerUrl(IRYS_NODE_URL);
 
-  const uploader = (await builder.build()) as unknown as {
+  // The narrow structural view AETERNA consumes (unchanged surface).
+  // This is a narrowing cast, not an escape hatch: `BaseWebIrys` is
+  // structurally wider (e.g. `fund(amount: BigNumber.Value)`), so the minimal
+  // surface AETERNA actually uses is stated explicitly. The previous
+  // `as unknown as` cast is gone — it was hiding the real API contract.
+  const uploader = (await builder.build()) as {
     getPrice(byteLength: number): Promise<{ toString(): string }>;
     getBalance(): Promise<{ toString(): string }>;
     fund(amount: { toString(): string }): Promise<unknown>;

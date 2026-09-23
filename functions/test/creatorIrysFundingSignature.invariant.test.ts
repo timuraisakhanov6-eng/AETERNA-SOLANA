@@ -20,23 +20,37 @@ const calls: {
   priceArgs: number[];
   fundArgs: unknown[];
   uploadArgs: Uint8Array[];
+  tokenClass?: unknown;
+  bundlerUrl?: unknown;
+  provider?: unknown;
 } = { priceArgs: [], fundArgs: [], uploadArgs: [] };
 
 const FUNDING_SIGNATURE = "SolanaFundingSignature1111111111111111111111111";
 const DATA_TX_ID = "IrysDataItemId2222222222222222222222222222222222";
 const PRICE_ATOMIC = "1000000";
 
+/**
+ * Models the REAL installed contract: `@irys/web-upload` exports
+ * `WebUploader` as its `Builder`, whose ONLY parameter is a token CLASS
+ * (`ConstructableWebToken`).
+ *
+ * The previous mock declared `(config: { url: string; token: string })` —
+ * it encoded the WRONG contract in its own type signature, which is why the
+ * production defect "this.token is not a constructor" passed this suite.
+ */
 vi.mock("@irys/web-upload", () => ({
-  WebUploader: (config: { url: string; token: string }) => {
-    calls.config = config;
+  WebUploader: (tokenClass: unknown) => {
+    calls.tokenClass = tokenClass;
     return {
       withProvider: (provider: unknown) => {
         calls.provider = provider;
         return {
-          withRpc: (rpc: unknown) => {
-            calls.rpc = rpc;
-            return { build: async () => fakeIrys };
-          },
+          withRpc: () => ({
+            bundlerUrl: (url: unknown) => {
+              calls.bundlerUrl = url;
+              return { build: async () => fakeIrys };
+            },
+          }),
           build: async () => fakeIrys,
         };
       },
@@ -126,6 +140,18 @@ describe("Creator Irys funding signature contract", () => {
     await uploadCreatorPaid(PAYLOAD, w);
     expect(calls.provider).toBe(w);
     expect(calls.uploadArgs[0]).toBe(PAYLOAD);
+  });
+
+  it("binds the REAL WebUSDCSolana token CLASS to the builder (regression: this.token is not a constructor)", async () => {
+    const { WebUSDCSolana } = await import("@irys/web-upload-solana");
+    await uploadCreatorPaid(PAYLOAD, wallet());
+
+    // The builder stores the token class as `this.token` and later evaluates
+    // `new this.token({...})` — so this MUST be a constructor, never a config
+    // object.
+    expect(calls.tokenClass).toBe(WebUSDCSolana);
+    expect(typeof calls.tokenClass).toBe("function");
+    expect(calls.bundlerUrl).toBe("https://uploader.irys.xyz");
   });
 
   it("fails closed when fund() returns no signature", async () => {

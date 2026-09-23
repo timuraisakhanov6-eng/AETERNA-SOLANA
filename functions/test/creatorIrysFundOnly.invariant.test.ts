@@ -20,20 +20,38 @@ const calls: {
   uploadCalls: number;
   priceArgs: number[];
   balanceValues: string[];
+  tokenClass?: unknown;
+  bundlerUrl?: unknown;
+  provider?: unknown;
 } = { fundArgs: [], uploadCalls: 0, priceArgs: [], balanceValues: [] };
 
 let uploadShouldFail = false;
 
+/**
+ * Models the REAL installed contract: `@irys/web-upload` exports
+ * `WebUploader` as its `Builder`, whose ONLY parameter is a token CLASS
+ * (`ConstructableWebToken`). The previous mock took no argument at all,
+ * which is exactly why the production defect
+ * "this.token is not a constructor" could not be caught here.
+ */
 vi.mock("@irys/web-upload", () => ({
-  WebUploader: () => ({
-    withProvider: (provider: unknown) => {
-      calls.provider = provider;
-      return {
-        withRpc: () => ({ build: async () => fakeIrys }),
-        build: async () => fakeIrys,
-      };
-    },
-  }),
+  WebUploader: (tokenClass: unknown) => {
+    calls.tokenClass = tokenClass;
+    return {
+      withProvider: (provider: unknown) => {
+        calls.provider = provider;
+        return {
+          withRpc: () => ({
+            bundlerUrl: (url: unknown) => {
+              calls.bundlerUrl = url;
+              return { build: async () => fakeIrys };
+            },
+          }),
+          build: async () => fakeIrys,
+        };
+      },
+    };
+  },
 }));
 
 vi.mock("@irys/web-upload-solana", () => ({ WebUSDCSolana: class {} }));
@@ -88,6 +106,21 @@ describe("Phase B fund-only storage payment", () => {
       "SolanaFundingSignature1111111111111111111111111"
     );
     expect(String(calls.fundArgs[0])).toBe("1000000");
+  });
+
+  it("binds the REAL WebUSDCSolana token CLASS to the Irys builder (regression: this.token is not a constructor)", async () => {
+    const { WebUSDCSolana } = await import("@irys/web-upload-solana");
+    const w = toCreatorIrysWallet(aeternaWallet());
+    await fundCreatorPaidStorage("1000000", w);
+
+    // `WebUploader` is the package's `Builder`: its ONLY argument must be the
+    // token CLASS, which the builder stores as `this.token` and later
+    // evaluates as `new this.token({...})`. A config object here is the
+    // production defect.
+    expect(calls.tokenClass).toBe(WebUSDCSolana);
+    expect(typeof calls.tokenClass).toBe("function");
+    // The Irys node endpoint is preserved.
+    expect(calls.bundlerUrl).toBe("https://uploader.irys.xyz");
   });
 
   it("NEVER calls upload (upload is Phase C/D)", async () => {
