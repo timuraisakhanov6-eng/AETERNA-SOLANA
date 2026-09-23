@@ -4,7 +4,7 @@
  * only import success, builder instantiation, and fail-closed paths.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   getCreatorIrysUploadPrice,
   getCreatorIrysDestination,
@@ -20,6 +20,17 @@ function walletWithSigner(): CreatorIrysWallet {
 }
 
 describe("creatorIrys (Phase A capability)", () => {
+  beforeEach(() => {
+    // creatorIrys is browser-only and derives its Solana RPC from the page
+    // origin. Without this stub the node environment would fail closed on the
+    // missing origin instead of exercising the real Irys build chain.
+    vi.stubGlobal("location", { origin: "https://aeterna-solana.pages.dev" });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("module imports and exposes the Phase A interface", async () => {
     const mod = await import("./../../src/lib/storage/creatorIrys");
     expect(typeof mod.getCreatorIrysUploadPrice).toBe("function");

@@ -107,6 +107,33 @@ function failClosed(reason: string): never {
   throw new Error(`[AETERNA] creatorIrys: ${reason}`);
 }
 
+/**
+ * Same-origin AETERNA JSON-RPC transport for Irys's Solana reads.
+ *
+ * Irys's `@solana/web3.js` Connection reads the chain directly, and a browser
+ * MUST NOT call a public Solana RPC: `api.mainnet-beta.solana.com` answers any
+ * request carrying a browser Origin with HTTP 403 "Access forbidden". Reads
+ * therefore go through the AETERNA read-only proxy
+ * (`functions/api/solana/rpc.ts`), which forwards an allow-list of read
+ * methods server-side.
+ *
+ * `new Connection()` requires an ABSOLUTE URL, so the origin is resolved here
+ * rather than being hardcoded. This module is browser-only (it is never
+ * imported by `functions/`), so `location` is always present in production;
+ * without it there is no safe transport and the call fails closed.
+ */
+function resolveSameOriginRpcUrl(): string {
+  const origin = typeof location !== "undefined" ? location.origin : "";
+
+  if (typeof origin !== "string" || origin.length === 0) {
+    failClosed(
+      "a same-origin Solana RPC transport is required (no browser origin available)"
+    );
+  }
+
+  return `${origin}/api/solana/rpc`;
+}
+
 function requireWallet(wallet: CreatorIrysWallet | null | undefined): CreatorIrysWallet {
   if (!wallet) failClosed("wallet is required");
   if (!wallet.publicKey) failClosed("wallet.publicKey is required");
@@ -145,7 +172,7 @@ async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string):
   // and `withProvider` accepts `any`.
   const builder = WebUploader(WebUSDCSolana)
     .withProvider(wallet)
-    .withRpc(rpcUrl ?? "https://api.mainnet-beta.solana.com")
+    .withRpc(rpcUrl ?? resolveSameOriginRpcUrl())
     .bundlerUrl(IRYS_NODE_URL);
 
   // The narrow structural view AETERNA consumes (unchanged surface).

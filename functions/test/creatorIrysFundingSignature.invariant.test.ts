@@ -14,7 +14,7 @@
  * transaction, no funds.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 const calls: {
   priceArgs: number[];
@@ -23,6 +23,7 @@ const calls: {
   tokenClass?: unknown;
   bundlerUrl?: unknown;
   provider?: unknown;
+  rpcUrl?: unknown;
 } = { priceArgs: [], fundArgs: [], uploadArgs: [] };
 
 const FUNDING_SIGNATURE = "SolanaFundingSignature1111111111111111111111111";
@@ -45,12 +46,15 @@ vi.mock("@irys/web-upload", () => ({
       withProvider: (provider: unknown) => {
         calls.provider = provider;
         return {
-          withRpc: () => ({
-            bundlerUrl: (url: unknown) => {
-              calls.bundlerUrl = url;
-              return { build: async () => fakeIrys };
-            },
-          }),
+          withRpc: (rpc: unknown) => {
+            calls.rpcUrl = rpc;
+            return {
+              bundlerUrl: (url: unknown) => {
+                calls.bundlerUrl = url;
+                return { build: async () => fakeIrys };
+              },
+            };
+          },
           build: async () => fakeIrys,
         };
       },
@@ -102,6 +106,10 @@ const PAYLOAD = new Uint8Array([1, 2, 3, 4]);
 
 describe("Creator Irys funding signature contract", () => {
   beforeEach(() => {
+    // creatorIrys is browser-only and derives its Solana RPC from the page
+    // origin; the node test environment has no `location`, so the origin the
+    // browser would provide is stubbed here.
+    vi.stubGlobal("location", { origin: "https://aeterna-solana.pages.dev" });
     calls.priceArgs = [];
     calls.fundArgs = [];
     calls.uploadArgs = [];
@@ -111,9 +119,14 @@ describe("Creator Irys funding signature contract", () => {
       quantity: amount.toString(),
     });
     uploadImpl = async () => ({ id: DATA_TX_ID });
-    delete (calls as { config?: unknown }).config;
-    delete (calls as { provider?: unknown }).provider;
-    delete (calls as { rpc?: unknown }).rpc;
+    delete calls.provider;
+    delete calls.rpcUrl;
+    delete calls.tokenClass;
+    delete calls.bundlerUrl;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("returns fundingSignature from fund() and dataTxId from upload()", async () => {
@@ -152,6 +165,15 @@ describe("Creator Irys funding signature contract", () => {
     expect(calls.tokenClass).toBe(WebUSDCSolana);
     expect(typeof calls.tokenClass).toBe("function");
     expect(calls.bundlerUrl).toBe("https://uploader.irys.xyz");
+  });
+
+  it("routes Solana reads through the SAME-ORIGIN AETERNA proxy, never a public RPC", async () => {
+    await uploadCreatorPaid(PAYLOAD, wallet());
+
+    expect(calls.rpcUrl).toBe(
+      "https://aeterna-solana.pages.dev/api/solana/rpc"
+    );
+    expect(calls.rpcUrl).not.toContain("api.mainnet-beta.solana.com");
   });
 
   it("fails closed when fund() returns no signature", async () => {

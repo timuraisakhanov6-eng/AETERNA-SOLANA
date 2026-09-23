@@ -12,7 +12,7 @@
  * keys.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { PublicKey } from "@solana/web3.js";
 
 const calls: {
@@ -23,6 +23,7 @@ const calls: {
   tokenClass?: unknown;
   bundlerUrl?: unknown;
   provider?: unknown;
+  rpcUrl?: unknown;
 } = { fundArgs: [], uploadCalls: 0, priceArgs: [], balanceValues: [] };
 
 let uploadShouldFail = false;
@@ -41,12 +42,15 @@ vi.mock("@irys/web-upload", () => ({
       withProvider: (provider: unknown) => {
         calls.provider = provider;
         return {
-          withRpc: () => ({
-            bundlerUrl: (url: unknown) => {
-              calls.bundlerUrl = url;
-              return { build: async () => fakeIrys };
-            },
-          }),
+          withRpc: (rpc: unknown) => {
+            calls.rpcUrl = rpc;
+            return {
+              bundlerUrl: (url: unknown) => {
+                calls.bundlerUrl = url;
+                return { build: async () => fakeIrys };
+              },
+            };
+          },
           build: async () => fakeIrys,
         };
       },
@@ -93,10 +97,18 @@ function aeternaWallet(overrides: Record<string, unknown> = {}) {
 
 describe("Phase B fund-only storage payment", () => {
   beforeEach(() => {
+    // creatorIrys is browser-only and derives its Solana RPC from the page
+    // origin; the node test environment has no `location`, so the origin the
+    // browser would provide is stubbed here.
+    vi.stubGlobal("location", { origin: "https://aeterna-solana.pages.dev" });
     calls.fundArgs = [];
     calls.uploadCalls = 0;
     calls.priceArgs = [];
     uploadShouldFail = false;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("funds with the EXACT server-quoted atomic amount and returns the funding signature", async () => {
@@ -121,6 +133,26 @@ describe("Phase B fund-only storage payment", () => {
     expect(typeof calls.tokenClass).toBe("function");
     // The Irys node endpoint is preserved.
     expect(calls.bundlerUrl).toBe("https://uploader.irys.xyz");
+  });
+
+  it("routes Solana reads through the SAME-ORIGIN AETERNA proxy, never a public RPC", async () => {
+    const w = toCreatorIrysWallet(aeternaWallet());
+    await fundCreatorPaidStorage("1000000", w);
+
+    // A browser must not call api.mainnet-beta.solana.com (HTTP 403 for
+    // browser origins); the Irys Connection is pointed at the read-only
+    // AETERNA proxy instead. `new Connection()` needs an ABSOLUTE URL.
+    expect(calls.rpcUrl).toBe(
+      "https://aeterna-solana.pages.dev/api/solana/rpc"
+    );
+    expect(calls.rpcUrl).not.toContain("api.mainnet-beta.solana.com");
+  });
+
+  it("an explicit rpcUrl override still wins", async () => {
+    const w = toCreatorIrysWallet(aeternaWallet());
+    await fundCreatorPaidStorage("1000000", w, "https://rpc.override.invalid");
+
+    expect(calls.rpcUrl).toBe("https://rpc.override.invalid");
   });
 
   it("NEVER calls upload (upload is Phase C/D)", async () => {
