@@ -62,6 +62,9 @@ function normalizePublicKey(value: unknown): string | null {
     if (typeof record["toBase58"] === "function") {
       return (value as { toBase58: () => string }).toBase58();
     }
+    if (typeof record["pubkey"] === "string") {
+      return record["pubkey"];
+    }
     if (typeof record["value"] === "string") {
       return record["value"];
     }
@@ -104,16 +107,25 @@ interface SolanaTokenBalance {
 interface SolanaTransactionMeta {
   preTokenBalances?: SolanaTokenBalance[];
   postTokenBalances?: SolanaTokenBalance[];
+  /** The on-chain failure lives HERE, not at the transaction top level. */
+  err?: unknown;
 }
 
-interface SolanaTransactionResponse {
-  result?: {
-    slot: number;
-    blockTime?: number;
-    transaction?: { message?: { accountKeys?: unknown } };
-    meta?: SolanaTransactionMeta;
-    err?: unknown;
-  };
+/**
+ * The shape `getSolanaTransaction()` actually resolves to.
+ *
+ * `solanaJsonRpc()` UNWRAPS the JSON-RPC envelope (`return data.result`), so the
+ * helper yields the TRANSACTION OBJECT itself — never `{ result: {...} }`.
+ *
+ * This type previously declared the envelope shape, so reading
+ * `transaction.result` type-checked while always being `undefined` at runtime:
+ * every storage verification failed closed no matter what was on-chain.
+ */
+interface SolanaTransaction {
+  slot: number;
+  blockTime?: number;
+  transaction?: { message?: { accountKeys?: unknown } };
+  meta?: SolanaTransactionMeta;
 }
 
 /**
@@ -181,9 +193,12 @@ export async function verifySolanaUsdcStoragePayment({
     };
   }
 
-  let transaction: SolanaTransactionResponse;
+  let transaction: SolanaTransaction | null;
   try {
-    transaction = (await getSolanaTransaction(rpcUrl, transactionSignature)) as SolanaTransactionResponse;
+    transaction = (await getSolanaTransaction(
+      rpcUrl,
+      transactionSignature
+    )) as SolanaTransaction | null;
   } catch {
     return {
       ok: false,
@@ -191,8 +206,7 @@ export async function verifySolanaUsdcStoragePayment({
     };
   }
 
-  const result = transaction.result;
-  if (!result) {
+  if (!transaction) {
     /* The lookup window elapsed with no transaction. Distinguish a payment
        that the chain knows about but this provider cannot serve yet (pending)
        from one that genuinely does not exist. Payment validation is not
@@ -211,16 +225,16 @@ export async function verifySolanaUsdcStoragePayment({
     };
   }
 
-  if (result.err) {
+  if (transaction.meta?.err) {
     return {
       ok: false,
       reason: "TRANSACTION_FAILED",
-      details: { err: result.err },
+      details: { err: transaction.meta.err },
     };
   }
 
   const accountKeys = normalizeAccountKeys(
-    result.transaction?.message?.accountKeys
+    transaction.transaction?.message?.accountKeys
   );
   if (accountKeys.length === 0) {
     return {
@@ -238,8 +252,8 @@ export async function verifySolanaUsdcStoragePayment({
     };
   }
 
-  const preTokenBalances = result.meta?.preTokenBalances ?? [];
-  const postTokenBalances = result.meta?.postTokenBalances ?? [];
+  const preTokenBalances = transaction.meta?.preTokenBalances ?? [];
+  const postTokenBalances = transaction.meta?.postTokenBalances ?? [];
 
   /* Exact destination authority: the on-chain token recipient MUST be
      the expected Irys destination for the expected mint. No fallback to
@@ -299,7 +313,7 @@ export async function verifySolanaUsdcStoragePayment({
     mint: expectedMint,
     destination: destinationBalance.owner,
     amountAtomic: delta.toString(),
-    slot: result.slot,
-    blockTime: result.blockTime ?? 0,
+    slot: transaction.slot,
+    blockTime: transaction.blockTime ?? 0,
   };
 }

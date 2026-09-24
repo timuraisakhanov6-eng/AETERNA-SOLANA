@@ -74,9 +74,173 @@ describe("verifySolanaUsdcStoragePayment — signature shape", () => {
   });
 });
 
+describe("verifySolanaUsdcStoragePayment — real helper return shape", () => {
+  /**
+   * `solanaJsonRpc()` unwraps the JSON-RPC envelope (`return data.result`), so
+   * `getSolanaTransaction()` resolves to the TRANSACTION OBJECT — never
+   * `{ result: {...} }`.
+   *
+   * The verifier previously read `transaction.result`, which type-checked
+   * against an envelope-shaped interface but was always `undefined` at runtime,
+   * so EVERY storage verification failed closed. These tests pin the real shape
+   * and would fail if that indirection were reintroduced.
+   */
+
+  /** Exactly the shape production returned for the historical signature. */
+  function canonicalTransaction() {
+    return {
+      slot: 449753313,
+      blockTime: 1789747795,
+      transaction: {
+        message: {
+          accountKeys: [
+            { pubkey: PAYER, signer: true },
+            { pubkey: "5pmqr29Bx7FtK1BVPFirwWj4aggdjMmYFvw5CTySh5Zj", signer: false },
+          ],
+        },
+      },
+      meta: {
+        err: null,
+        preTokenBalances: [
+          {
+            owner: DESTINATION,
+            mint: MINT,
+            uiTokenAmount: { amount: "603997844", decimals: 6 },
+          },
+          {
+            owner: PAYER,
+            mint: MINT,
+            uiTokenAmount: { amount: "2161253", decimals: 6 },
+          },
+        ],
+        postTokenBalances: [
+          {
+            owner: DESTINATION,
+            mint: MINT,
+            uiTokenAmount: { amount: "603998079", decimals: 6 },
+          },
+          {
+            owner: PAYER,
+            mint: MINT,
+            uiTokenAmount: { amount: "2161018", decimals: 6 },
+          },
+        ],
+      },
+    };
+  }
+
+  it("accepts a canonical transaction in the real (unwrapped) shape", async () => {
+    getSolanaTransactionMock.mockResolvedValue(canonicalTransaction());
+
+    const result = await verifySolanaUsdcStoragePayment(
+      input(VALID_SIGNATURE)
+    );
+
+    // Passes signature validation AND payer/amount/mint/destination matching.
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.payer).toBe(PAYER);
+      expect(result.amountAtomic).toBe("235");
+      expect(result.mint).toBe(MINT);
+      expect(result.destination).toBe(DESTINATION);
+      expect(result.slot).toBe(449753313);
+    }
+
+    // No statuses fallback was needed — the transaction itself was used.
+    expect(solanaJsonRpcMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a `{ result: … }` envelope as a transaction", async () => {
+    // The old (wrong) assumption: an envelope wrapper. The verifier must NOT
+    // read through it — the helper never produces this shape.
+    getSolanaTransactionMock.mockResolvedValue({
+      result: canonicalTransaction(),
+    });
+    solanaJsonRpcMock.mockResolvedValue({ value: [null] });
+
+    const result = await verifySolanaUsdcStoragePayment(
+      input(VALID_SIGNATURE)
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // No usable accountKeys through the wrapper -> fails closed.
+      expect(result.reason).toBe("MALFORMED_TRANSACTION");
+    }
+  });
+
+  it("still enforces every matching rule on the real shape", async () => {
+    const cases: Array<[string, (tx: ReturnType<typeof canonicalTransaction>) => void, string]> = [
+      [
+        "payer",
+        (tx) => {
+          tx.transaction.message.accountKeys[0] = {
+            pubkey: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
+            signer: true,
+          };
+        },
+        "PAYER_MISMATCH",
+      ],
+      [
+        "destination",
+        (tx) => {
+          tx.meta.postTokenBalances[0].owner =
+            "AwCJWRPbZQLAfyCVD9GcMMA2cERmGfvUSog1Bv8pqdHv";
+        },
+        "DESTINATION_MISMATCH",
+      ],
+      [
+        "mint",
+        (tx) => {
+          tx.meta.postTokenBalances[0].mint =
+            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+        },
+        "DESTINATION_MISMATCH",
+      ],
+      [
+        "amount",
+        (tx) => {
+          tx.meta.postTokenBalances[1].uiTokenAmount.amount = "2161019";
+        },
+        "AMOUNT_MISMATCH",
+      ],
+    ];
+
+    for (const [label, mutate, expected] of cases) {
+      const tx = canonicalTransaction();
+      mutate(tx);
+      getSolanaTransactionMock.mockResolvedValue(tx);
+
+      const result = await verifySolanaUsdcStoragePayment(
+        input(VALID_SIGNATURE)
+      );
+
+      expect(result.ok, `${label} must be rejected`).toBe(false);
+      if (!result.ok) {
+        expect(result.reason, label).toBe(expected);
+      }
+    }
+  });
+
+  it("reports TRANSACTION_FAILED for a failed on-chain transaction", async () => {
+    const tx = canonicalTransaction();
+    (tx.meta as { err: unknown }).err = { InstructionError: [0, "Custom"] };
+    getSolanaTransactionMock.mockResolvedValue(tx);
+
+    const result = await verifySolanaUsdcStoragePayment(
+      input(VALID_SIGNATURE)
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("TRANSACTION_FAILED");
+    }
+  });
+});
+
 describe("verifySolanaUsdcStoragePayment — null lookup distinction", () => {
   it("B. getTransaction null + signature status present -> TRANSACTION_PENDING", async () => {
-    getSolanaTransactionMock.mockResolvedValue({ result: null });
+    getSolanaTransactionMock.mockResolvedValue(null);
     solanaJsonRpcMock.mockResolvedValue({
       value: [
         {
@@ -106,7 +270,7 @@ describe("verifySolanaUsdcStoragePayment — null lookup distinction", () => {
   });
 
   it("C. getTransaction null + signature status absent -> TRANSACTION_NOT_FOUND", async () => {
-    getSolanaTransactionMock.mockResolvedValue({ result: null });
+    getSolanaTransactionMock.mockResolvedValue(null);
     solanaJsonRpcMock.mockResolvedValue({ value: [null] });
 
     const result = await verifySolanaUsdcStoragePayment(
@@ -120,7 +284,7 @@ describe("verifySolanaUsdcStoragePayment — null lookup distinction", () => {
   });
 
   it("fails closed to TRANSACTION_NOT_FOUND when the status cross-check errors", async () => {
-    getSolanaTransactionMock.mockResolvedValue({ result: null });
+    getSolanaTransactionMock.mockResolvedValue(null);
     solanaJsonRpcMock.mockRejectedValue(new Error("RPC_HTTP_ERROR_429"));
 
     const result = await verifySolanaUsdcStoragePayment(

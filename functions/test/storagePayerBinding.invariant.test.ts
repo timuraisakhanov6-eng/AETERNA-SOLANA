@@ -134,22 +134,29 @@ function stubFetch(node: { infoAddress?: string; priceAtomic?: string; reject?: 
 
 let rpcTx: Record<string, unknown> | null = null;
 
+/**
+ * The REAL `getTransaction` transaction shape.
+ *
+ * The fetch stub answers with the JSON-RPC envelope `{jsonrpc, id, result}` and
+ * `solanaJsonRpc()` unwraps it, so what the verifier receives is exactly this
+ * object — `slot`/`blockTime`/`transaction`/`meta` at the top level, with the
+ * on-chain failure inside `meta.err`. It must NOT be wrapped in another
+ * `result` layer: that nesting is what made every verification fail closed.
+ */
 function solanaTx(payer: string, preAtomic: string, postPayerAtomic: string, postDestAtomic: string) {
   return {
     slot: 123,
     blockTime: NOW / 1000,
-    result: {
+    transaction: { message: { accountKeys: [payer, IRYS_DESTINATION] } },
+    meta: {
       err: null,
-      transaction: { message: { accountKeys: [payer, IRYS_DESTINATION] } },
-      meta: {
-        preTokenBalances: [
-          { owner: payer, mint: TOKEN_MINT, uiTokenAmount: { amount: preAtomic } },
-        ],
-        postTokenBalances: [
-          { owner: payer, mint: TOKEN_MINT, uiTokenAmount: { amount: postPayerAtomic } },
-          { owner: IRYS_DESTINATION, mint: TOKEN_MINT, uiTokenAmount: { amount: postDestAtomic } },
-        ],
-      },
+      preTokenBalances: [
+        { owner: payer, mint: TOKEN_MINT, uiTokenAmount: { amount: preAtomic } },
+      ],
+      postTokenBalances: [
+        { owner: payer, mint: TOKEN_MINT, uiTokenAmount: { amount: postPayerAtomic } },
+        { owner: IRYS_DESTINATION, mint: TOKEN_MINT, uiTokenAmount: { amount: postDestAtomic } },
+      ],
     },
   };
 }

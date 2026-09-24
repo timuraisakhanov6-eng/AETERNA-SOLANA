@@ -47,6 +47,13 @@ function stubRpc() {
   return routing;
 }
 
+/**
+ * The REAL `getTransaction` transaction shape.
+ *
+ * The fetch stub answers with the JSON-RPC envelope `{jsonrpc, id, result}` and
+ * `solanaJsonRpc()` unwraps it, so the verifier receives this object directly —
+ * no second `result` layer, and the on-chain failure inside `meta.err`.
+ */
 function tx(opts: {
   payer?: string;
   pre?: TokenBalance[];
@@ -56,13 +63,11 @@ function tx(opts: {
   return {
     slot: 123,
     blockTime: NOW / 1000,
-    result: {
+    transaction: { message: { accountKeys: [opts.payer ?? PAYER, IRYS_DESTINATION] } },
+    meta: {
       err: opts.err ?? null,
-      transaction: { message: { accountKeys: [opts.payer ?? PAYER, IRYS_DESTINATION] } },
-      meta: {
-        preTokenBalances: opts.pre ?? [],
-        postTokenBalances: opts.post ?? [],
-      },
+      preTokenBalances: opts.pre ?? [],
+      postTokenBalances: opts.post ?? [],
     },
   };
 }
