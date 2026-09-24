@@ -56,9 +56,16 @@ function baseHeaders(origin: string): Record<string, string> {
   };
 }
 
-function fail(origin: string, status = 400, error = "error"): Response {
+function fail(
+  origin: string,
+  status = 400,
+  error = "error",
+  details?: Record<string, unknown>
+): Response {
   return new Response(
-    JSON.stringify({ ok: false, error }),
+    JSON.stringify(
+      details ? { ok: false, error, ...details } : { ok: false, error }
+    ),
     { status, headers: baseHeaders(origin) }
   );
 }
@@ -182,14 +189,22 @@ export async function onRequestPost(
   if (!verification.ok) {
     /* Verification failed. If the quote had also expired, report that — the
        caller must re-quote rather than retry a payment that cannot be matched.
-       Otherwise surface the exact verification reason (unchanged behaviour). */
+       Otherwise surface the exact verification reason (unchanged behaviour).
+
+       The expired response additionally carries the verifier's own `reason`
+       and `details` for diagnosis only. Nothing about verification, the
+       matching conditions, the quote, expiry semantics or acceptance changes:
+       this branch already rejects, and it still rejects. */
     if (quoteExpired) {
       const expiredQuote: StorageQuote = { ...quote, state: "EXPIRED" };
       await putStorageQuote(
         env as Parameters<typeof putStorageQuote>[0],
         expiredQuote
       );
-      return fail(origin, 409, "STORAGE_QUOTE_EXPIRED");
+      return fail(origin, 409, "STORAGE_QUOTE_EXPIRED", {
+        reason: verification.reason,
+        details: verification.details,
+      });
     }
 
     return new Response(

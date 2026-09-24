@@ -152,9 +152,16 @@ describe("/api/storage/verify-payment — expired quote recovery", () => {
     );
 
     expect(response.status).toBe(409);
-    const payload = (await response.json()) as { ok: boolean; error: string };
+    const payload = (await response.json()) as {
+      ok: boolean;
+      error: string;
+      reason?: string;
+    };
     expect(payload.ok).toBe(false);
     expect(payload.error).toBe("STORAGE_QUOTE_EXPIRED");
+    // Observability: the verifier's own reason is surfaced for diagnosis. The
+    // rejection itself is unchanged — it was already a 409.
+    expect(payload.reason).toBe("AMOUNT_MISMATCH");
 
     // An expired quote with mismatched payment data is never accepted.
     expect(
