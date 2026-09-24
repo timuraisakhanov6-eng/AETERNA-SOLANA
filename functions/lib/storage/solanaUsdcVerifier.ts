@@ -10,7 +10,7 @@
  * client-side wallet operations.
  */
 
-import { getSolanaTransaction } from "../solana/rpc";
+import { getSolanaTransaction, solanaJsonRpc } from "../solana/rpc";
 
 export interface SolanaUsdcVerificationInput {
   readonly rpcUrl: string;
@@ -38,6 +38,7 @@ export interface SolanaUsdcVerificationFailure {
     | "INVALID_SIGNATURE"
     | "RPC_UNAVAILABLE"
     | "TRANSACTION_NOT_FOUND"
+    | "TRANSACTION_PENDING"
     | "TRANSACTION_FAILED"
     | "MALFORMED_TRANSACTION"
     | "PAYER_MISMATCH"
@@ -115,6 +116,55 @@ interface SolanaTransactionResponse {
   };
 }
 
+/**
+ * Exact Solana signature shape: base58 (which excludes 0, O, I and l) of a
+ * 64-byte value, i.e. 86-88 characters.
+ *
+ * The previous `[A-Za-z0-9]{64,88}` accepted non-base58 characters and
+ * truncated values, so a malformed signature survived validation and then
+ * surfaced as a misleading TRANSACTION_NOT_FOUND / RPC_UNAVAILABLE instead of
+ * a clear INVALID_SIGNATURE.
+ */
+const SIGNATURE_REGEX = /^[1-9A-HJ-NP-Za-km-z]{86,88}$/;
+
+interface SignatureStatusValue {
+  slot?: number;
+  err?: unknown;
+  confirmationStatus?: string;
+}
+
+interface SignatureStatusesResponse {
+  value?: (SignatureStatusValue | null)[];
+}
+
+/**
+ * Cross-check for a signature the transaction lookup could not return.
+ *
+ * A signature that the status API knows about but `getTransaction` cannot yet
+ * serve means the payment IS on-chain and merely not visible to this provider
+ * yet — that is `TRANSACTION_PENDING`, not "does not exist".
+ *
+ * Best-effort and read-only: if the status call itself fails we keep the
+ * pre-existing outcome (fail closed — the payment is still not accepted).
+ */
+async function signatureStatusExists(
+  rpcUrl: string,
+  transactionSignature: string
+): Promise<boolean> {
+  try {
+    const response = (await solanaJsonRpc<SignatureStatusesResponse>(
+      rpcUrl,
+      "getSignatureStatuses",
+      [[transactionSignature], { searchTransactionHistory: true }]
+    )) as SignatureStatusesResponse;
+
+    const entry = response?.value?.[0];
+    return Boolean(entry);
+  } catch {
+    return false;
+  }
+}
+
 export async function verifySolanaUsdcStoragePayment({
   rpcUrl,
   transactionSignature,
@@ -123,7 +173,7 @@ export async function verifySolanaUsdcStoragePayment({
   expectedAmountAtomic,
   expectedDestination,
 }: SolanaUsdcVerificationInput): Promise<SolanaUsdcVerificationResult> {
-  if (!/^[A-Za-z0-9]{64,88}$/.test(transactionSignature)) {
+  if (!SIGNATURE_REGEX.test(transactionSignature)) {
     return {
       ok: false,
       reason: "INVALID_SIGNATURE",
@@ -143,6 +193,18 @@ export async function verifySolanaUsdcStoragePayment({
 
   const result = transaction.result;
   if (!result) {
+    /* The lookup window elapsed with no transaction. Distinguish a payment
+       that the chain knows about but this provider cannot serve yet (pending)
+       from one that genuinely does not exist. Payment validation is not
+       weakened: a pending outcome is still a REJECTION — it only tells the
+       caller that retrying verification may succeed. */
+    if (await signatureStatusExists(rpcUrl, transactionSignature)) {
+      return {
+        ok: false,
+        reason: "TRANSACTION_PENDING",
+      };
+    }
+
     return {
       ok: false,
       reason: "TRANSACTION_NOT_FOUND",

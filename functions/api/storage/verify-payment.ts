@@ -134,14 +134,14 @@ export async function onRequestPost(
     return fail(origin, 404, "STORAGE_QUOTE_NOT_FOUND");
   }
 
-  if (quote.state === "EXPIRED" || now >= quote.expiresAt) {
-    const expiredQuote: StorageQuote = { ...quote, state: "EXPIRED" };
-    await putStorageQuote(
-      env as Parameters<typeof putStorageQuote>[0],
-      expiredQuote
-    );
-    return fail(origin, 409, "STORAGE_QUOTE_EXPIRED");
-  }
+  /* The expiry gate is deliberately NOT applied here. Verification runs first
+     (below) so that a payment the creator already made against this immutable
+     quote can still be credited after the quote's 5-minute window lapsed —
+     otherwise the funds sit with Irys while the UI demands a second payment.
+     An expired quote is still never accepted with missing/mismatched payment
+     data: that case is rejected with STORAGE_QUOTE_EXPIRED after verification
+     fails. */
+  const quoteExpired = quote.state === "EXPIRED" || now >= quote.expiresAt;
 
   const existing = await getStoragePayment(
     env as Parameters<typeof getStoragePayment>[0],
@@ -180,6 +180,18 @@ export async function onRequestPost(
   });
 
   if (!verification.ok) {
+    /* Verification failed. If the quote had also expired, report that — the
+       caller must re-quote rather than retry a payment that cannot be matched.
+       Otherwise surface the exact verification reason (unchanged behaviour). */
+    if (quoteExpired) {
+      const expiredQuote: StorageQuote = { ...quote, state: "EXPIRED" };
+      await putStorageQuote(
+        env as Parameters<typeof putStorageQuote>[0],
+        expiredQuote
+      );
+      return fail(origin, 409, "STORAGE_QUOTE_EXPIRED");
+    }
+
     return new Response(
       JSON.stringify({
         ok: false,

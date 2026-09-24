@@ -11,6 +11,10 @@ import {
 } from "@/lib/payment/servicePaymentController";
 import type { ServicePaymentController } from "@/lib/payment/servicePaymentController";
 import {
+  ensureStorageFundingSignature,
+  verifyStoragePaymentWithRetry,
+} from "@/components/capsule/storageVerificationRetry";
+import {
   PHANTOM_INSTALL_URL,
   PHANTOM_MOBILE_BODY,
   PHANTOM_MOBILE_OPEN_LABEL,
@@ -486,6 +490,20 @@ export default function CapsuleBuilder() {
 
   // 🛡️ StrictMode / double-click guard
   const sealingRef = useRef(false);
+
+  /**
+   * 🛡️ Funding-signature ledger (keyed by storagePaymentId).
+   *
+   * Once the creator's wallet has sent the Irys funding transfer for a given
+   * storagePaymentId, that signature is remembered here — and persisted to
+   * sessionStorage — so a re-entry into the review flow (including after a
+   * failed verification, or after a reload of this tab) verifies the EXISTING
+   * payment instead of funding a second time.
+   */
+  const storageFundingRef = useRef<{
+    storagePaymentId: string;
+    fundingSignature: string;
+  } | null>(null);
 
   /* ================= SERVICE PAYMENT STATE ================= */
 
@@ -1110,26 +1128,38 @@ export default function CapsuleBuilder() {
       // Phase B - creator pays Irys directly (FUND-ONLY): the wallet
       // signs the USDC funding transfer with the EXACT atomic amount
       // from the server quote. Upload/publication is Phase C/D.
-      const creatorWallet = toCreatorIrysWallet(walletRef.current as never);
-      const { fundingSignature } = await fundCreatorPaidStorage(
-        storageReview.expectedAmountAtomic,
-        creatorWallet
+      //
+      // 🛡️ NEVER FUND TWICE: if this storagePaymentId already has a
+      // funding signature, the creator has paid. Go straight to
+      // verification of that existing payment.
+      const { fundingSignature } = await ensureStorageFundingSignature(
+        storageFundingRef.current,
+        storageReview.storagePaymentId,
+        async () => {
+          const creatorWallet = toCreatorIrysWallet(walletRef.current as never);
+          return fundCreatorPaidStorage(
+            storageReview.expectedAmountAtomic,
+            creatorWallet
+          );
+        }
       );
 
-      const verifyRes = await fetch("/api/storage/verify-payment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          storagePaymentId: storageReview.storagePaymentId,
-          transactionSignature: fundingSignature,
-        }),
-      });
-      const verifyData = await verifyRes.json().catch(() => null);
-      if (!verifyRes.ok || !verifyData?.ok) {
-        const reason =
-          (verifyData?.reason as string | undefined) ??
-          (verifyData?.error as string | undefined) ??
-          "STORAGE_PAYMENT_NOT_VERIFIED";
+      // Record the signature so this storagePaymentId can never be funded twice.
+      storageFundingRef.current = {
+        storagePaymentId: storageReview.storagePaymentId,
+        fundingSignature,
+      };
+
+      // VERIFY-ONLY retry: re-runs /api/storage/verify-payment for the SAME
+      // payment while the outcome is TRANSACTION_PENDING. Never funds, never
+      // signs, never uploads.
+      const verifyOutcome = await verifyStoragePaymentWithRetry(
+        storageReview.storagePaymentId,
+        fundingSignature
+      );
+
+      if (!verifyOutcome.ok) {
+        const reason = verifyOutcome.reason;
         // Stale-quote hardening: an expired quote can never be verified,
         // so funding it again would only pay twice. Drop the review; the
         // next explicit Create Capsule re-quotes (no re-payment, no
