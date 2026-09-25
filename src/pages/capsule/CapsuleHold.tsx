@@ -84,6 +84,49 @@ type LocationState = Readonly<{
 }>;
 
 
+/* ================= ERROR DETAIL (diagnosability) ================= */
+
+/**
+ * Derives a SHORT, human-readable technical reason for a publish
+ * failure from the error preserved across the seal retry loop.
+ *
+ * Rationale: the retry loop previously discarded the real error in a
+ * bare `catch {}`, so production showed only generic copy and no
+ * incident could be localised without screenshot forensics. This
+ * helper turns whatever was thrown into a bounded, safe-to-display
+ * string — it NEVER exposes key material (crypto helpers throw codes,
+ * not secrets) and truncates to keep the UI within its bounds.
+ *
+ * Returns undefined when there is nothing useful to show, so ordinary
+ * failures keep exactly the previous UI.
+ */
+export function sealErrorDetail(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+
+  let raw: string;
+  if (value instanceof Error) {
+    raw = value.message || value.name;
+  } else if (typeof value === "string") {
+    raw = value;
+  } else {
+    try {
+      raw = JSON.stringify(value);
+    } catch {
+      raw = String(value);
+    }
+  }
+
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+
+  // Bounded: one short line, never a dump.
+  const MAX = 300;
+  return trimmed.length > MAX
+    ? `${trimmed.slice(0, MAX)}…`
+    : trimmed;
+}
+
+
 /* ================= RECOVERY VALIDATION ================= */
 
 // Strict shape-check for sessionStorage recovery payload.
@@ -191,6 +234,13 @@ export default function CapsuleHold() {
     useState<{
       title: string;
       message: string;
+      /**
+       * Underlying failure reason (code or message). Optional and
+       * additive: it NEVER replaces the human-readable message — it is
+       * rendered as a secondary, collapsible technical detail so a
+       * production publish failure is diagnosable instead of opaque.
+       */
+      detail?: string;
     } | null>(null);
 
 
@@ -661,6 +711,14 @@ export default function CapsuleHold() {
             | null =
             null;
 
+          // Preserves the MOST RECENT underlying failure so the outer
+          // handler can surface a diagnosable reason instead of only the
+          // generic copy. Never used for control flow — the retry logic
+          // below is unchanged.
+          let lastSealError:
+            unknown =
+            null;
+
           try {
 
             let attempt = 0;
@@ -734,7 +792,13 @@ export default function CapsuleHold() {
 
                 break;
 
-              } catch {
+              } catch (sealErr) {
+
+                // Keep the reason. The retry policy is unchanged; only
+                // the previously-discarded error is now retained so a
+                // production failure is diagnosable.
+                lastSealError =
+                  sealErr;
 
                 attempt++;
 
@@ -854,12 +918,15 @@ export default function CapsuleHold() {
 
         catch (err) {
 
-          if (import.meta.env.DEV) {
-            console.error(
-              "[AETERNA] Critical sealing error:",
-              err
-            );
-          }
+          // Always log the underlying failure (not only in DEV): a
+          // production publish failure must leave a diagnosable trace in
+          // the browser console. No secrets are logged — the error
+          // carries a code/message, never key material.
+          console.error(
+            "[AETERNA] Critical sealing error:",
+            err,
+            lastSealError
+          );
 
           try {
 
@@ -875,6 +942,13 @@ export default function CapsuleHold() {
           startedRef.current =
             false;
 
+          // Derive a SHORT, human-readable technical reason from the
+          // preserved underlying error. The generic copy above stays the
+          // primary message; this is secondary detail only.
+          const derivedDetail =
+            sealErrorDetail(
+              lastSealError ?? err
+            );
 
           setError({
 
@@ -883,6 +957,9 @@ export default function CapsuleHold() {
 
             message:
               "Your payment was successful.\n\nWe couldn't finish publishing your capsule. No data has been lost.\n\nPress Try Again to continue.",
+
+            detail:
+              derivedDetail,
 
           });
 
@@ -947,6 +1024,26 @@ export default function CapsuleHold() {
               {error.message}
 
             </p>
+
+            {error.detail && (
+
+              <details className="text-left pt-2">
+
+                <summary className="cursor-pointer text-xs uppercase tracking-wider text-muted-foreground/70 select-none">
+
+                  Technical details
+
+                </summary>
+
+                <p className="aeterna-error-notice mt-2 p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500/90 font-mono">
+
+                  {error.detail}
+
+                </p>
+
+              </details>
+
+            )}
 
           </div>
 
