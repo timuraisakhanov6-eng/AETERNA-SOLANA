@@ -124,7 +124,7 @@ export function FinalCapsuleReviewContent({
           </p>
         )}
         {sealError && (
-          <div className="p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
+          <div className="aeterna-error-notice p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
             {sealError}
           </div>
         )}
@@ -186,8 +186,8 @@ export default function FinalCapsuleReviewModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[520px] gap-5">
-        <DialogHeader className="space-y-2 text-center sm:text-center">
+      <DialogContent className="max-w-[520px] min-w-0 gap-5">
+        <DialogHeader className="space-y-2 text-center sm:text-center min-w-0">
           <DialogTitle className="font-display tracking-wide uppercase text-base">
             Review capsule before storage payment
           </DialogTitle>

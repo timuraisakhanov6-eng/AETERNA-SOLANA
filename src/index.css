@@ -237,3 +237,38 @@ html {
     0 0 70px rgba(255,180,90,0.22);
   color: hsl(45 20% 92%);
 }
+
+
+/* ============================================================= */
+/* Error notice — long unbroken technical values (Solana          */
+/* signatures, tx ids, hashes, URLs) must wrap INSIDE the box     */
+/* and never expand the modal or the viewport.                    */
+/* Purely presentational: no content or structure is changed.     */
+/* ============================================================= */
+
+@layer components {
+
+  .aeterna-error-notice {
+
+    /* Never exceed the available width of the parent (modal/column) */
+    max-width: 100%;
+    min-width: 0;
+
+    /* Bring an inherited nowrap/pre back to normal so wrapping can occur */
+    white-space: normal;
+
+    /* Break long contiguous tokens (base58/base64/hex/URLs) at any point */
+    overflow-wrap: anywhere;
+    word-break: break-word;
+
+    /* Long values must not push the box wider than its container */
+    box-sizing: border-box;
+
+  }
+
+  /* Flex/grid children of the notice shrink instead of blowing out */
+  .aeterna-error-notice > * {
+    min-width: 0;
+  }
+
+}

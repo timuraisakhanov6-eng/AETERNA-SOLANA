@@ -45,6 +45,7 @@ export default defineConfig({
       "src/**/*.test.ts",
       "src/components/capsule/CapsuleBuilderRestoreBatching.test.tsx",
       "src/components/capsule/CapsuleBuilderPhantomGate.test.tsx",
+      "src/components/capsule/ErrorNoticeOverflow.test.tsx",
       "functions/**/*.test.ts",
     ],
     // The default "forks" pool crashed with a worker-exit error in

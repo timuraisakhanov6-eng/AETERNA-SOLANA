@@ -1351,7 +1351,7 @@ export default function CapsuleBuilder() {
               </label>
 
               {sealError && (
-                <div className="p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
+                <div className="aeterna-error-notice p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
                   {sealError}
                 </div>
               )}
@@ -1402,7 +1402,7 @@ export default function CapsuleBuilder() {
               )}
 
               {servicePaymentError && (
-                <div className="p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
+                <div className="aeterna-error-notice p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
                   {servicePaymentError}
                 </div>
               )}
