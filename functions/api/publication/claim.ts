@@ -24,8 +24,7 @@ import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { confirmTxOnIrysNode } from "../../lib/irys/node";
 import { getStoragePayment } from "../../lib/storage/storagePaymentStore";
 import {
-  getChunkPointerMap,
-  putChunkPointerEntries,
+  chunkPointerEntryKey,
 } from "../../lib/storage/chunkPointerRegistryStore";
 import { SHA256_REGEX, STORAGE_POINTER_REGEX } from "../../../src/lib/crypto/validators";
 
@@ -321,21 +320,18 @@ export async function onRequestPost(
   }
 
   /* kind === "chunk": CHUNK_POINTER_REGISTRY is the chunk authority.
-     A publication verification record is NOT created for chunks. */
+     A publication verification record is NOT created for chunks.
 
-  const registryKey = `chunk-pointer-registry:${capsuleId}`;
-  const registryRaw = await env.CHUNK_POINTER_REGISTRY.get(registryKey);
-  let registry: Record<string, string> = {};
-  if (registryRaw) {
-    try {
-      registry = JSON.parse(registryRaw) as Record<string, string>;
-    } catch {
-      return fail(origin, 503, "CHUNK_REGISTRY_CORRUPTED");
-    }
-  }
+     Per-chunk key model: this chunk owns its OWN KV entry
+     (`chunk-pointer-entry:<capsuleId>:<chunkId>`). There is no shared
+     capsule map and no read-modify-write, so two concurrent chunk
+     claims cannot overwrite each other's pointer. */
 
-  const existingPointer = registry[chunkId as string];
-  if (existingPointer !== undefined) {
+  const entryKey = chunkPointerEntryKey(capsuleId, chunkId as string);
+
+  const existingPointer = await env.CHUNK_POINTER_REGISTRY.get(entryKey);
+
+  if (existingPointer !== null && existingPointer !== undefined) {
     if (existingPointer !== txId) {
       return fail(origin, 409, "CHUNK_ALREADY_BOUND");
     }
@@ -345,8 +341,7 @@ export async function onRequestPost(
     );
   }
 
-  registry[chunkId as string] = txId;
-  await env.CHUNK_POINTER_REGISTRY.put(registryKey, JSON.stringify(registry));
+  await env.CHUNK_POINTER_REGISTRY.put(entryKey, txId);
   await env.PUBLICATION_VERIFICATIONS.put(
     txIndexKey,
     JSON.stringify({ lifecycleId, capsuleId, creatorIdentityId, kind, chunkId })

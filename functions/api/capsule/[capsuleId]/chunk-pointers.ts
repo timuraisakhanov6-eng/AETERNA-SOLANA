@@ -70,6 +70,21 @@ function baseHeaders(origin?: string): Record<string, string> {
 /* ================= ERROR ================= */
 
 /**
+ * Bounded read-side retry for KV propagation lag.
+ *
+ * KV `list()` is eventually consistent; a just-written entry may not
+ * be visible immediately. The Registry is append-only, so polling a
+ * few times is deterministic and finite. This wraps ONLY the registry
+ * read — it never retries validation or security failures.
+ */
+const REGISTRY_READ_MAX_ATTEMPTS = 3;
+const REGISTRY_READ_RETRY_DELAY_MS = 100;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Canonical failure response — never leaks internal KV/storage details.
  */
 function fail(
@@ -122,19 +137,48 @@ export const onRequestGet = async (
   }
 
   // Branded capsuleId refinement for the Registry store API. The
-  // Registry model is already scoped per capsuleId (KV key
-  // "chunk-pointer-registry:<capsuleId>") — no new key scheme.
+  // Registry model is scoped per capsuleId through the per-chunk key
+  // prefix "chunk-pointer-entry:<capsuleId>:" — no shared capsule key.
   assertCapsuleId(capsuleId);
 
-  let map: ChunkPointerMap;
+  /**
+   * KV is eventually consistent: a `list()` may not immediately
+   * reflect an entry written moments ago. The Registry is append-only
+   * and never mutated after a capsule is sealed, so a short bounded
+   * poll converts a transient propagation lag into a correct read
+   * instead of a spurious failure. The retry is finite and only wraps
+   * the registry read — validation and error semantics below are
+   * unchanged, and an exhausted budget still fails closed.
+   */
+  let map: ChunkPointerMap | null = null;
 
-  try {
-    map = await getChunkPointerMap(env, capsuleId);
-  } catch {
-    // Fail closed. Registry unavailable or malformed — internal KV
-    // details are never exposed. Absent Registry data (no raw entry)
-    // is NOT an error: getChunkPointerMap returns an empty map, and a
-    // text-only capsule legitimately has an empty Registry.
+  for (let attempt = 0; attempt < REGISTRY_READ_MAX_ATTEMPTS; attempt++) {
+
+    try {
+
+      map = await getChunkPointerMap(env, capsuleId);
+
+      break;
+
+    } catch {
+
+      if (attempt === REGISTRY_READ_MAX_ATTEMPTS - 1) {
+
+        // Fail closed. Registry unavailable or malformed — internal KV
+        // details are never exposed. Absent Registry data (no entry)
+        // is NOT an error: getChunkPointerMap returns an empty map, and
+        // a text-only capsule legitimately has an empty Registry.
+        return fail(503, "STORAGE_ERROR", origin);
+
+      }
+
+      await sleep(REGISTRY_READ_RETRY_DELAY_MS);
+
+    }
+
+  }
+
+  if (map === null) {
     return fail(503, "STORAGE_ERROR", origin);
   }
 

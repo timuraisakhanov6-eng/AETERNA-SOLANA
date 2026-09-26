@@ -183,10 +183,15 @@ describe("Phase C — creator-paid publication claim", () => {
     const res = await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX });
     expect(res.status).toBe(200);
 
-    const registry = JSON.parse(
-      (await env.CHUNK_POINTER_REGISTRY.get(`chunk-pointer-registry:${CAPSULE_ID}`))!
+    // Per-chunk key model: this chunk owns its OWN KV entry. There is
+    // no shared capsule-level registry blob to read or rewrite.
+    const entry = await env.CHUNK_POINTER_REGISTRY.get(
+      `chunk-pointer-entry:${CAPSULE_ID}:${CHUNK_ID}`
     );
-    expect(registry[CHUNK_ID]).toBe(CHUNK_TX);
+    expect(entry).toBe(CHUNK_TX);
+    expect(
+      await env.CHUNK_POINTER_REGISTRY.get(`chunk-pointer-registry:${CAPSULE_ID}`)
+    ).toBeNull();
     expect(await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)).toBeNull();
     expect(await env.PUBLICATION_VERIFICATIONS.get(`publication-tx:${CHUNK_TX}`)).toBeTruthy();
   });

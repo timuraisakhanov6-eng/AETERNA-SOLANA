@@ -20,6 +20,7 @@
 import { WebUploader } from "@irys/web-upload";
 import { WebUSDCSolana } from "@irys/web-upload-solana";
 import { PublicKey } from "@solana/web3.js";
+import { Buffer } from "buffer";
 
 /**
  * Irys L1 Mainnet bundler — the endpoint that actually publishes
@@ -324,7 +325,12 @@ export async function uploadCreatorData(
   const uploader = await buildCreatorUploader(wallet, rpcUrl);
 
   try {
-    const receipt = (await uploader.upload(data)) as { id?: unknown };
+    // @irys/upload-core only accepts a Buffer or a .pipe()-capable
+    // stream: a plain Uint8Array fails its Buffer.isBuffer guard and
+    // throws "Input data is not a buffer or a compatible stream".
+    // Buffer.from COPIES the bytes (no view), so the caller's buffer
+    // is never mutated; byte order and length are preserved.
+    const receipt = (await uploader.upload(Buffer.from(data))) as { id?: unknown };
     if (!receipt || typeof receipt !== "object") {
       failClosed("malformed Irys receipt");
     }
@@ -390,7 +396,8 @@ export async function uploadCreatorPaid(
 
   let receipt: { id?: unknown } | null = null;
   try {
-    receipt = await uploader.upload(data);
+    // See uploadCreatorData: the Irys boundary requires a Buffer.
+    receipt = await uploader.upload(Buffer.from(data));
   } catch (error) {
     failClosed(
       `Irys upload failed (fundingSignature=${fundingSignature}): ${error instanceof Error ? error.message : String(error)}`

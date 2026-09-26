@@ -18,6 +18,20 @@
  *
  * scoped per capsuleId.
  *
+ * PERSISTENCE MODEL (C=2 prerequisite):
+ *
+ *   One KV key PER CHUNK:
+ *     chunk-pointer-entry:<capsuleId>:<chunkId>
+ *
+ *   The previous model stored the WHOLE capsule map under a single
+ *   key and updated it with a read-modify-write. That is a proven
+ *   lost-update race under concurrent chunk claims: two claims both
+ *   read the same blob, each adds its own chunk to a private copy,
+ *   and the second `put` overwrites the first, silently dropping a
+ *   pointer (KV has no CAS / transaction). Per-chunk keys remove the
+ *   shared mutable object entirely: concurrent claims for DIFFERENT
+ *   chunkIds write DIFFERENT keys and cannot lose each other.
+ *
  * This module MUST NEVER:
  *   - read from or write to CAPSULE_MANIFESTS;
  *   - import Manifest structural types (ManifestV1, ManifestIntegrityExt,
@@ -27,16 +41,8 @@
  *     payment logic, or sealing.
  *
  * This module deliberately does NOT define:
- *   - duplicate-entry semantics;
- *   - pointer-immutability policy;
- *   - migration policy;
  *   - authorization policy;
  *   - API behavior.
- *
- * None of the above are defined by canonical documentation at this
- * stage of the migration, and inventing them here would exceed this
- * file's scope. Such policy belongs in a later, explicitly reviewed
- * step, not in the persistence abstraction itself.
  */
 
 import type { CapsuleId, ChunkId } from "@/types/manifest";
@@ -49,11 +55,29 @@ import type { StoragePointer } from "@/lib/storage/storageAdapter";
  * `@cloudflare/workers-types`, and deliberately not bound to any
  * concrete Cloudflare binding here. The actual persistence backend
  * (KV, Durable Object, or otherwise) is wired in by the caller; this
- * file only depends on the minimal get/put surface it actually uses.
+ * file only depends on the surface it actually uses.
+ *
+ * `list` is part of the contract because the per-chunk key model
+ * reconstructs the capsule map by prefix-listing the chunk entries.
+ * This mirrors the real Cloudflare KV binding, which provides
+ * `list({ prefix, cursor, limit })`.
  */
+export interface ChunkPointerEntryKey {
+  name: string;
+}
+
 export interface ChunkPointerRegistryKVNamespace {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
+  list(options: {
+    prefix: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<{
+    keys: ChunkPointerEntryKey[];
+    list_complete: boolean;
+    cursor?: string;
+  }>;
 }
 
 export interface ChunkPointerRegistryKV {
@@ -71,38 +95,163 @@ export interface ChunkPointerRegistryKV {
  */
 export type ChunkPointerMap = Readonly<Record<ChunkId, StoragePointer>>;
 
-const REGISTRY_KEY_PREFIX = "chunk-pointer-registry:";
+const REGISTRY_ENTRY_PREFIX = "chunk-pointer-entry:";
 
 /**
- * Canonical persistence key for one capsule's Registry.
+ * Canonical per-chunk KV key.
+ *
+ * chunkId is a 64-char lowercase hex sha256 and capsuleId is 64-char
+ * lowercase hex, so the `:` delimiter cannot collide with either
+ * component and the capsule-scoped prefix cannot leak across capsules.
  */
-function registryKey(capsuleId: CapsuleId): string {
-  return `${REGISTRY_KEY_PREFIX}${capsuleId}`;
+export function chunkPointerEntryKey(
+  capsuleId: string,
+  chunkId: string
+): string {
+  return `${REGISTRY_ENTRY_PREFIX}${capsuleId}:${chunkId}`;
+}
+
+/**
+ * Canonical prefix scoping every chunk entry of one capsule.
+ */
+export function chunkPointerEntryPrefix(
+  capsuleId: string
+): string {
+  return `${REGISTRY_ENTRY_PREFIX}${capsuleId}:`;
+}
+
+/**
+ * Extract the chunkId from a listed entry key.
+ *
+ * Only the KNOWN prefix is removed; the remainder is the chunkId.
+ * Returns null when the key does not belong to this capsule's prefix
+ * (defensive: a foreign key must never be coerced into this map).
+ */
+function chunkIdFromEntryKey(
+  capsuleId: string,
+  name: string
+): string | null {
+  const prefix = chunkPointerEntryPrefix(capsuleId);
+  if (!name.startsWith(prefix)) {
+    return null;
+  }
+  const chunkId = name.slice(prefix.length);
+  return chunkId.length > 0 ? chunkId : null;
+}
+
+/**
+ * Load one chunk's StoragePointer, if the Registry has an entry.
+ *
+ * Returns null when no entry exists. An unreadable/malformed stored
+ * value is NOT silently treated as absent — the caller's `get()` will
+ * surface a rejection and the caller fails closed.
+ */
+export async function getChunkPointerEntry(
+  env: ChunkPointerRegistryKV,
+  capsuleId: CapsuleId,
+  chunkId: ChunkId
+): Promise<string | null> {
+
+  return await env.CHUNK_POINTER_REGISTRY.get(
+    chunkPointerEntryKey(capsuleId, chunkId)
+  );
+
+}
+
+/**
+ * Persist ONE chunk pointer entry.
+ *
+ * Single-key write, no read-modify-write: two concurrent calls for
+ * different chunkIds cannot lose each other's pointer.
+ */
+export async function putChunkPointerEntry(
+  env: ChunkPointerRegistryKV,
+  capsuleId: CapsuleId,
+  chunkId: ChunkId,
+  pointer: StoragePointer
+): Promise<void> {
+
+  await env.CHUNK_POINTER_REGISTRY.put(
+    chunkPointerEntryKey(capsuleId, chunkId),
+    pointer
+  );
+
 }
 
 /**
  * Load the existing Chunk Pointer Registry entries for a capsule.
  *
- * Returns an empty map if no entries exist yet (e.g. a capsule with
- * no media chunks). Does not consult Manifest data in any way.
+ * Reconstructs the full map by PREFIX-LISTING every per-chunk entry
+ * and reading each value. Returns an empty map if no entries exist
+ * yet (e.g. a capsule with no media chunks). Does not consult Manifest
+ * data in any way.
+ *
+ * Pagination is mandatory, not cosmetic:
+ *   - KV `list()` returns at most 1,000 keys per page by default;
+ *   - `list_complete === false` means MORE keys remain even when the
+ *     returned `keys` array is empty (recently expired/deleted keys
+ *     are iterated through but omitted), so `keys.length === 0` is
+ *     NEVER a termination signal;
+ *   - the SAME prefix must be resupplied on every page.
  */
 export async function getChunkPointerMap(
   env: ChunkPointerRegistryKV,
   capsuleId: CapsuleId
 ): Promise<ChunkPointerMap> {
 
-  const raw =
-    await env.CHUNK_POINTER_REGISTRY.get(
-      registryKey(capsuleId)
+  const prefix = chunkPointerEntryPrefix(capsuleId);
+
+  const names: string[] = [];
+
+  let cursor: string | undefined = undefined;
+
+  for (;;) {
+
+    const page = await env.CHUNK_POINTER_REGISTRY.list(
+      cursor === undefined ? { prefix } : { prefix, cursor }
     );
 
-  if (!raw) {
-    return Object.freeze({});
+    for (const key of page.keys) {
+      names.push(key.name);
+    }
+
+    if (page.list_complete) break;
+
+    if (!page.cursor) break;
+
+    cursor = page.cursor;
+
   }
 
-  return Object.freeze(
-    JSON.parse(raw) as Record<ChunkId, StoragePointer>
-  );
+  const map: Record<ChunkId, StoragePointer> = {};
+
+  for (const name of names) {
+
+    const chunkId = chunkIdFromEntryKey(capsuleId, name);
+
+    if (chunkId === null) {
+      // A key under this capsule's prefix but with no chunkId is
+      // malformed registry state — fail closed rather than silently
+      // dropping it (a dropped pointer becomes "Missing storage
+      // pointer" at open time, which is worse than a loud failure).
+      throw new Error(
+        "[AETERNA] Chunk Pointer Registry entry is malformed"
+      );
+    }
+
+    const value = await env.CHUNK_POINTER_REGISTRY.get(name);
+
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        "[AETERNA] Chunk Pointer Registry entry is unreadable"
+      );
+    }
+
+    map[chunkId] = value as StoragePointer;
+
+  }
+
+  return Object.freeze(map);
 
 }
 
@@ -116,22 +265,18 @@ export async function resolveChunkPointer(
   chunkId: ChunkId
 ): Promise<StoragePointer | null> {
 
-  const map =
-    await getChunkPointerMap(
-      env,
-      capsuleId
-    );
+  const pointer = await getChunkPointerEntry(env, capsuleId, chunkId);
 
-  return map[chunkId] ?? null;
+  return pointer === null ? null : (pointer as StoragePointer);
 
 }
 
 /**
  * Persist Chunk Pointer Registry entries for a capsule.
  *
- * `entries` is merged into any existing map for this capsuleId and
- * the combined result is written back. This module does not impose
- * duplicate-entry rejection, overwrite rejection, or any other
+ * Writes each entry under its own per-chunk key. `entries` is merged
+ * into any existing map for this capsuleId. This module does not
+ * impose duplicate-entry rejection, overwrite rejection, or any other
  * update policy beyond this merge — canon does not yet define such
  * policy, and this file is the persistence abstraction only.
  */
@@ -141,22 +286,17 @@ export async function putChunkPointerEntries(
   entries: ChunkPointerMap
 ): Promise<ChunkPointerMap> {
 
-  const existing =
-    await getChunkPointerMap(
+  for (const [chunkId, pointer] of Object.entries(entries)) {
+
+    await putChunkPointerEntry(
       env,
-      capsuleId
+      capsuleId,
+      chunkId as ChunkId,
+      pointer
     );
 
-  const merged: Record<ChunkId, StoragePointer> = {
-    ...existing,
-    ...entries,
-  };
+  }
 
-  await env.CHUNK_POINTER_REGISTRY.put(
-    registryKey(capsuleId),
-    JSON.stringify(merged)
-  );
-
-  return Object.freeze(merged);
+  return getChunkPointerMap(env, capsuleId);
 
 }
