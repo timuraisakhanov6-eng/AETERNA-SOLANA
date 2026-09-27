@@ -528,7 +528,51 @@ export default function CapsuleHold() {
         existingLock !==
           canonicalLifecycleId
       ) {
+
+        /**
+         * FOREIGN LOCK — a DIFFERENT lifecycle still owns this tab's
+         * seal lock.
+         *
+         * The lock is deliberately NOT superseded automatically: the
+         * previous lifecycle's async work may still be in flight after
+         * its unmount, so silently taking the lock over could allow two
+         * seal flows in one tab. This flow therefore refuses to start.
+         *
+         * It MUST NOT return silently either: a silent return leaves
+         * the creator on the non-error "Finalizing your capsule…"
+         * screen forever — no request, no error, and (because the error
+         * screen is the only recovery surface) no TRY AGAIN.
+         *
+         * The existing error/recovery UI is surfaced instead. Recovery
+         * stays explicit and user-driven: `handleRetry()` removes the
+         * lock and re-runs this effect, after which the current
+         * lifecycle claims the lock through the unchanged normal path.
+         *
+         * Diagnostic detail carries ONLY the two lifecycle identifiers
+         * (non-secret, server-issued ids). No secret, key, or plaintext
+         * is read or surfaced here.
+         */
+        console.error(
+          "[AETERNA] Seal session needs to be restarted: a previous capsule session is still registered in this tab."
+        );
+
+        setError({
+
+          title:
+            "Seal session needs to be restarted",
+
+          message:
+            "A previous capsule session is still registered in this tab.\n\nPress Try Again to start a fresh seal session for this capsule.",
+
+          detail:
+            sealErrorDetail(
+              `stale seal lock: ${existingLock} !== ${canonicalLifecycleId}`
+            ),
+
+        });
+
         return;
+
       }
 
 
