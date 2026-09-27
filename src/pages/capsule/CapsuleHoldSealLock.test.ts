@@ -104,7 +104,7 @@ const WALLET_ACCOUNT = "wallet-account-1";
 const TRUSTED_NOW = 1755000000000;
 const OPEN_AT = TRUSTED_NOW + 3_600_000;
 
-const ERROR_TITLE = "Seal session needs to be restarted";
+const ERROR_TITLE = "Please try again";
 
 /** Every value the error surface must never leak. */
 const SECRETS = [

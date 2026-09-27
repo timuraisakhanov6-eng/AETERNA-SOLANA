@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Loader2, Lock, AlertTriangle, RefreshCw } from "lucide-react";
+import { Loader2, Lock, ShieldCheck, AlertTriangle, RefreshCw } from "lucide-react";
 import { sealCapsuleCore } from "@/lib/capsule/sealCapsuleCore";
 import { createCreatorIrysStorage } from "@/lib/storage/creatorIrysStorage";
 import { toCreatorIrysWallet } from "@/lib/storage/creatorIrys";
@@ -26,19 +26,27 @@ import type { SealCapsuleResult } from "@/lib/capsule/sealCapsuleCore";
 
 
 
-/* ================= BASE64 DECODE (browser-safe) ================= */
+/* ================= USER-FACING TIME ================= */
 
-// base64 → Uint8Array without Buffer (Vite / browser / Cloudflare Pages safe)
-// Used only for MetaMask-recovery from sessionStorage.
-function base64ToUint8Array(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+/**
+ * Formats the capsule's unlock moment for the waiting/confirmation surface.
+ *
+ * Presentation only: reads the already-validated `openAt` (UTC millis) that
+ * arrived with the hold state and renders it in the creator's locale. No
+ * authority, no boundary check, no crypto — the canonical trusted-time
+ * comparison happens elsewhere and is untouched.
+ */
+function formatUnlockMoment(openAt: number): string {
+  const date = new Date(openAt);
+  if (!Number.isFinite(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
-
 
 /* ================= TYPES ================= */
 
@@ -239,8 +247,13 @@ export default function CapsuleHold() {
        * additive: it NEVER replaces the human-readable message — it is
        * rendered as a secondary, collapsible technical detail so a
        * production publish failure is diagnosable instead of opaque.
+       *
+       * `undefined` is explicitly allowed because the deriver
+       * (`sealErrorDetail`) returns `undefined` when there is nothing
+       * useful to say — under `exactOptionalPropertyTypes` a bare
+       * `detail?: string` would reject that valid value.
        */
-      detail?: string;
+      detail?: string | undefined;
     } | null>(null);
 
 
@@ -559,10 +572,10 @@ export default function CapsuleHold() {
         setError({
 
           title:
-            "Seal session needs to be restarted",
+            "Please try again",
 
           message:
-            "A previous capsule session is still registered in this tab.\n\nPress Try Again to start a fresh seal session for this capsule.",
+            "A previous capsule session is still open in this tab.\n\nPress Try Again to start a fresh session for this capsule.",
 
           detail:
             sealErrorDetail(
@@ -592,6 +605,23 @@ export default function CapsuleHold() {
 
     const finalizeSealing =
       async () => {
+
+        /**
+         * Preserves the MOST RECENT underlying seal failure so the outer
+         * handler can surface a diagnosable reason instead of only the
+         * generic copy. Never used for control flow — the retry logic
+         * below is unchanged.
+         *
+         * Declared at FUNCTION scope, NOT inside the STEP 5 `try` block:
+         * the outer `catch` below reads it, and a `let` declared inside
+         * that `try` is not visible there. When it was block-scoped, the
+         * failure handler itself threw `ReferenceError: lastSealError is
+         * not defined`, so the original seal error was never surfaced and
+         * the creator was left on the waiting screen forever.
+         */
+        let lastSealError:
+          unknown =
+          null;
 
         try {
 
@@ -753,14 +783,6 @@ export default function CapsuleHold() {
           let result:
             | SealCapsuleResult
             | null =
-            null;
-
-          // Preserves the MOST RECENT underlying failure so the outer
-          // handler can surface a diagnosable reason instead of only the
-          // generic copy. Never used for control flow — the retry logic
-          // below is unchanged.
-          let lastSealError:
-            unknown =
             null;
 
           try {
@@ -951,6 +973,30 @@ export default function CapsuleHold() {
 
           }
 
+          /**
+           * Presentation decision, made AFTER the seal is fully complete
+           * and the capsule has been reset.
+           *
+           * `sealed` is already true, so the success surface below is the
+           * only thing left to render. We stay on this route (instead of
+           * redirecting) purely when doing so can TELL THE CREATOR SOMETHING
+           * USEFUL AND TRUE: the capsule still has an unlock moment in the
+           * future, so we can confirm the seal and name the date.
+           *
+           * When the capsule is retired/expired there is nothing to add to
+           * the existing confirmation destination, so the historical
+           * redirect is preserved byte-for-byte.
+           *
+           * This is a RENDER decision only: the seal result, the lifecycle,
+           * the entitlement and the storage are exactly as before.
+           */
+          const unlockMoment = formatUnlockMoment(holdState.openAt);
+          const unlockIsFuture = holdState.openAt > Date.now();
+
+          if (unlockMoment && unlockIsFuture) {
+            return;
+          }
+
           navigate(
             result.confirmationLink,
             {
@@ -997,10 +1043,10 @@ export default function CapsuleHold() {
           setError({
 
             title:
-              "Unable to Publish Capsule",
+              "We couldn't finish preparing your capsule",
 
             message:
-              "Your payment was successful.\n\nWe couldn't finish publishing your capsule. No data has been lost.\n\nPress Try Again to continue.",
+              "Your payment was successful and nothing has been lost.\n\nPress Try Again to continue preparing your capsule.",
 
             detail:
               derivedDetail,
@@ -1057,13 +1103,13 @@ export default function CapsuleHold() {
 
           <div className="space-y-2">
 
-            <h1 className="text-2xl font-display uppercase tracking-wider">
+            <h1 className="text-3xl font-display tracking-wide">
 
               {error.title}
 
             </h1>
 
-            <p className="text-muted-foreground text-sm leading-relaxed whitespace-pre-line">
+            <p className="text-muted-foreground text-base leading-relaxed whitespace-pre-line">
 
               {error.message}
 
@@ -1111,38 +1157,146 @@ export default function CapsuleHold() {
   }
 
 
+  if (sealed) {
+
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
+
+        <div className="relative z-10 text-center space-y-6 px-6 max-w-md">
+
+          <div className="mx-auto w-16 h-16 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
+
+            <ShieldCheck
+              className="text-emerald-500"
+              size={32}
+            />
+
+          </div>
+
+          <h1 className="text-4xl font-display tracking-wide">
+
+            Capsule secured
+
+          </h1>
+
+          <p className="text-muted-foreground text-base leading-relaxed">
+
+            Your capsule has been secured and published.
+            It can now be opened at its unlock moment.
+
+          </p>
+
+          {formatUnlockMoment(holdState.openAt) && (
+
+            <div className="pt-2 space-y-1">
+
+              <p className="text-xs text-muted-foreground/60 tracking-wide">
+
+                Unlock date
+
+              </p>
+
+              <p className="text-lg text-emerald-500 font-medium tracking-wide">
+
+                {formatUnlockMoment(holdState.openAt)}
+
+              </p>
+
+            </div>
+
+          )}
+
+        </div>
+
+      </div>
+    );
+
+  }
+
+
   return (
 
     <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
 
-      <div className="relative z-10 text-center space-y-8 px-6 max-w-sm">
+      <div className="relative z-10 text-center space-y-8 px-6 max-w-md">
 
-        <Lock
-          className="text-emerald-500 mx-auto"
-          size={32}
-        />
+        <div className="mx-auto w-16 h-16 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
 
-        <Loader2
-          className="animate-spin text-emerald-500 mx-auto"
-          size={20}
-        />
+          <Lock
+            className="text-emerald-500"
+            size={28}
+          />
 
-        <p className="text-xs uppercase tracking-widest text-muted-foreground">
-          Finalizing your capsule…
-        </p>
+        </div>
 
-        <p className="text-xs uppercase tracking-widest text-muted-foreground/60">
-          Your capsule is being securely published.
-          <br />
-          Please keep this window open.
-        </p>
+        <h1 className="text-4xl font-display tracking-wide">
+
+          Capsule is being prepared
+
+        </h1>
+
+        <div className="space-y-3">
+
+          <p className="text-muted-foreground text-base leading-relaxed">
+
+            Your payment is confirmed. We're now preparing and publishing
+            your capsule — this usually takes a moment.
+
+          </p>
+
+          <p className="text-muted-foreground/70 text-sm leading-relaxed">
+
+            Please keep this window open until it finishes.
+
+          </p>
+
+        </div>
+
+        <div className="flex items-center justify-center gap-2 text-emerald-500">
+
+          <Loader2
+            className="animate-spin"
+            size={16}
+          />
+
+          <span className="text-xs tracking-wide text-muted-foreground/70">
+
+            Working…
+
+          </span>
+
+        </div>
+
+        {formatUnlockMoment(holdState.openAt) && (
+
+          <div className="pt-2 space-y-1">
+
+            <p className="text-xs text-muted-foreground/60 tracking-wide">
+
+              Unlock date
+
+            </p>
+
+            <p className="text-base text-emerald-500 font-medium tracking-wide">
+
+              {formatUnlockMoment(holdState.openAt)}
+
+            </p>
+
+          </div>
+
+        )}
 
         {slowMode && (
+
           <p className="text-xs text-muted-foreground/50 tracking-wide">
+
             Large capsules may require additional time.
             <br />
             Everything is progressing normally.
+
           </p>
+
         )}
 
       </div>
