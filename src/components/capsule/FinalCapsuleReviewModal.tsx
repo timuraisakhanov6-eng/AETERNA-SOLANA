@@ -25,6 +25,18 @@ const formatUTCDate = (ts: number) => {
   });
 };
 
+// Same canonical UTC instant as formatUTCDate, presented as a time of
+// day (e.g. "12:00 UTC"). Never a second date or a local-time value.
+const formatUTCTime = (ts: number) => {
+  if (!Number.isFinite(ts)) return "";
+  return new Date(ts).toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  });
+};
+
 /* ================= PROPS ================= */
 
 export interface FinalCapsuleReviewModalProps {
@@ -97,27 +109,49 @@ export function FinalCapsuleReviewContent({
 }: FinalCapsuleReviewContentProps) {
   return (
     <>
-      <div className="space-y-2">
+      <div className="space-y-4">
         {typeof description === "string" && description.length > 0 && (
-          <p className="text-sm">
-            <span className="text-muted-foreground">Description:</span>{" "}
-            {description}
-          </p>
+          <div className="space-y-1">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground">
+              Description
+            </p>
+            <p className="text-sm leading-relaxed">{description}</p>
+          </div>
         )}
         {typeof unlockAt === "number" && (
-          <p className="text-sm">
-            <span className="text-muted-foreground">Unlock date (UTC):</span>{" "}
-            {formatUTCDate(unlockAt)}
-          </p>
+          <div className="space-y-1">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground">
+              Unlock date
+            </p>
+            <p className="text-sm">
+              <span className="text-amber-400 font-medium">
+                {formatUTCDate(unlockAt)}
+              </span>
+              <span className="text-muted-foreground">
+                {" "}
+                · {formatUTCTime(unlockAt)} UTC
+              </span>
+            </p>
+          </div>
         )}
-        <p className="text-sm">
-          <span className="text-muted-foreground">Final storage size:</span>{" "}
-          {(storageReview.storageSizeBytes / 1024).toFixed(1)} KB
+
+        <div className="space-y-1 border-t border-border/40 pt-4">
+          <p className="text-xs uppercase tracking-wider text-muted-foreground">
+            Storage cost
+          </p>
+          {/* The amount is the server quote's displayAmountUSDC rendered
+              VERBATIM — never recomputed from any size, never rounded
+              locally. expectedAmountAtomic stays outside this component. */}
+          <p className="text-2xl font-display text-emerald-400">
+            ${storageReview.displayAmountUSDC}{" "}
+            <span className="text-base text-emerald-400/80">USDC</span>
+          </p>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Your capsule will be prepared securely for its unlock date.
         </p>
-        <p className="text-sm">
-          <span className="text-muted-foreground">Irys storage price:</span>{" "}
-          ${storageReview.displayAmountUSDC} USDC (set by Irys)
-        </p>
+
         {walletMismatch && (
           <p className="text-sm text-destructive">
             Reconnect the same wallet used for the $1 payment to continue.
@@ -167,8 +201,8 @@ export function FinalCapsuleReviewContent({
 /**
  * AETERNA — Final Capsule Review (Phase B storage review dialog).
  *
- * Rendered only after a successful canonical Irys quote
- * (storageReview !== null): the price shown is the server quote's
+ * Rendered only after a successful canonical storage quote
+ * (storageReview !== null): the amount shown is the server quote's
  * displayAmountUSDC verbatim, and confirm invokes the existing storage
  * payment handler — the wallet transaction amount remains
  * storageReview.expectedAmountAtomic (outside this component, verbatim,
@@ -188,13 +222,14 @@ export default function FinalCapsuleReviewModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[520px] min-w-0 gap-5">
         <DialogHeader className="space-y-2 text-center sm:text-center min-w-0">
-          <DialogTitle className="font-display tracking-wide uppercase text-base">
-            Review capsule before storage payment
+          <DialogTitle className="font-display tracking-wide uppercase text-lg">
+            Review your capsule
           </DialogTitle>
-          <DialogDescription>
-            Confirm the capsule details — the wallet transaction will use
-            the exact Irys price shown here.
-          </DialogDescription>
+          {content.sealError === null && (
+            <DialogDescription>
+              Confirm the details below before your capsule is prepared.
+            </DialogDescription>
+          )}
         </DialogHeader>
 
         <FinalCapsuleReviewContent

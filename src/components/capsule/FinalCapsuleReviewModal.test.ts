@@ -2,8 +2,9 @@
  * AETERNA — Final Capsule Review modal regression tests (node env).
  *
  * Scope (Final Capsule Review patch):
- * - the dialog renders ONLY the canonical review fields and the price is
- *   the server quote's displayAmountUSDC verbatim (the component's props
+ * - the modal presents USER-FACING copy only: no provider name, no raw
+ *   storage size. The amount shown is the server quote's
+ *   displayAmountUSDC rendered VERBATIM (the component's props
  *   deliberately exclude expectedAmountAtomic, so the review can never
  *   recalculate, round or reconstruct the transaction amount);
  * - the confirm button is wired to the existing storage payment handler
@@ -120,50 +121,56 @@ function markupText(modal: ModalProps): string {
 describe("Final Capsule Review content", () => {
   it("1: shows the Description block for a non-empty description", () => {
     const text = markupText(baseProps({ description: "Birthday memories" }));
-    expect(text).toContain("Description: Birthday memories");
+    expect(text).toContain("Description");
+    expect(text).toContain("Birthday memories");
   });
 
   it("2: hides the Description block for an empty or absent description", () => {
     for (const description of ["", null]) {
       const text = markupText(baseProps({ description }));
-      expect(text).not.toContain("Description:");
-      expect(text).toContain("Irys storage price: $0.004385 USDC (set by Irys)");
+      expect(text).not.toContain("Description");
+      expect(text).toContain("$0.004385 USDC");
     }
   });
 
-  it("3: shows the exact unlockAt value with the canonical UTC presentation", () => {
+  it("3: shows the exact unlockAt value with the canonical UTC date and time", () => {
     const text = markupText(baseProps({}));
-    // formatUTCDate pins the canonical UTC rendering of the exact state
-    // value — no second date is created.
-    expect(text).toContain("Unlock date (UTC): Sep 20, 2026");
+    // formatUTCDate/formatUTCTime pin the canonical UTC rendering of the
+    // exact state value — no second date, no local-time conversion.
+    expect(text).toContain("Unlock date");
+    expect(text).toContain("Sep 20, 2026");
+    expect(text).toContain("12:00 UTC");
   });
 
-  it("4: shows the price line verbatim from displayAmountUSDC", () => {
+  it("4: shows the amount line verbatim from displayAmountUSDC", () => {
     const text = markupText(baseProps({}));
-    expect(text).toContain("Irys storage price: $0.004385 USDC (set by Irys)");
+    expect(text).toContain("Storage cost");
+    expect(text).toContain("$0.004385 USDC");
   });
 
-  it("5: never exposes an atomic or derived amount — displayAmountUSDC is the only price", () => {
+  it("5: never exposes an atomic or derived amount — displayAmountUSDC is the only amount", () => {
     const text = markupText(baseProps({}));
-    expect(text).toContain("$0.004385 USDC (set by Irys)");
-    // No atomic integer representation of the price may appear anywhere.
+    expect(text).toContain("$0.004385 USDC");
+    // No atomic integer representation of the amount may appear anywhere.
     expect(text).not.toContain("4385000");
-    // Exactly one price sentence exists in the review.
-    expect(text.match(/USDC \(set by Irys\)/g)?.length).toBe(1);
+    // Exactly one amount sentence exists in the review.
+    expect(text.match(/USDC/g)?.length).toBe(1);
     expect(text).not.toContain("expectedAmountAtomic");
   });
 
-  it("6: shows final storage size and the wallet mismatch warning", () => {
+  it("6: shows the wallet mismatch warning and never renders a raw storage size", () => {
     const text = markupText(baseProps({ walletMismatch: true }));
-    expect(text).toContain("Final storage size: 2.0 KB");
     expect(text).toContain(
       "Reconnect the same wallet used for the $1 payment to continue."
     );
+    // The raw byte size is not a user-facing value.
+    expect(text).not.toContain("2.0 KB");
+    expect(text).not.toContain("Final storage size");
   });
 
   it("7: shows the review title, the sealError surface, and renders nothing for a null review", () => {
-    const text = markupText(baseProps({ sealError: "Irys storage payment not verified: FAILED" }));
-    expect(text).toContain("Irys storage payment not verified: FAILED");
+    const text = markupText(baseProps({ sealError: "Storage payment not verified: FAILED" }));
+    expect(text).toContain("Storage payment not verified: FAILED");
 
     // The accessible title lives in the Dialog wrapper (Radix context).
     const dialogEl = FinalCapsuleReviewModal(baseProps({})) as ReactElement;
@@ -173,12 +180,65 @@ describe("Final Capsule Review content", () => {
     expect(title).toBeDefined();
     expect(
       (title!.props as { children?: ReactNode }).children
-    ).toBe("Review capsule before storage payment");
+    ).toBe("Review your capsule");
 
     const empty = renderToStaticMarkup(
       createElement(FinalCapsuleReviewModal, baseProps({ storageReview: null }))
     );
     expect(empty).toBe("");
+  });
+});
+
+/* ================= user-facing copy contract ================= */
+
+describe("Final Capsule Review user-facing copy", () => {
+  it("15: never renders a provider name (no technical infrastructure copy)", () => {
+    // The whole modal tree — title, DialogDescription and content — must
+    // be free of any infrastructure/provider name. Walk every element in
+    // the modal and assert no rendered string mentions it.
+    const dialogEl = FinalCapsuleReviewModal(baseProps({})) as ReactElement;
+    const strings = collectElements(dialogEl)
+      .flatMap((el) => {
+        const children = (el.props as { children?: ReactNode }).children;
+        return typeof children === "string" ? [children] : [];
+      })
+      .join(" ");
+    expect(strings.toLowerCase()).not.toContain("irys");
+    // And the content body (static markup) is likewise clean.
+    const text = markupText(baseProps({ sealError: null }));
+    expect(text.toLowerCase()).not.toContain("irys");
+  });
+
+  it("16: the amount is rendered verbatim and never recomputed from the UI size", () => {
+    // A quote with a display amount that bears no arithmetic relation to
+    // storageSizeBytes: if the component derived the amount from the size
+    // (or rounded it), this assertion would fail.
+    const text = markupText(
+      baseProps({
+        storageReview: { displayAmountUSDC: "12.345678", storageSizeBytes: 1024 },
+      })
+    );
+    expect(text).toContain("$12.345678 USDC");
+    // 1024 bytes / 1024 = "1.0 KB" must not appear anywhere.
+    expect(text).not.toContain("1.0 KB");
+  });
+
+  it("17: the amount carries the intended positive/payment visual treatment", () => {
+    const html = renderToStaticMarkup(
+      createElement(FinalCapsuleReviewContent, contentProps(baseProps({})))
+    );
+    // The amount line uses the emerald (positive/payment) token, not the
+    // muted label token. A regression to a plain/muted amount fails here.
+    expect(html).toMatch(/text-emerald-400[^"]*"[^>]*>\s*\$0\.004385/);
+    expect(html).toContain("Storage cost");
+    expect(html).toContain("border-t");
+  });
+
+  it("18: shows the neutral preparation reassurance line", () => {
+    const text = markupText(baseProps({}));
+    expect(text).toContain(
+      "Your capsule will be prepared securely for its unlock date."
+    );
   });
 });
 
@@ -255,7 +315,7 @@ describe("Final Capsule Review confirm / cancel behavior", () => {
     );
     // Same quote in → same review out (no re-quote, no mutation).
     expect(first).toBe(second);
-    expect(first).toContain("$0.004385 USDC (set by Irys)");
+    expect(markupText(props)).toContain("$0.004385 USDC");
   });
 
   it("12: preparing state preserves spinner and duplicate-click protection", () => {
