@@ -43,25 +43,53 @@ interface ClaimResponse {
   error?: string;
 }
 
+/**
+ * Operation-level deadline for the discrete `POST /api/publication/claim`.
+ *
+ * Bounds ONE request only — not the Irys upload, not the capsule
+ * preparation, not the page. The claim endpoint's own outbound Irys
+ * node confirmation is already internally bounded
+ * (`IRYS_NODE_TIMEOUT_MS = 8000` in functions/lib/irys/node.ts), so
+ * 15 s gives the Function generous headroom over its own internal
+ * budget while still converting a genuinely non-settling request into
+ * a rejection. The value matches the project's canonical external
+ * HTTP bound (`IRYS_HTTP_TIMEOUT_MS`).
+ *
+ * The claim is idempotent server-side (Node confirmation + pointer
+ * assertion), so an aborted request can be retried safely by the
+ * existing callers' retry paths.
+ */
+const CLAIM_REQUEST_TIMEOUT_MS = 15_000;
+
 async function claimPublication(
   ctx: CreatorIrysStorageContext,
   txId: string,
   kind: "vault" | "chunk",
   chunkId?: string
 ): Promise<void> {
-  const res = await fetch("/api/publication/claim", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      creatorIdentityId: ctx.creatorIdentityId,
-      lifecycleId: ctx.lifecycleId,
-      capsuleId: ctx.capsuleId,
-      storagePaymentId: ctx.storagePaymentId,
-      txId,
-      kind,
-      ...(chunkId !== undefined ? { chunkId } : {}),
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CLAIM_REQUEST_TIMEOUT_MS);
+
+  let res: Response;
+
+  try {
+    res = await fetch("/api/publication/claim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        creatorIdentityId: ctx.creatorIdentityId,
+        lifecycleId: ctx.lifecycleId,
+        capsuleId: ctx.capsuleId,
+        storagePaymentId: ctx.storagePaymentId,
+        txId,
+        kind,
+        ...(chunkId !== undefined ? { chunkId } : {}),
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as

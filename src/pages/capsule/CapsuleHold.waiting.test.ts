@@ -82,6 +82,7 @@ vi.mock("@/lib/runtime/runtimeRegistry", () => ({
 
 import CapsuleHold from "@/pages/capsule/CapsuleHold";
 import { AETERNAWalletContext } from "@/context/AETERNAWalletContext";
+import { getRuntime } from "@/lib/runtime/runtimeRegistry";
 
 /* ───────────────────────── fixtures ───────────────────────── */
 
@@ -336,6 +337,45 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
 
     // payment status stays truthful in the failure copy
     expect(visibleText()).toMatch(/payment was successful/i);
+  }, 20_000);
+
+  /**
+   * 3b. TERMINAL PATH (Task J3) — an operation-level stall (a
+   *     never-settling IndexedDB open surfaced as J3's typed
+   *     IdbOpenTimeoutError, from the self-contained idbOpenDeadline
+   *     helper) must reach the SAME visible failure surface as any other
+   *     seal failure: no infinite wait, no false success, an explicit way
+   *     forward.
+   */
+  it("3b. a bounded-operation timeout reaches the failure surface (no permanent wait)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // getRuntime is where the bounded IDB open lives. Simulate the deployed
+    // wedge having been converted into a rejection by the deadline.
+    const { IdbOpenTimeoutError, IDB_OPEN_DEADLINE_MS } = await import(
+      "@/lib/runtime/idbOpenDeadline"
+    );
+    vi.mocked(getRuntime).mockRejectedValueOnce(
+      new IdbOpenTimeoutError(IDB_OPEN_DEADLINE_MS)
+    );
+
+    renderHold();
+
+    expect(
+      await screen.findByText(
+        /we couldn't finish preparing your capsule/i,
+        undefined,
+        { timeout: 15_000 }
+      )
+    ).toBeTruthy();
+
+    expect(
+      screen.getByRole("button", { name: /try again/i })
+    ).toBeTruthy();
+
+    // Never a false success, never a stuck waiting screen.
+    expect(screen.queryByText(/capsule secured/i)).toBeNull();
+    expect(screen.queryByText(/capsule is being prepared/i)).toBeNull();
   }, 20_000);
 
   /**

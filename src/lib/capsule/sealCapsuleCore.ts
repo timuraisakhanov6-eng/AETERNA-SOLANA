@@ -130,15 +130,86 @@ function finalizationDelay(attempt: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
 }
 
+/**
+ * Operation-level deadline for the discrete `POST /api/capsule/seal`.
+ *
+ * This bounds ONE request — never the capsule preparation, the upload
+ * duration, or the whole `/create/hold` page. The seal endpoint is
+ * server-side KV + WebCrypto only (no outbound network fetch), so it
+ * settles in tens of milliseconds in normal operation; 8 s is generous
+ * against KV latency spikes while still far below "forever".
+ *
+ * The value intentionally matches the project's canonical bounded-HTTP
+ * constant (`IRYS_NODE_TIMEOUT_MS` / `GATEWAY_TIMEOUT` = 8000) rather
+ * than inventing a new convention. An `AbortController` timed by
+ * `setTimeout` aborts the request so a never-settling response rejects
+ * into the existing `!sealRes.ok` / `finalizeSealing` catch path
+ * instead of hanging the page indefinitely.
+ */
+const SEAL_REQUEST_TIMEOUT_MS = 8_000;
+
+/**
+ * `fetch` for the seal endpoint with an operation-level abort deadline.
+ *
+ * The server-side seal is idempotent/retry-safe, so an aborted request
+ * can be retried verbatim without duplicating the seal. A timeout here is
+ * a CLIENT-side observation failure ("this request did not settle"),
+ * never a statement that the capsule took too long.
+ */
+async function fetchSealWithDeadline(
+  body: Record<string, unknown>
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SEAL_REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch("/api/capsule/seal", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+
+/**
+ * POST a JSON body to a same-origin Cloudflare Function with an
+ * operation-level abort deadline.
+ *
+ * Bound at the SAME 8 s value as the seal request: every endpoint
+ * routed through here (`/api/publication/verify`, `/api/seal/verify`,
+ * `/api/creator/finalize-credit`) is a same-origin Function whose own
+ * outbound calls are already internally bounded (Irys node 8 s). A
+ * client-side deadline only converts a genuinely non-settling request
+ * into a rejection; the callers' existing retry-on-transport-failure
+ * behaviour is unchanged, and a real HTTP error response is still
+ * returned intact (the deadline never rewrites a status).
+ */
 async function postJson(
   url: string,
   body: Record<string, unknown>
 ): Promise<{ status: number; json: Record<string, unknown> | null }> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SEAL_REQUEST_TIMEOUT_MS);
+
+  let res: Response;
+
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
   const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
   return { status: res.status, json };
 }
@@ -873,21 +944,11 @@ export async function sealCapsuleCore(
         deepFreeze(persistedManifest);
 
       const sealRes =
-        await fetch(
-          "/api/capsule/seal",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-            body: JSON.stringify({
-              uploadToken: token,
-              manifest: reusedManifest,
-              creatorAuthorityFragment,
-            }),
-          }
-        );
+        await fetchSealWithDeadline({
+          uploadToken: token,
+          manifest: reusedManifest,
+          creatorAuthorityFragment,
+        });
 
       if (!sealRes.ok) {
 
@@ -1128,21 +1189,11 @@ export async function sealCapsuleCore(
     );
 
     const sealRes =
-      await fetch(
-        "/api/capsule/seal",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            uploadToken: token,
-            manifest,
-            creatorAuthorityFragment,
-          }),
-        }
-      );
+      await fetchSealWithDeadline({
+        uploadToken: token,
+        manifest,
+        creatorAuthorityFragment,
+      });
 
     if (!sealRes.ok) {
 

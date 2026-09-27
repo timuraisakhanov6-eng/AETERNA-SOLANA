@@ -40,6 +40,30 @@ const IRYS_TOKEN = "usdc-solana";
 const IRYS_HTTP_TIMEOUT_MS = 15_000;
 
 /**
+ * Network-only HTTP timeout for the Irys SDK's own upload requests.
+ *
+ * This is the SDK's `builder.timeout(ms)` value, which becomes the
+ * axios `timeout` on the SDK's Api instance — i.e. it bounds the
+ * NETWORK ROUND-TRIP of each Irys HTTP request, and nothing else.
+ *
+ * Critically, it does NOT bound `provider.signMessage()`: the wallet
+ * prompt is a separate, human-driven step inside `dataItem.sign(...)`.
+ * A wallet prompt legitimately left open for minutes is untouched by
+ * this value, so no legitimate human interaction is ever cut short.
+ *
+ * The value is deliberately generous (120 s). A single data-item
+ * upload of a ≤10 MiB payload is well under the 50 MB
+ * `CHUNKING_THRESHOLD`, so it is ONE request; 120 s gives a slow
+ * mobile connection far more than it needs and therefore never fires
+ * on a legitimate large upload. It only converts a genuinely
+ * non-settling HTTP request (a hung socket the browser never closes)
+ * into a rejection that the existing `uploadCreatorData` catch turns
+ * into a fail-closed `[AETERNA] creatorIrys:` error — instead of an
+ * invisible permanent hang in `/create/hold`.
+ */
+const IRYS_SDK_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
  * Minimal wallet surface required by @irys/web-upload-solana
  * (verified against installed package source):
  *   - provider.publicKey (PublicKey with toBuffer());
@@ -174,7 +198,11 @@ async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string):
   const builder = WebUploader(WebUSDCSolana)
     .withProvider(wallet)
     .withRpc(rpcUrl ?? resolveSameOriginRpcUrl())
-    .bundlerUrl(IRYS_NODE_URL);
+    .bundlerUrl(IRYS_NODE_URL)
+    // Bound ONLY the SDK's HTTP requests (network round-trip). This does
+    // NOT bound provider.signMessage() — the wallet prompt is untouched,
+    // so no legitimate human interaction is cut short. See the constant.
+    .timeout(IRYS_SDK_REQUEST_TIMEOUT_MS);
 
   // The narrow structural view AETERNA consumes (unchanged surface).
   // This is a narrowing cast, not an escape hatch: `BaseWebIrys` is

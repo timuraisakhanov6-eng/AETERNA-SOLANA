@@ -24,6 +24,7 @@ const calls: {
   bundlerUrl?: unknown;
   provider?: unknown;
   rpcUrl?: unknown;
+  timeout?: unknown;
 } = { fundArgs: [], uploadCalls: 0, priceArgs: [], balanceValues: [] };
 
 let uploadShouldFail = false;
@@ -47,7 +48,16 @@ vi.mock("@irys/web-upload", () => ({
             return {
               bundlerUrl: (url: unknown) => {
                 calls.bundlerUrl = url;
-                return { build: async () => fakeIrys };
+                // The real builder exposes `.timeout(ms)` AFTER
+                // `.bundlerUrl(...)` (network-only HTTP timeout). Model it
+                // faithfully so the production chain is exercised.
+                return {
+                  timeout: (ms: unknown) => {
+                    calls.timeout = ms;
+                    return { build: async () => fakeIrys };
+                  },
+                  build: async () => fakeIrys,
+                };
               },
             };
           },

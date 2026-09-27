@@ -6,6 +6,11 @@ import type {
   RuntimeChunkRecord,
 } from "./runtimeTypes";
 
+import {
+  withIdbOpenDeadline,
+  IDB_OPEN_DEADLINE_MS,
+} from "./idbOpenDeadline";
+
 const DB_NAME =
   "aeterna-runtime";
 
@@ -95,7 +100,8 @@ export class IndexedDbRuntimeStorage
   private openDatabase():
     Promise<IDBDatabase> {
 
-    return new Promise((
+    return withIdbOpenDeadline(
+      new Promise((
       resolve,
       reject,
     ) => {
@@ -172,7 +178,9 @@ export class IndexedDbRuntimeStorage
 
         };
 
-    });
+      }),
+      IDB_OPEN_DEADLINE_MS,
+    );
 
   }
 
