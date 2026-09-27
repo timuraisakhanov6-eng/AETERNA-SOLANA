@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Loader2, Lock, ShieldCheck, AlertTriangle, RefreshCw } from "lucide-react";
+import { Loader2, Lock, AlertTriangle, RefreshCw } from "lucide-react";
 import { sealCapsuleCore } from "@/lib/capsule/sealCapsuleCore";
 import { createCreatorIrysStorage } from "@/lib/storage/creatorIrysStorage";
 import { toCreatorIrysWallet } from "@/lib/storage/creatorIrys";
@@ -974,29 +974,19 @@ export default function CapsuleHold() {
           }
 
           /**
-           * Presentation decision, made AFTER the seal is fully complete
-           * and the capsule has been reset.
+           * Canonical post-seal navigation, taken AFTER the seal is fully
+           * complete and the capsule has been reset.
            *
-           * `sealed` is already true, so the success surface below is the
-           * only thing left to render. We stay on this route (instead of
-           * redirecting) purely when doing so can TELL THE CREATOR SOMETHING
-           * USEFUL AND TRUE: the capsule still has an unlock moment in the
-           * future, so we can confirm the seal and name the date.
-           *
-           * When the capsule is retired/expired there is nothing to add to
-           * the existing confirmation destination, so the historical
-           * redirect is preserved byte-for-byte.
+           * The creator ALWAYS lands directly on CapsuleView: the
+           * confirmationLink is `/capsule/:capsuleId` (the canonical
+           * CapsuleView destination) and is navigated to UNCONDITIONALLY.
+           * There is deliberately no future-unlock special case — the
+           * waiting page is the only pre-success surface, and the capsule
+           * page is the only post-success surface.
            *
            * This is a RENDER decision only: the seal result, the lifecycle,
            * the entitlement and the storage are exactly as before.
            */
-          const unlockMoment = formatUnlockMoment(holdState.openAt);
-          const unlockIsFuture = holdState.openAt > Date.now();
-
-          if (unlockMoment && unlockIsFuture) {
-            return;
-          }
-
           navigate(
             result.confirmationLink,
             {
@@ -1148,63 +1138,6 @@ export default function CapsuleHold() {
             TRY AGAIN
 
           </Button>
-
-        </div>
-
-      </div>
-    );
-
-  }
-
-
-  if (sealed) {
-
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
-
-        <div className="relative z-10 text-center space-y-6 px-6 max-w-md">
-
-          <div className="mx-auto w-16 h-16 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
-
-            <ShieldCheck
-              className="text-emerald-500"
-              size={32}
-            />
-
-          </div>
-
-          <h1 className="text-4xl font-display tracking-wide">
-
-            Capsule secured
-
-          </h1>
-
-          <p className="text-muted-foreground text-base leading-relaxed">
-
-            Your capsule has been secured and published.
-            It can now be opened at its unlock moment.
-
-          </p>
-
-          {formatUnlockMoment(holdState.openAt) && (
-
-            <div className="pt-2 space-y-1">
-
-              <p className="text-xs text-muted-foreground/60 tracking-wide">
-
-                Unlock date
-
-              </p>
-
-              <p className="text-lg text-emerald-500 font-medium tracking-wide">
-
-                {formatUnlockMoment(holdState.openAt)}
-
-              </p>
-
-            </div>
-
-          )}
 
         </div>
 

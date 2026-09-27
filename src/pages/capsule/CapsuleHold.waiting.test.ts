@@ -3,13 +3,20 @@
 /**
  * AETERNA — `/create/hold` post-payment surface (UX contract).
  *
- * SCOPE: PRESENTATION ONLY. These tests pin the three user-facing states of
- * the post-payment waiting page and prove that the page never lies to the
- * creator and never exposes publication internals:
+ * SCOPE: PRESENTATION ONLY. These tests pin the THREE user-facing states of
+ * the post-payment surface and prove the page never lies to the creator and
+ * never exposes publication internals:
  *
  *   waiting  -> after payment is confirmed, before the seal resolves
- *   success  -> the seal has genuinely completed
+ *   success  -> the seal has genuinely completed: the creator is navigated
+ *               DIRECTLY to CapsuleView (canonical `confirmationLink`)
  *   failure  -> the seal genuinely failed, with an explicit way forward
+ *
+ * CANONICAL POST-SEAL NAVIGATION (Task L2):
+ *   After a successful seal the component MUST call
+ *   `navigate(result.confirmationLink, { replace: true })` UNCONDITIONALLY —
+ *   including when the unlock moment is in the FUTURE. There is NO
+ *   intermediate "Capsule secured" terminal page.
  *
  * The REAL component is mounted (real effects, real lock reads/writes);
  * only its external collaborators are mocked. No live network, no Irys,
@@ -39,6 +46,7 @@ configure({ asyncUtilTimeout: 10_000 });
 const hoisted = vi.hoisted(() => ({
   sealCapsuleCore: vi.fn(),
   resetCapsule: vi.fn(),
+  navigate: vi.fn(),
 }));
 
 vi.mock("@/context/CapsuleContext", () => ({
@@ -58,6 +66,24 @@ vi.mock("@/context/AETERNAWalletContext", async () => {
 vi.mock("@/lib/capsule/sealCapsuleCore", () => ({
   sealCapsuleCore: hoisted.sealCapsuleCore,
 }));
+
+/**
+ * CANONICAL NAVIGATION OBSERVATION.
+ *
+ * The component MUST navigate to `result.confirmationLink` (the canonical
+ * `/capsule/:capsuleId` CapsuleView destination) UNCONDITIONALLY after a
+ * successful seal. `useNavigate` is wrapped so the destination AND options
+ * are observable; every other react-router export is passed through real.
+ */
+vi.mock("react-router-dom", async () => {
+  const actual = await vi.importActual<typeof import("react-router-dom")>(
+    "react-router-dom"
+  );
+  return {
+    ...actual,
+    useNavigate: () => hoisted.navigate,
+  };
+});
 
 vi.mock("@/lib/storage/creatorIrysStorage", () => ({
   createCreatorIrysStorage: vi.fn(() => ({
@@ -99,11 +125,19 @@ const LIFECYCLE_ID = "lifecycle-1";
 const TRUSTED_NOW = 1755000000000;
 
 /**
- * The component decides between the success screen and the historical
- * confirmation redirect by comparing `openAt` against the real clock. The
- * fixture therefore anchors `openAt` to a FAR-FUTURE moment measured from
- * `Date.now()` so the success screen is the deterministic outcome regardless
- * of when the suite runs.
+ * The canonical CapsuleView destination for the fixture capsuleId. The
+ * component must navigate here after a successful seal, exactly as produced
+ * by `sealCapsuleCore` (`/capsule/${capsuleId}#...`). Assertions pin the
+ * canonical `/capsule/:capsuleId` prefix.
+ */
+const CONFIRMATION_LINK = `/capsule/${CAPSULE_ID}#${RECIPIENT_SECRET}&c=${CREATOR_AUTHORITY}`;
+
+/**
+ * The fixture anchors `openAt` to a FAR-FUTURE moment measured from
+ * `Date.now()`. Under the canonical flow a future unlock moment STILL
+ * navigates straight to CapsuleView — the previous "Capsule secured"
+ * special case for future unlocks is what Task L2 removed. Anchoring to the
+ * future therefore makes this the STRONGEST variant of the navigation test.
  */
 const OPEN_AT = Date.now() + 365 * 24 * 3_600_000;
 
@@ -129,11 +163,13 @@ const FORBIDDEN_INTERNALS = [
   "creatorIdentity",
 ];
 
-/** Wording from the previous waiting screen that must no longer appear. */
+/** Wording from retired screens that must no longer appear. */
 const RETIRED_WORDING = [
   "Finalizing your capsule",
   "securely published",
   "keep this window open.",
+  // Task L2: the non-canonical intermediate success page.
+  "Capsule secured",
 ];
 
 function buildHoldState() {
@@ -186,13 +222,13 @@ function installFetchMock() {
   });
 }
 
-/** A seal result whose confirmation destination is distinguishable. */
+/** A seal result whose confirmation destination is the canonical CapsuleView. */
 function sealResult(finalizationPending = false) {
   return {
     capsuleId: CAPSULE_ID,
     manifest: {},
-    recipientLink: "",
-    confirmationLink: "/confirmation",
+    recipientLink: `/capsule/${CAPSULE_ID}#${RECIPIENT_SECRET}`,
+    confirmationLink: CONFIRMATION_LINK,
     finalized: !finalizationPending,
     finalizationPending,
   };
@@ -252,6 +288,7 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
     sessionStorage.clear();
     hoisted.sealCapsuleCore.mockReset();
     hoisted.resetCapsule.mockReset();
+    hoisted.navigate.mockReset();
     vi.stubGlobal("fetch", installFetchMock());
   });
 
@@ -264,9 +301,11 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
 
   /**
    * 1. WAITING STATE — while the seal is in flight the creator sees that
-   *    payment is confirmed and the capsule is being prepared.
+   *    payment is confirmed and the capsule is being prepared — and is NOT
+   *    navigated anywhere yet (no false success before canonical seal
+   *    completion).
    */
-  it("1. shows the waiting state while the seal is in flight", async () => {
+  it("1. shows the waiting state while the seal is in flight (no navigation yet)", async () => {
     // A seal that never resolves keeps the component in the waiting state.
     let release: (value: unknown) => void = () => {};
     hoisted.sealCapsuleCore.mockImplementation(
@@ -285,28 +324,42 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
 
     // never a false success while work is still running
     expect(screen.queryByText(/capsule secured/i)).toBeNull();
+    // and never a premature navigation
+    expect(hoisted.navigate).not.toHaveBeenCalled();
 
     release(sealResult());
+    // after the seal resolves the canonical navigation fires exactly once
     await waitFor(() => {
-      expect(screen.queryByText(/capsule is being prepared/i)).toBeNull();
+      expect(hoisted.navigate).toHaveBeenCalledTimes(1);
     });
   });
 
   /**
-   * 2. SUCCESS STATE — a genuine seal completion is announced, and only
-   *    then. This also proves the page does NOT silently redirect away
-   *    from the result for a capsule with a future unlock moment.
+   * 2. CANONICAL SUCCESS NAVIGATION — a genuine seal completion navigates
+   *    the creator DIRECTLY to CapsuleView via the seal's confirmationLink,
+   *    and NO intermediate "Capsule secured" surface is rendered. Because
+   *    the fixture's `openAt` is in the FUTURE, this test also proves the
+   *    removed future-unlock special case: a future unlock still navigates.
    */
-  it("2. announces success only after the seal genuinely completes", async () => {
+  it("2. navigates directly to CapsuleView on canonical seal success (no success page)", async () => {
     hoisted.sealCapsuleCore.mockImplementation(async () => sealResult());
 
     renderHold();
 
-    expect(await screen.findByText(/capsule secured/i)).toBeTruthy();
+    await waitFor(() => {
+      expect(hoisted.navigate).toHaveBeenCalledTimes(1);
+    });
 
-    // the creator is told the capsule is published, not merely "preparing"
-    expect(screen.queryByText(/capsule is being prepared/i)).toBeNull();
-    expect(visibleText()).toMatch(/secured and published/i);
+    // canonical destination + replace semantics
+    expect(hoisted.navigate).toHaveBeenCalledWith(CONFIRMATION_LINK, {
+      replace: true,
+    });
+    // the canonical destination is the CapsuleView route
+    expect(CONFIRMATION_LINK.startsWith(`/capsule/${CAPSULE_ID}`)).toBe(true);
+
+    // NO intermediate success surface, and no "secured and published" copy
+    expect(screen.queryByText(/capsule secured/i)).toBeNull();
+    expect(visibleText()).not.toMatch(/secured and published/i);
   });
 
   /**
@@ -331,9 +384,10 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
       screen.getByRole("button", { name: /try again/i })
     ).toBeTruthy();
 
-    // no false success, and the waiting state is no longer claimed
+    // no false success, no waiting claim, and NO navigation on failure
     expect(screen.queryByText(/capsule secured/i)).toBeNull();
     expect(screen.queryByText(/capsule is being prepared/i)).toBeNull();
+    expect(hoisted.navigate).not.toHaveBeenCalled();
 
     // payment status stays truthful in the failure copy
     expect(visibleText()).toMatch(/payment was successful/i);
@@ -380,24 +434,34 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
 
   /**
    * 4. PENDING FINALIZATION IS NOT A FAILURE — a seal whose finalization is
-   *    still settling must read as SUCCESS, never as an error.
+   *    still settling must read as SUCCESS: the creator is navigated to
+   *    CapsuleView exactly as on a fully-finalized seal (never an error, and
+   *    never a stuck waiting screen).
    */
-  it("4. reports success (not failure) when finalization is still pending", async () => {
+  it("4. navigates to CapsuleView (not failure) when finalization is still pending", async () => {
     hoisted.sealCapsuleCore.mockImplementation(async () => sealResult(true));
 
     renderHold();
 
-    expect(await screen.findByText(/capsule secured/i)).toBeTruthy();
+    await waitFor(() => {
+      expect(hoisted.navigate).toHaveBeenCalledTimes(1);
+    });
+
+    expect(hoisted.navigate).toHaveBeenCalledWith(CONFIRMATION_LINK, {
+      replace: true,
+    });
     expect(
       screen.queryByText(/we couldn't finish preparing your capsule/i)
     ).toBeNull();
+    expect(screen.queryByText(/capsule secured/i)).toBeNull();
   });
 
   /**
-   * 5. RETIRED WORDING — the previous waiting copy must never be rendered
-   *    again, in the waiting state or anywhere else.
+   * 5. RETIRED WORDING — the previous waiting copy AND the retired
+   *    "Capsule secured" success copy must never be rendered again, in the
+   *    waiting state or anywhere else.
    */
-  it("5. never renders the retired 'Finalizing your capsule' wording", async () => {
+  it("5. never renders retired waiting/success wording", async () => {
     let release: (value: unknown) => void = () => {};
     hoisted.sealCapsuleCore.mockImplementation(
       () =>
@@ -410,12 +474,16 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
 
     await screen.findByText(/capsule is being prepared/i);
     expectNoRetiredWording(visibleText());
+    expectNoInternals(visibleText());
 
     release(sealResult());
     await waitFor(() => {
-      expect(screen.queryByText(/capsule is being prepared/i)).toBeNull();
+      expect(hoisted.navigate).toHaveBeenCalledTimes(1);
     });
+    // after canonical success the component navigates away; no retired
+    // "Capsule secured" copy is ever rendered.
     expectNoRetiredWording(visibleText());
+    expect(screen.queryByText(/capsule secured/i)).toBeNull();
   });
 
   /**
@@ -423,7 +491,7 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
    *    Each state is checked in isolation so a leak is attributable.
    */
   it("6. exposes no publication internals in any state", async () => {
-    // (a) waiting + (b) success
+    // (a) waiting + (b) canonical success
     let release: (value: unknown) => void = () => {};
     hoisted.sealCapsuleCore.mockImplementation(
       () =>
@@ -438,7 +506,11 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
     expectNoInternals(visibleText());
 
     release(sealResult());
-    await screen.findByText(/capsule secured/i);
+    await waitFor(() => {
+      expect(hoisted.navigate).toHaveBeenCalledTimes(1);
+    });
+    // The canonical destination is CapsuleView; the hold surface itself
+    // must not have leaked any internals before navigating away.
     expectNoInternals(visibleText());
 
     // (c) failure — must outlast the 1s+2s retry backoff
@@ -457,36 +529,39 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
   }, 20_000);
 
   /**
-   * 7. UNLOCK MOMENT — the unlock date is labelled and rendered, and it is
-   *    the real boundary from the hold state (not an invented one).
+   * 7. NO DUPLICATE NAVIGATION — a completed seal navigates exactly once,
+   *    even as the effect settles. The removed non-canonical success surface
+   *    ("Capsule secured" / "secured and published") must not be rendered;
+   *    the waiting surface may still be mounted in this mocked-navigate
+   *    harness, but NO success page is ever shown.
    */
-  it("7. shows the labelled unlock date taken from the capsule's own boundary", async () => {
+  it("7. navigates exactly once and renders no 'Capsule secured' surface", async () => {
     hoisted.sealCapsuleCore.mockImplementation(async () => sealResult());
 
     renderHold();
 
-    await screen.findByText(/capsule secured/i);
-
-    // a small, muted label — not a headline competing with the title
-    const label = screen.getByText(/^unlock date$/i);
-    expect(label.className).toMatch(/muted/);
-
-    // the rendered value is derived from the real openAt (UTC millis)
-    const expected = new Date(OPEN_AT).toLocaleString(undefined, {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
+    await waitFor(() => {
+      expect(hoisted.navigate).toHaveBeenCalledTimes(1);
     });
-    expect(visibleText()).toContain(expected);
+
+    // allow any trailing effect work to settle
+    await new Promise((r) => setTimeout(r, 50));
+    expect(hoisted.navigate).toHaveBeenCalledTimes(1);
+
+    // the removed success surface must never appear
+    expect(screen.queryByText(/capsule secured/i)).toBeNull();
+    expect(visibleText()).not.toMatch(/secured and published/i);
+    expect(hoisted.navigate).toHaveBeenCalledWith(CONFIRMATION_LINK, {
+      replace: true,
+    });
   });
 
   /**
    * 8. RECOVERY IS REAL — pressing TRY AGAIN after a failure restarts the
-   *    flow instead of leaving the creator on a dead end.
+   *    flow instead of leaving the creator on a dead end; the healed run
+   *    then navigates canonically to CapsuleView exactly once.
    */
-  it("8. TRY AGAIN after a failure restarts the seal flow", async () => {
+  it("8. TRY AGAIN after a failure restarts the seal flow and then navigates", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     // Every attempt fails, so the flow lands on the failure surface.
     hoisted.sealCapsuleCore.mockRejectedValue(new Error("boom"));
@@ -500,6 +575,8 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
       { timeout: 15_000 }
     );
     expect(hoisted.sealCapsuleCore).toHaveBeenCalledTimes(3);
+    // no navigation while failing
+    expect(hoisted.navigate).not.toHaveBeenCalled();
 
     // now healing succeeds; TRY AGAIN must actually re-run the flow
     hoisted.sealCapsuleCore.mockReset();
@@ -512,6 +589,36 @@ describe("CapsuleHold — post-payment user-facing surface", () => {
       },
       { timeout: 15_000 }
     );
-    expect(await screen.findByText(/capsule secured/i)).toBeTruthy();
+
+    await waitFor(() => {
+      expect(hoisted.navigate).toHaveBeenCalledTimes(1);
+    });
+    expect(hoisted.navigate).toHaveBeenCalledWith(CONFIRMATION_LINK, {
+      replace: true,
+    });
+    expect(screen.queryByText(/capsule secured/i)).toBeNull();
   }, 30_000);
+
+  /**
+   * 9. LAST SEAL ERROR FIX — the failure surface must preserve the
+   *    diagnosable underlying reason (the `lastSealError` closure fix), not
+   *    throw a ReferenceError that leaves the creator stuck.
+   */
+  it("9. surfaces the underlying seal error detail on failure", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    hoisted.sealCapsuleCore.mockRejectedValue(
+      new Error("SEAL_UPLOAD_FAILED")
+    );
+
+    renderHold();
+
+    await screen.findByText(
+      /we couldn't finish preparing your capsule/i,
+      undefined,
+      { timeout: 15_000 }
+    );
+
+    // technical details are exposed via the collapsible disclosure
+    expect(screen.getByText(/technical details/i)).toBeTruthy();
+  }, 20_000);
 });
