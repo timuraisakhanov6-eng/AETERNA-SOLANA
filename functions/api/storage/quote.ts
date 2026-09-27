@@ -233,11 +233,38 @@ export async function onRequestPost(
 
   /* ================= IRYS DATA ================= */
 
+  /**
+   * Canonical Irys billable size = encrypted Vault + ALL encrypted
+   * media chunks.
+   *
+   *   encryptedSizeBytes  = encrypted VAULT blob length (encryptVault
+   *                         output; metadata JSON only).
+   *   totalChunkSizeBytes = Σ chunkMetadata[].size, i.e. the sum of the
+   *                         per-MEDIA-chunk ciphertext lengths
+   *                         (encryptChunk output).
+   *
+   * Both are PREPARED, already-encrypted byte counts produced by the
+   * /api/capsule/prepared projection. The sum is the SINGLE size handed
+   * to the Irys price endpoint — there is no second pricing formula, no
+   * UI-derived size, no rounding, and no re-added AES-GCM overhead
+   * (each chunk's IV + auth tag is already part of its ciphertext
+   * length).
+   *
+   * A text-only capsule carries totalChunkSizeBytes === 0, so the sum
+   * collapses to the encrypted Vault size exactly as before.
+   */
+  const billableSizeBytes =
+    projection.encryptedSizeBytes + projection.totalChunkSizeBytes;
+
+  if (!Number.isSafeInteger(billableSizeBytes) || billableSizeBytes <= 0) {
+    return fail(origin, 409, "PREPARED_PROJECTION_INVALID_SIZE");
+  }
+
   let priceAtomic: string;
   let irysDestination: string;
 
   try {
-    priceAtomic = await getIrysUsdcSolanaPrice(projection.encryptedSizeBytes);
+    priceAtomic = await getIrysUsdcSolanaPrice(billableSizeBytes);
   } catch {
     return fail(origin, 502, "IRYS_STORAGE_PRICE_UNAVAILABLE");
   }
@@ -295,7 +322,7 @@ export async function onRequestPost(
     walletAccount: projection.walletAccount,
     lifecycleId: projection.lifecycleId,
     capsuleId: projection.capsuleId,
-    billableSizeBytes: projection.encryptedSizeBytes,
+    billableSizeBytes,
     vaultSha256: projection.vaultSha256,
     expectedAmountAtomic: priceAtomic,
     displayAmountUSDC: displayAmountUSDC.toFixed(6),
