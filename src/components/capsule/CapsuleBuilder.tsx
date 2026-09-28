@@ -958,6 +958,40 @@ export default function CapsuleBuilder() {
       }
 
       const quote = quoteData.storagePaymentId ? quoteData : quoteData.quote;
+
+      /* ── CANONICAL BILLABLE SIZE ──
+         The canonical storage quote is the ONLY carrier of the billable
+         size (encrypted Vault + Σ media chunk ciphertext). The PREPARED
+         identity has no size knowledge of its own — CapsuleBuilder
+         creates it with a 0 placeholder.
+
+         Without this write-back, `preparedRef.current.billableSizeBytes`
+         stays 0, handleReserveReady clones it into the /create/hold
+         navigation state, and CapsuleHold's integrity guard rejects the
+         whole attempt with INVALID_BILLABLE_SIZE_BYTES — AFTER the
+         creator has already paid the $1 service fee AND funded Irys.
+
+         The server value is used VERBATIM: no local arithmetic, no
+         second pricing formula, no rounding. */
+      const billableSizeBytes = Number(quote.billableSizeBytes);
+
+      if (
+        !Number.isSafeInteger(billableSizeBytes) ||
+        billableSizeBytes <= 0
+      ) {
+        throw new Error("STORAGE_QUOTE_SIZE_MISSING");
+      }
+
+      // Written back BEFORE the reserve/hold navigation so that BOTH the
+      // live /create/hold state AND the sessionStorage recovery record
+      // (serialised from preparedRef.current by handleReserveReady)
+      // carry the canonical size — and therefore also satisfy
+      // isValidSessionCapsuleData on a later restore.
+      preparedRef.current = {
+        ...preparedState,
+        billableSizeBytes,
+      };
+
       setStorageReview({
         storagePaymentId: String(quote.storagePaymentId ?? ""),
         expectedAmountAtomic: String(quote.expectedAmountAtomic ?? ""),

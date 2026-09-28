@@ -194,6 +194,12 @@ const STORAGE_QUOTE = () =>
     storagePaymentId: "storage-payment-2m",
     expectedAmountAtomic: "1000000",
     displayAmountUSDC: "1.00",
+    // The canonical server quote ALWAYS carries the billable size
+    // (functions/api/storage/quote.ts: encryptedSizeBytes +
+    // totalChunkSizeBytes). CapsuleBuilder propagates it into the
+    // /create/hold state, so a fixture without it is not a faithful
+    // stand-in for the real endpoint.
+    billableSizeBytes: 4096,
   });
 
 let fetchMock: ReturnType<typeof vi.fn>;
