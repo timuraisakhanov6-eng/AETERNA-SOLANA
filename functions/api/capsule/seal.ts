@@ -25,6 +25,7 @@ import {
   SALT_BASE_REGEX,
   SHA256_REGEX,
   STORAGE_POINTER_REGEX,
+  UPLOAD_TOKEN_REGEX,
 } from "../../../src/lib/crypto/validators";
 import {
   deleteBusinessQuote,
@@ -66,11 +67,19 @@ type VerifiedPaymentRecord = {
 
 /* ================= REGEX ================= */
 
-const ARWEAVE_TXID_RE =
-  /^[a-zA-Z0-9_-]{43}$/;
-
-const UPLOAD_TOKEN_REGEX =
-  /^[a-zA-Z0-9_-]{32,}$/;
+/**
+ * The storage-pointer and upload-token grammars are NOT redefined here.
+ *
+ * `manifest.vaultTxId` and the upload token are both validated with the
+ * canonical constants imported from src/lib/crypto/validators.
+ *
+ * A file-local copy of the pointer regex used to live here at exact-{43}
+ * and rejected the 44-char base58 Irys id with INVALID_MANIFEST, while
+ * the chunk-pointer path in the same file (which already used the
+ * canonical constant) accepted it. The registry's own rule — "Regex
+ * duplication outside this registry is forbidden" — exists precisely to
+ * prevent that class of drift.
+ */
 
 /* ================= MANIFEST WHITELIST ================= */
 
@@ -341,7 +350,7 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
     typeof m.saltBase !== "string"                           ||
     !SALT_BASE_REGEX.test(m.saltBase)                        ||
     typeof m.vaultTxId !== "string"                          ||
-    !ARWEAVE_TXID_RE.test(m.vaultTxId)                       ||
+    !STORAGE_POINTER_REGEX.test(m.vaultTxId)                 ||
     !Number.isSafeInteger(m.openAt)                          ||
     !Number.isSafeInteger(m.sealedAt)                        ||
     (m.openAt as number) <= (m.sealedAt as number)           ||

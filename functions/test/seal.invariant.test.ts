@@ -235,6 +235,79 @@ describe("Seal-Once invariants", () => {
     expect(await env.UPLOAD_TOKENS.get(uploadToken)).toBeNull();
   });
 
+  /**
+   * Regression: the active Irys-on-Solana rail returns a 44-char base58
+   * data-item id. A file-local copy of the pointer regex lived in
+   * seal.ts at exact-{43} and validated `manifest.vaultTxId` with it,
+   * so every real seal was rejected with INVALID_MANIFEST — after the
+   * creator had already paid. The manifest gate now anchors to the
+   * canonical STORAGE_POINTER_REGEX from the registry, which accepts
+   * both encodings of the same 32-byte id.
+   */
+  it("ACCEPTS a 44-char base58 Irys vaultTxId (registry-anchored pointer gate)", async () => {
+    stubVaultFetch();
+
+    const capsuleId = "a".repeat(64);
+    // The exact id captured from a real production Irys-on-Solana upload.
+    const vaultTxId = "4M2b1xjKeoE11NbkGCLo4HsuvDQHuQqTyLrKnRLSDQZw";
+    const sealedAt = Date.now();
+    const openAt = sealedAt + 1000;
+    const encryptedSizeBytes = 1024;
+    const manifest = validManifest(
+      capsuleId,
+      vaultTxId,
+      sealedAt,
+      openAt,
+      encryptedSizeBytes
+    );
+    const creatorAuthorityFragment = "a".repeat(64);
+    const paymentIntentId = "intent-44";
+    const evidenceId = "evidence-44";
+
+    const env = buildSealEnv({
+      PUBLICATION_VERIFICATIONS: createFakeKV(),
+    });
+    env.PUBLICATION_VERIFICATIONS!.put(
+      `creator:publication:lifecycle-1`,
+      JSON.stringify({
+        lifecycleId: "lifecycle-1",
+        capsuleId,
+        creatorIdentityId: "creator-1",
+        state: "VERIFIED",
+        expectedTxId: vaultTxId,
+        expectedVaultSha256: manifest.ext.vaultSha256,
+        evidenceIds: [vaultTxId],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        verifiedAt: Date.now(),
+      })
+    );
+
+    seedVerifiedPayment(
+      env.VERIFIED_PAYMENTS,
+      paymentIntentId,
+      evidenceId,
+      Date.now() + 60_000
+    );
+    const uploadToken = seedUploadToken(
+      env.UPLOAD_TOKENS,
+      paymentIntentId,
+      "lifecycle-1",
+      "creator-1",
+      "a".repeat(32)
+    );
+
+    const res = await sealPost(
+      buildSealContext(env, { uploadToken, manifest, creatorAuthorityFragment })
+    );
+
+    expect(res.status).toBe(200);
+
+    // Persisted verbatim — the pointer is opaque and is never re-encoded.
+    const stored = await env.CAPSULE_MANIFESTS.get(capsuleId);
+    expect(JSON.parse(stored!).vaultTxId).toBe(vaultTxId);
+  });
+
   it("IDENTICAL RETRY IS IDEMPOTENT: returns 200 without modifying manifest", async () => {
     const capsuleId = "a".repeat(64);
     const vaultTxId = "a".repeat(43);
@@ -875,5 +948,204 @@ describe("Seal-Once invariants", () => {
     expect(conflict.status).toBe(409);
 
     expect(await env.CAPSULE_MANIFESTS.get(capsuleId)).toBe(normalized);
+  });
+});
+
+/**
+ * Grammar boundaries for the two grammars the seal endpoint validates:
+ * the storage pointer (`manifest.vaultTxId`) and the upload token.
+ *
+ * Both are now anchored to the canonical registry in
+ * src/lib/crypto/validators — the endpoint no longer defines local
+ * copies. These tests pin the exact accepted/rejected boundary of each,
+ * which previously had no coverage: the suite only ever used a 43-char
+ * `vaultTxId` and a 32-char token, which is why a stale exact-{43} copy
+ * could reject every real Irys id undetected.
+ *
+ * Gate order matters for the rejection cases: the token FORMAT check
+ * (seal.ts INVALID_UPLOAD_TOKEN) runs BEFORE the manifest checks, and the
+ * token KV lookup runs AFTER them — so a format rejection never reaches
+ * the manifest gate, and a manifest rejection never needs the token
+ * seeded.
+ */
+describe("Seal grammar boundaries (storage pointer + upload token)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** The exact id captured from a real production Irys-on-Solana upload. */
+  const REAL_IRYS_ID = "4M2b1xjKeoE11NbkGCLo4HsuvDQHuQqTyLrKnRLSDQZw";
+  /** A real upload token as issued by upload-token.ts (32 bytes → 43 base64url). */
+  const GENERATED_TOKEN = "dMGA14uqIwoKA9Nnh8x5AsLmpIyvaelCf29Lkzu6s5o";
+  const CAPSULE_ID = "a".repeat(64);
+  const AUTHORITY_FRAGMENT = "a".repeat(64);
+  const PAYMENT_INTENT = "intent-boundary";
+  const EVIDENCE = "evidence-boundary";
+
+  /**
+   * Drives a complete seal with the given token + vaultTxId.
+   *
+   * `seedAuthority = false` skips the publication / payment / token-KV
+   * seeding. That is correct for the format-rejection cases, whose gates
+   * all fire before any KV lookup.
+   */
+  async function sealWith(
+    token: string,
+    vaultTxId: string,
+    seedAuthority = true
+  ) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+          headers: { "content-length": "1024" },
+        })
+      )
+    );
+
+    const sealedAt = Date.now();
+    const manifest = validManifest(
+      CAPSULE_ID,
+      vaultTxId,
+      sealedAt,
+      sealedAt + 1000,
+      1024
+    );
+
+    const env = buildSealEnv({ PUBLICATION_VERIFICATIONS: createFakeKV() });
+
+    if (seedAuthority) {
+      env.PUBLICATION_VERIFICATIONS!.put(
+        `creator:publication:lifecycle-1`,
+        JSON.stringify({
+          lifecycleId: "lifecycle-1",
+          capsuleId: CAPSULE_ID,
+          creatorIdentityId: "creator-1",
+          state: "VERIFIED",
+          expectedTxId: vaultTxId,
+          expectedVaultSha256: manifest.ext.vaultSha256,
+          evidenceIds: [vaultTxId],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          verifiedAt: Date.now(),
+        })
+      );
+      seedVerifiedPayment(
+        env.VERIFIED_PAYMENTS,
+        PAYMENT_INTENT,
+        EVIDENCE,
+        Date.now() + 60_000
+      );
+      seedUploadToken(
+        env.UPLOAD_TOKENS,
+        PAYMENT_INTENT,
+        "lifecycle-1",
+        "creator-1",
+        token
+      );
+    }
+
+    const res = await sealPost(
+      buildSealContext(env, {
+        uploadToken: token,
+        manifest,
+        creatorAuthorityFragment: AUTHORITY_FRAGMENT,
+      })
+    );
+
+    return { res, env };
+  }
+
+  /* ─────────── A. storage pointer (manifest.vaultTxId) ─────────── */
+
+  it("A1. accepts the 43-char canonical base64url vaultTxId", async () => {
+    const canonical = "V".repeat(43);
+    const { res, env } = await sealWith(GENERATED_TOKEN, canonical);
+
+    expect(res.status).toBe(200);
+    const stored = await env.CAPSULE_MANIFESTS.get(CAPSULE_ID);
+    expect(JSON.parse(stored!).vaultTxId).toBe(canonical);
+  });
+
+  it("A2. accepts the real 44-char base58 Irys vaultTxId and persists it verbatim", async () => {
+    const { res, env } = await sealWith(GENERATED_TOKEN, REAL_IRYS_ID);
+
+    expect(res.status).toBe(200);
+    const stored = await env.CAPSULE_MANIFESTS.get(CAPSULE_ID);
+    // Verbatim: the pointer is opaque and is never re-encoded.
+    expect(JSON.parse(stored!).vaultTxId).toBe(REAL_IRYS_ID);
+  });
+
+  it("A3. rejects a 42-char vaultTxId", async () => {
+    const { res } = await sealWith(GENERATED_TOKEN, "V".repeat(42), false);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_MANIFEST");
+  });
+
+  it("A4. rejects a 45-char vaultTxId", async () => {
+    const { res } = await sealWith(GENERATED_TOKEN, "V".repeat(45), false);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_MANIFEST");
+  });
+
+  it("A5. rejects vaultTxId characters outside [A-Za-z0-9_-]", async () => {
+    for (const bad of [`${"V".repeat(42)}+`, `${"V".repeat(43)}!`, `${"V".repeat(42)}=`]) {
+      const { res } = await sealWith(GENERATED_TOKEN, bad, false);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("INVALID_MANIFEST");
+    }
+  });
+
+  /* ─────────── B. upload token ─────────── */
+
+  it("B1. accepts a 32-char token (contract lower bound)", async () => {
+    const { res } = await sealWith("a".repeat(32), "V".repeat(43));
+    expect(res.status).toBe(200);
+  });
+
+  it("B2. accepts a real generated token (32 bytes → 43 base64url chars)", async () => {
+    expect(GENERATED_TOKEN).toHaveLength(43);
+    const { res } = await sealWith(GENERATED_TOKEN, "V".repeat(43));
+    expect(res.status).toBe(200);
+  });
+
+  it("B3. accepts a 256-char token (contract upper bound)", async () => {
+    const { res } = await sealWith("a".repeat(256), "V".repeat(43));
+    expect(res.status).toBe(200);
+  });
+
+  it("B4. rejects a 257-char token (above the contract upper bound)", async () => {
+    const { res } = await sealWith("a".repeat(257), "V".repeat(43), false);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_UPLOAD_TOKEN");
+  });
+
+  it("B5. rejects malformed token characters", async () => {
+    for (const bad of [`${"a".repeat(31)}+`, `${"a".repeat(31)}!`, "a".repeat(31) + " "]) {
+      const { res } = await sealWith(bad, "V".repeat(43), false);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("INVALID_UPLOAD_TOKEN");
+    }
+  });
+
+  it("B6. rejects a 31-char token (below the contract lower bound)", async () => {
+    const { res } = await sealWith("a".repeat(31), "V".repeat(43), false);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_UPLOAD_TOKEN");
+  });
+
+  it("B7. the existing valid token flow still seals (regression guard)", async () => {
+    // Mirrors the original FIRST SEAL SUCCEEDS shape: 32-char token,
+    // 43-char pointer — must remain accepted end-to-end.
+    const { res, env } = await sealWith("a".repeat(32), "V".repeat(43));
+    expect(res.status).toBe(200);
+    expect(await env.CAPSULE_MANIFESTS.get(CAPSULE_ID)).toBeTruthy();
   });
 });
