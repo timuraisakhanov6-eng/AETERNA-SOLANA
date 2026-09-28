@@ -436,3 +436,171 @@ describe("Phase C — creator-paid publication claim", () => {
     ).toBeNull();
   });
 });
+
+/**
+ * Storage-pointer FORMAT acceptance (TXID_REGEX / STORAGE_POINTER_REGEX).
+ *
+ * The pointer regex had no test coverage at all before this block, and the
+ * active Irys-on-Solana rail returns an id the original exact-`{43}` form
+ * could not express — which made every real vault claim fail with
+ * INVALID_TX_ID after the creator had already paid.
+ *
+ * Both encodings of the same 32-byte identifier must be accepted:
+ *   - 43-char URL-safe base64 (canonical Arweave/Irys txId)
+ *   - 43- or 44-char base58 (Irys SDK `receipt.id`)
+ * and a Solana transaction signature (87-88 base58) must NOT be.
+ */
+describe("Phase C — storage pointer format acceptance", () => {
+  beforeEach(() => {
+    nodeStatus = 200;
+    nodeBody = { id: VAULT_TX };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** The exact id captured from a real production Irys-on-Solana upload. */
+  const REAL_IRYS_ID = "4M2b1xjKeoE11NbkGCLo4HsuvDQHuQqTyLrKnRLSDQZw"; // 44, base58
+
+  it("accepts the 43-char base64url canonical id (unchanged behaviour)", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    const res = await claim(env);
+    expect(res.status).toBe(200);
+    const stored = JSON.parse(
+      (await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`))!
+    );
+    expect(stored.expectedTxId).toBe(VAULT_TX);
+  });
+
+  it("accepts the real 44-char base58 Irys id verbatim", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    // The node echoes the id it was asked about — the same 44-char value.
+    nodeBody = { id: REAL_IRYS_ID };
+    stubNode();
+
+    const res = await claim(env, { txId: REAL_IRYS_ID });
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse(
+      (await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`))!
+    );
+    // Stored verbatim: no re-encoding, so the node's own id stays the
+    // pointer and the /tx/<id> confirmation keeps matching.
+    expect(stored.expectedTxId).toBe(REAL_IRYS_ID);
+    expect(await env.PUBLICATION_VERIFICATIONS.get(`publication-tx:${REAL_IRYS_ID}`)).toBeTruthy();
+  });
+
+  it("accepts the 44-char base58 id for a chunk and stores it as the pointer", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    nodeBody = { id: REAL_IRYS_ID };
+    stubNode();
+
+    const res = await claim(env, {
+      kind: "chunk",
+      chunkId: CHUNK_ID,
+      txId: REAL_IRYS_ID,
+    });
+    expect(res.status).toBe(200);
+    expect(
+      await env.CHUNK_POINTER_REGISTRY.get(
+        `chunk-pointer-entry:${CAPSULE_ID}:${CHUNK_ID}`
+      )
+    ).toBe(REAL_IRYS_ID);
+  });
+
+  it("rejects a 42-char id (too short)", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    const res = await claim(env, { txId: "V".repeat(42) });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_TX_ID");
+  });
+
+  it("rejects a 45-char id (too long)", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    const res = await claim(env, { txId: "V".repeat(45) });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_TX_ID");
+  });
+
+  it("rejects an 88-char base58 Solana signature — never a storage pointer", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    const signature = "5".repeat(88);
+    const res = await claim(env, { txId: signature });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("INVALID_TX_ID");
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)
+    ).toBeNull();
+  });
+
+  it("rejects characters outside the pointer alphabet", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    // '+' and '!' are outside [A-Za-z0-9_-] (e.g. standard base64 padding
+    // or an arbitrary injected token).
+    for (const bad of [`${"V".repeat(42)}+`, `${"V".repeat(42)}!`]) {
+      const res = await claim(env, { txId: bad });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("INVALID_TX_ID");
+    }
+  });
+
+  it("rejects a non-string / empty txId as INVALID_FIELDS", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    for (const bad of ["", "   ", 12345, null]) {
+      const res = await claim(env, { txId: bad });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("INVALID_FIELDS");
+    }
+  });
+
+  it("node echoing a DIFFERENT id → UNAVAILABLE, no authority written", async () => {
+    // Pins the trap: functions/lib/irys/node.ts compares the node body's
+    // `id` STRICTLY against the expected txId. The node always reports its
+    // own (base58) id, so re-encoding the pointer before claiming would
+    // turn a working claim into PUBLICATION_NODE_UNAVAILABLE.
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    nodeBody = { id: "X".repeat(44) };
+    stubNode();
+
+    const res = await claim(env, { txId: REAL_IRYS_ID });
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe("PUBLICATION_NODE_UNAVAILABLE");
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)
+    ).toBeNull();
+  });
+});

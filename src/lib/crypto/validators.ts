@@ -84,23 +84,45 @@ export const SALT_BASE_REGEX =
 
 
 /**
- * Arweave TXID
+ * Arweave TXID / canonical storage pointer
  *
  * Storage pointer identifier
  *
  * Format:
- * 43-character URL-safe base64 string
+ * 43 or 44 characters over [A-Za-z0-9_-], covering BOTH encodings of
+ * the same 32-byte identifier that occur on the active rail:
  *
- * Example:
+ *   - 43-character URL-safe base64 WITHOUT padding — the canonical
+ *     Arweave/Irys txId (and what the mock generator emits);
+ *   - 43- or 44-character base58 — the id the Irys SDK returns for
+ *     Irys-on-Solana uploads (`receipt.id`). It is the SAME 32 bytes,
+ *     base58-encoded. Base58 is variable-length, so the length is 43
+ *     or 44 depending on the leading byte value.
+ *
+ * Both forms are accepted by the Irys node (`uploader.irys.xyz/tx/<id>`)
+ * and by `gateway.irys.xyz/<id>`; verified against production, where
+ * both resolve to the same item. The pointer is an OPAQUE identifier
+ * (URL path segment, KV key, equality comparison) — nothing decodes it,
+ * so the two encodings cannot be confused downstream.
+ *
+ * The upper bound is deliberately tight: a Solana transaction signature
+ * is 87-88 base58 characters and MUST NOT be accepted as a storage
+ * pointer.
+ *
+ * Example (43, base64url):
  * p7Qh9YV5kQ0rR3W8vKqC8G6nKpT3M9yV7xYpQvWJd7A
+ *
+ * Example (44, base58):
+ * 4M2b1xjKeoE11NbkGCLo4HsuvDQHuQqTyLrKnRLSDQZw
  *
  * Used in:
  * manifest.vaultTxId
  * storageAdapter.ts
  * gateway fallback loader
+ * /api/publication/claim
  */
 export const TXID_REGEX =
-  Object.freeze(/^[a-zA-Z0-9_-]{43}$/);
+  Object.freeze(/^[a-zA-Z0-9_-]{43,44}$/);
 
 
 /**
