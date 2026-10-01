@@ -149,24 +149,24 @@ describe("Service payment TX_FAILED diagnostic invariants", () => {
           {
             owner: CREATOR_IDENTITY_ACCOUNT,
             mint: USDC_MINT,
-            uiTokenAmount: { uiAmount: 1, decimals: 6 },
+            uiTokenAmount: { amount: "1000000", uiAmount: 1, decimals: 6 },
           },
           {
             owner: SETTLEMENT_ADDRESS,
             mint: USDC_MINT,
-            uiTokenAmount: { uiAmount: 5, decimals: 6 },
+            uiTokenAmount: { amount: "5000000", uiAmount: 5, decimals: 6 },
           },
         ],
         postTokenBalances: [
           {
             owner: CREATOR_IDENTITY_ACCOUNT,
             mint: USDC_MINT,
-            uiTokenAmount: { uiAmount: 1, decimals: 6 },
+            uiTokenAmount: { amount: "1000000", uiAmount: 1, decimals: 6 },
           },
           {
             owner: SETTLEMENT_ADDRESS,
             mint: USDC_MINT,
-            uiTokenAmount: { uiAmount: 5, decimals: 6 },
+            uiTokenAmount: { amount: "5000000", uiAmount: 5, decimals: 6 },
           },
         ],
       },
@@ -205,19 +205,19 @@ describe("Service payment TX_FAILED diagnostic invariants", () => {
           {
             owner: CREATOR_IDENTITY_ACCOUNT,
             mint: USDC_MINT,
-            uiTokenAmount: { uiAmount: 1, decimals: 6 },
+            uiTokenAmount: { amount: "1000000", uiAmount: 1, decimals: 6 },
           },
         ],
         postTokenBalances: [
           {
             owner: SETTLEMENT_ADDRESS,
             mint: USDC_MINT,
-            uiTokenAmount: { uiAmount: 1, decimals: 6 },
+            uiTokenAmount: { amount: "1000000", uiAmount: 1, decimals: 6 },
           },
           {
             owner: CREATOR_IDENTITY_ACCOUNT,
             mint: USDC_MINT,
-            uiTokenAmount: { uiAmount: 0, decimals: 6 },
+            uiTokenAmount: { amount: "0", uiAmount: 0, decimals: 6 },
           },
         ],
       },

@@ -92,6 +92,43 @@ const RPC_TIMEOUT_MS = 10_000;
 const SOLANA_SERVICE_SETTLEMENT_ADDRESS = "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu";
 const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
+/**
+ * The canonical $1 service payment in USDC BASE UNITS (6 decimals).
+ *
+ * Authorization arithmetic MUST be performed in these integer base units.
+ * `uiTokenAmount.uiAmount` is a FLOAT in human units and is NOT usable for
+ * authorization: e.g. `1.009 - 0.009` evaluates to `0.9999999999999999` in
+ * IEEE-754, which would reject a correct payment.
+ */
+const SERVICE_PAYMENT_ATOMIC = 1_000_000n;
+
+/**
+ * Reads a token balance's RAW ATOMIC amount as BigInt.
+ *
+ * `uiTokenAmount.amount` is the authoritative integer string of base units
+ * (1 USDC = "1000000"). `uiAmount` is a human-unit float and is deliberately
+ * NOT used anywhere on this authorization path.
+ *
+ * Fail-closed: a missing, non-string, empty, signed or non-integer `amount`
+ * returns `null` and the caller MUST reject. There is deliberately NO
+ * coercion of a malformed/missing amount to zero — a present balance entry
+ * that does not carry a valid raw amount is not evidence of a zero balance.
+ */
+function readAtomicAmount(
+  balance: { uiTokenAmount?: { amount?: string } } | undefined
+): bigint | null {
+  if (balance === undefined) return 0n;
+
+  const raw = balance.uiTokenAmount?.amount;
+  if (typeof raw !== "string" || !/^\d+$/.test(raw)) return null;
+
+  try {
+    return BigInt(raw);
+  } catch {
+    return null;
+  }
+}
+
 /* ================= SOLANA HELPERS ================= */
 
 function isBase58Address(value: string): boolean {
@@ -249,8 +286,8 @@ async function verifySolanaPayment(
     meta?: {
       preBalances?: number[];
       postBalances?: number[];
-      postTokenBalances?: Array<{ mint?: string; owner?: string; uiTokenAmount?: { uiAmount?: number; decimals?: number } }>;
-      preTokenBalances?: Array<{ mint?: string; owner?: string; uiTokenAmount?: { uiAmount?: number; decimals?: number } }>;
+      postTokenBalances?: Array<{ mint?: string; owner?: string; uiTokenAmount?: { amount?: string; uiAmount?: number; decimals?: number } }>;
+      preTokenBalances?: Array<{ mint?: string; owner?: string; uiTokenAmount?: { amount?: string; uiAmount?: number; decimals?: number } }>;
       err?: unknown;
       status?: { Ok?: unknown; Err?: unknown };
     };
@@ -304,16 +341,22 @@ async function verifySolanaPayment(
       balance.mint === SOLANA_USDC_MINT
   );
 
-  const destinationPreAmount =
-    typeof destinationPre?.uiTokenAmount?.uiAmount === "number"
-      ? destinationPre.uiTokenAmount.uiAmount
-      : 0;
-  const destinationPostAmount =
-    typeof destinationEntry.uiTokenAmount?.uiAmount === "number"
-      ? destinationEntry.uiTokenAmount.uiAmount
-      : 0;
+  /**
+   * Destination amount check — RAW ATOMIC INTEGER arithmetic.
+   *
+   * A missing pre-balance ENTRY means the settlement token account did not
+   * exist before the transaction, which is a legitimate zero (readAtomicAmount
+   * returns 0n for `undefined`). A PRESENT entry that does not carry a valid
+   * raw `amount` fails closed as AMOUNT_MISMATCH.
+   */
+  const destinationPreAtomic = readAtomicAmount(destinationPre);
+  const destinationPostAtomic = readAtomicAmount(destinationEntry);
 
-  if (destinationPostAmount - destinationPreAmount !== 1) {
+  if (
+    destinationPreAtomic === null ||
+    destinationPostAtomic === null ||
+    destinationPostAtomic - destinationPreAtomic !== SERVICE_PAYMENT_ATOMIC
+  ) {
     return { ok: false as const, error: "AMOUNT_MISMATCH" };
   }
 
@@ -337,16 +380,18 @@ async function verifySolanaPayment(
       balance.mint === SOLANA_USDC_MINT
   );
 
-  const sourcePreAmount =
-    typeof sourcePre?.uiTokenAmount?.uiAmount === "number"
-      ? sourcePre.uiTokenAmount.uiAmount
-      : 0;
-  const sourcePostAmount =
-    typeof sourceEntry.uiTokenAmount?.uiAmount === "number"
-      ? sourceEntry.uiTokenAmount.uiAmount
-      : 0;
+  /**
+   * Source amount check — RAW ATOMIC INTEGER arithmetic (same rule as the
+   * destination check above).
+   */
+  const sourcePreAtomic = readAtomicAmount(sourcePre);
+  const sourcePostAtomic = readAtomicAmount(sourceEntry);
 
-  if (sourcePreAmount - sourcePostAmount !== 1) {
+  if (
+    sourcePreAtomic === null ||
+    sourcePostAtomic === null ||
+    sourcePreAtomic - sourcePostAtomic !== SERVICE_PAYMENT_ATOMIC
+  ) {
     return { ok: false as const, error: "SOURCE_AMOUNT_MISMATCH" };
   }
 

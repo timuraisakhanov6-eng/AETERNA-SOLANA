@@ -487,19 +487,20 @@ describe("Payment authorization / replay protection invariants", () => {
             {
               owner: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
               mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-              uiTokenAmount: { uiAmount: 1, decimals: 6 },
+              // Stage 4.5 payment fix: the RAW ATOMIC amount is authoritative.
+              uiTokenAmount: { amount: "1000000", uiAmount: 1, decimals: 6 },
             },
             {
               owner: "123456789ABCDEF",
               mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-              uiTokenAmount: { uiAmount: 0, decimals: 6 },
+              uiTokenAmount: { amount: "0", uiAmount: 0, decimals: 6 },
             },
           ],
           preTokenBalances: [
             {
               owner: "123456789ABCDEF",
               mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-              uiTokenAmount: { uiAmount: 1, decimals: 6 },
+              uiTokenAmount: { amount: "1000000", uiAmount: 1, decimals: 6 },
             },
           ],
         },
