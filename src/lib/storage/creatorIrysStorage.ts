@@ -20,9 +20,17 @@ import type {
   StorageAdapter,
   StoragePointer,
   UploadToken,
+  ContainerUploadOutcome,
 } from "./storageAdapter";
 import { assertStoragePointer } from "./storageAdapter";
-import { uploadCreatorData, type CreatorIrysWallet } from "./creatorIrys";
+import {
+  uploadCreatorData,
+  buildCreatorChunkingUploader,
+  type CreatorIrysWallet,
+} from "./creatorIrys";
+import type { RuntimeStorage } from "@/lib/runtime/runtimeStorage";
+import type { ChunkMetadata } from "@/types/vault";
+import { uploadPreparedContainer } from "./uploadPreparedContainer";
 import { executorStorage } from "./executorStorage";
 
 export interface CreatorIrysStorageContext {
@@ -64,8 +72,9 @@ const CLAIM_REQUEST_TIMEOUT_MS = 15_000;
 async function claimPublication(
   ctx: CreatorIrysStorageContext,
   txId: string,
-  kind: "vault" | "chunk",
-  chunkId?: string
+  kind: "vault" | "chunk" | "container",
+  chunkId?: string,
+  container?: { readonly chunkIds: readonly string[]; readonly layoutDigest: string }
 ): Promise<void> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), CLAIM_REQUEST_TIMEOUT_MS);
@@ -84,6 +93,9 @@ async function claimPublication(
         txId,
         kind,
         ...(chunkId !== undefined ? { chunkId } : {}),
+        ...(container !== undefined
+          ? { chunkIds: [...container.chunkIds], layoutDigest: container.layoutDigest }
+          : {}),
       }),
       signal: controller.signal,
     });
@@ -156,6 +168,40 @@ export function createCreatorIrysStorage(
       await claimPublication(ctx, dataTxId, "chunk", chunkId);
 
       return { txId: assertStoragePointer(dataTxId) };
+    },
+
+    /**
+     * Stage 4.5 — ONE container DataItem for the whole media payload.
+     *
+     * The SAME wallet, the SAME Irys builder and the SAME claim boundary as
+     * `uploadChunk`; the only difference is that the Stage 3 writer streams
+     * every encrypted chunk into ONE DataItem instead of N separate ones, so
+     * there is exactly ONE creator signature and exactly ONE
+     * `kind:"container"` publication claim.
+     *
+     * No chunk-pointer registry entry is written here or anywhere else on
+     * this path — the container publication record IS the authority.
+     */
+    async uploadContainer(
+      runtime: RuntimeStorage,
+      chunkMetadata: readonly ChunkMetadata[],
+      _uploadToken: UploadToken
+    ): Promise<ContainerUploadOutcome> {
+      const uploader = await buildCreatorChunkingUploader(
+        ctx.wallet,
+        ctx.rpcUrl
+      );
+
+      return uploadPreparedContainer(
+        runtime,
+        chunkMetadata,
+        uploader,
+        (containerTxId, chunkIds, layoutDigest) =>
+          claimPublication(ctx, containerTxId, "container", undefined, {
+            chunkIds,
+            layoutDigest,
+          })
+      );
     },
 
     // Read path is storage-provider independent (canonical gateways)

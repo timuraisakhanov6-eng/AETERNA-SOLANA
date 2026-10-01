@@ -19,6 +19,7 @@
 
 import { WebUploader } from "@irys/web-upload";
 import { WebUSDCSolana } from "@irys/web-upload-solana";
+import type { ChunkingUploader } from "@irys/upload-core";
 import { PublicKey } from "@solana/web3.js";
 import { Buffer } from "buffer";
 
@@ -218,6 +219,41 @@ async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string):
 
   if (!uploader) failClosed("failed to build Irys uploader");
   return uploader;
+}
+
+/**
+ * Stage 4.5 — the SAME Irys uploader, declared with the SDK's streaming
+ * (`ChunkingUploader`) surface so the Stage 3 container uploader can drive it.
+ *
+ * This is NOT a second uploader and NOT a second wallet path: it builds the
+ * identical object `uploadCreatorData()` uses, from the identical
+ * `buildCreatorUploader()` call. Only the DECLARED type is widened, because
+ * the concrete `BaseWebIrys` instance implements `setChunkSize` /
+ * `setBatchSize` / `uploadData` while the narrow view used by the per-chunk
+ * path does not mention them.
+ *
+ * Fail-closed: if the installed SDK does not actually expose the streaming
+ * surface, this throws rather than silently degrading to a non-streaming
+ * upload. The wallet prompt behaviour is unchanged — the container path makes
+ * exactly ONE `uploadData()` call and therefore exactly ONE creator
+ * signature, the same as the SDK's own per-DataItem signing.
+ */
+export async function buildCreatorChunkingUploader(
+  wallet: CreatorIrysWallet,
+  rpcUrl?: string
+): Promise<ChunkingUploader> {
+  const built = (await buildCreatorUploader(wallet, rpcUrl)) as unknown as Record<
+    string,
+    unknown
+  >;
+
+  for (const method of ["setChunkSize", "setBatchSize", "uploadData"] as const) {
+    if (typeof built[method] !== "function") {
+      failClosed(`Irys uploader does not expose ${method}`);
+    }
+  }
+
+  return built as unknown as ChunkingUploader;
 }
 
 /**

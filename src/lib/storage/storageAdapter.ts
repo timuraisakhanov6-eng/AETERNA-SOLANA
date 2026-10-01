@@ -3,10 +3,51 @@ import type {
   ManifestV1
 } from "@/types/manifest";
 
+import type { ChunkMetadata } from "@/types/vault";
+
+import type { RuntimeStorage } from "@/lib/runtime/runtimeStorage";
+
+import type { ContainerPublicationRecord } from "@/lib/storage/container/containerPublication";
+
 import {
   STORAGE_POINTER_REGEX,
   UPLOAD_TOKEN_REGEX
 } from "@/lib/crypto/validators";
+
+/**
+ * Stage 4.5 — the result of ONE container media upload.
+ *
+ * `containerTxId` is the Irys data-item id of the single container DataItem;
+ * `chunkIds` is the canonical ORDERED logical chunk identity list; and
+ * `layoutDigest` is the sha256 of the canonical layout descriptor that binds
+ * that order AND the ciphertext sizes. Together these are exactly what the
+ * container publication claim records.
+ *
+ * Offsets are deliberately absent: they are derived at read time from the
+ * Stage 2 layout, never persisted.
+ */
+export interface ContainerUploadOutcome {
+  readonly containerTxId: string;
+  readonly chunkIds: readonly string[];
+  readonly layoutDigest: string;
+}
+
+/**
+ * Stage 4.5 — the additive chunk-pointer READOUT.
+ *
+ * The chunk-pointers endpoint answers with the legacy per-chunk pointer map
+ * AND, when the capsule was published as ONE media container, the container
+ * publication record.
+ *
+ * `container === null` is the legacy case. A non-null container means the
+ * capsule's media authority is the container publication, NOT the pointer
+ * map — so the two can never both be populated (enforced fail-closed at the
+ * fetch boundary).
+ */
+export interface ChunkPointerReadout {
+  readonly chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
+  readonly container: ContainerPublicationRecord | null;
+}
 
 
 /**
@@ -385,5 +426,35 @@ export interface StorageAdapter {
       StoragePointer
     >>
   >;
+
+  /**
+   * Stage 4.5 — additive readout that ALSO surfaces the container
+   * publication record when the capsule has one.
+   *
+   * Implementations MUST fail closed if both representations are populated:
+   * a container capsule writes NO per-chunk registry entries, so a non-empty
+   * pointer map alongside a container record is an inconsistent state.
+   */
+  getChunkPointerReadout?(
+    capsuleId: string
+  ): Promise<ChunkPointerReadout>;
+
+
+  /**
+   * Stage 4.5 — OPTIONAL container media upload capability.
+   *
+   * Present ONLY on adapters that can publish the whole media container as
+   * ONE DataItem (currently `creatorIrysStorage`). Its ABSENCE is meaningful:
+   * a caller that has been asked to use the container path MUST fail closed
+   * rather than silently fall back to the per-chunk path.
+   *
+   * The adapter reads the encrypted chunks itself through `runtime`, so no
+   * plaintext and no whole-container buffer crosses this boundary.
+   */
+  uploadContainer?(
+    runtime: RuntimeStorage,
+    chunkMetadata: readonly ChunkMetadata[],
+    uploadToken: UploadToken
+  ): Promise<ContainerUploadOutcome>;
 
 }

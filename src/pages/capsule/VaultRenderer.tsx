@@ -7,6 +7,7 @@ import type {
   CapsuleItemV1,
   CapsuleItemV2,
   MediaItemV2,
+  PublishedChunkMetadata,
 } from "@/types/vault";
 
 import {
@@ -382,12 +383,29 @@ type Props = {
       ChunkId,
       StoragePointer
     >>;
+
+  /**
+   * Stage 4.5 — container resolution indexed by logical chunkId.
+   *
+   * Present ONLY for a container capsule. When an entry exists for a chunk,
+   * that chunk carries a DERIVED container position (offset/length inside
+   * the ONE container DataItem) instead of a per-chunk pointer, so the
+   * legacy pointer map is not consulted for it.
+   *
+   * null / undefined = no container publication (the legacy case).
+   */
+  containerChunks?:
+    ReadonlyMap<
+      string,
+      PublishedChunkMetadata
+    > | null | undefined;
 };
 
 export default function VaultRenderer({
   vault,
   cryptoKey,
   chunkPointers,
+  containerChunks,
 }: Props) {
 
   if (
@@ -422,6 +440,7 @@ export default function VaultRenderer({
           vault={vault}
           cryptoKey={cryptoKey}
           chunkPointers={chunkPointers}
+          containerChunks={containerChunks}
         />
       );
 
@@ -478,6 +497,7 @@ function VaultV2Renderer({
   vault,
   cryptoKey,
   chunkPointers,
+  containerChunks,
 }: {
   vault: VaultV2;
   cryptoKey: CryptoKey;
@@ -486,6 +506,11 @@ function VaultV2Renderer({
       ChunkId,
       StoragePointer
     >>;
+  containerChunks?:
+    ReadonlyMap<
+      string,
+      PublishedChunkMetadata
+    > | null | undefined;
 }) {
 
   const items =
@@ -520,7 +545,8 @@ function VaultV2Renderer({
             item,
             cryptoKey,
             capsuleId,
-            chunkPointers
+            chunkPointers,
+            containerChunks
           )}
         </div>
       ))}
@@ -580,7 +606,12 @@ function renderItemV2(
     Readonly<Record<
       ChunkId,
       StoragePointer
-    >>
+    >>,
+  containerChunks?:
+    ReadonlyMap<
+      string,
+      PublishedChunkMetadata
+    > | null | undefined
 ) {
 
   if (!item)
@@ -602,6 +633,7 @@ function renderItemV2(
           cryptoKey={cryptoKey}
           capsuleId={capsuleId}
           chunkPointers={chunkPointers}
+          containerChunks={containerChunks}
         />
       );
 
@@ -625,6 +657,7 @@ function MediaItemV2Block({
   cryptoKey,
   capsuleId,
   chunkPointers,
+  containerChunks,
 }: {
   item: MediaItemV2;
   cryptoKey: CryptoKey;
@@ -634,6 +667,11 @@ function MediaItemV2Block({
       ChunkId,
       StoragePointer
     >>;
+  containerChunks?:
+    ReadonlyMap<
+      string,
+      PublishedChunkMetadata
+    > | null | undefined;
 }) {
 
   const [objectUrl, setObjectUrl] =
@@ -661,6 +699,7 @@ function MediaItemV2Block({
       item.chunks ?? [];
 
     const signature =
+      `${containerChunks ? "container" : "legacy"}:` +
       JSON.stringify(chunks);
 
     if (
@@ -690,11 +729,46 @@ function MediaItemV2Block({
 
       try {
 
+        /**
+         * Stage 4.5 — CONTAINER items resolve through the DERIVED layout.
+         *
+         * When the capsule has a container publication, the container
+         * resolution for this media item already carries every logical
+         * chunk's `pointer` (= the ONE container txId), `offset`, `length`
+         * and LOCAL index — derived from the canonical Vault metadata by
+         * `resolveContainerChunks`, never loaded from storage.
+         *
+         * The legacy pointer-map path is untouched for items that have no
+         * container entry, so a legacy capsule behaves exactly as before.
+         */
         const resolvedChunks =
-          resolveChunkPointers(
-            item.chunks ?? [],
-            chunkPointers,
-          );
+          containerChunks === null ||
+          containerChunks === undefined
+            ? resolveChunkPointers(
+                item.chunks ?? [],
+                chunkPointers,
+              )
+            : (item.chunks ?? []).map((chunk) => {
+
+                /**
+                 * Every logical chunk of this item MUST have a container
+                 * position: the publication record is the media authority, so
+                 * a chunk the record does not cover means the record does not
+                 * describe this Vault — fail closed rather than fall back to
+                 * a pointer that does not exist.
+                 */
+                const resolved =
+                  containerChunks.get(chunk.chunkId);
+
+                if (!resolved) {
+                  throw new Error(
+                    "[AETERNA] Container publication does not cover this chunk"
+                  );
+                }
+
+                return resolved;
+
+              });
 
         const media: OpenableMediaItem = {
           ...item,
@@ -879,6 +953,7 @@ function MediaItemV2Block({
     item,
     item.chunks,
     chunkPointers,
+    containerChunks,
   ]);
 
 

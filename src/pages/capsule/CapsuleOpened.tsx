@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChunkId, ManifestV1 } from "@/types/manifest";
-import type { Vault } from "@/types/vault";
+import type { ChunkMetadata, PublishedChunkMetadata, Vault } from "@/types/vault";
 import type { StoragePointer } from "@/lib/storage/storageAdapter";
 import { storage } from "@/lib/storage/storage";
+import { resolveContainerChunks } from "@/lib/capsule/open/resolveContainerChunks";
 import VaultRenderer from "./VaultRenderer";
 
 type Props = {
@@ -68,6 +69,27 @@ export default function CapsuleOpened({
       > | null
     >(null);
 
+  /**
+   * Stage 4.5 — CONTAINER resolution, indexed by logical chunkId.
+   *
+   * null means "no container publication" (the legacy case) OR "not yet
+   * resolved". A populated map means the logical chunk carries its DERIVED
+   * container position, so the runtime reads a window of the ONE container
+   * DataItem instead of a whole per-chunk object.
+   *
+   * Indexing by chunkId (rather than by media item) is deliberate:
+   * `MediaItemV2` carries no item identifier, and the canonical identity of
+   * a logical chunk IS its chunkId — so the mapping needs no extra field and
+   * cannot drift from the Vault's own chunk list.
+   */
+  const [containerChunks, setContainerChunks] =
+    useState<
+      ReadonlyMap<
+        string,
+        PublishedChunkMetadata
+      > | null
+    >(null);
+
   const [state, setState] = useState<OpenState>(() => {
 
     // Guard #2: isCryptoKey — protects against runtime injection,
@@ -88,6 +110,14 @@ export default function CapsuleOpened({
     };
 
   });
+
+  /**
+   * The opened Vault, captured OUTSIDE the pointer-read effect so that effect
+   * can declare it as a dependency instead of reaching into the state union.
+   * Stable for the lifetime of an opened capsule.
+   */
+  const openedVault =
+    state.status === "opened" ? state.vault : null;
 
   /**
    * предотвращает duplicate execution
@@ -137,20 +167,71 @@ export default function CapsuleOpened({
 
   useEffect(() => {
 
-    if (state.status !== "opened") {
+    if (state.status !== "opened" || openedVault === null) {
       return;
     }
 
     let cancelled = false;
 
     storage
-      .getChunkPointers(
+      .getChunkPointerReadout(
         _capsuleId
       )
-      .then((map) => {
-        if (!cancelled) {
-          setChunkPointers(map);
+      .then(async (readout) => {
+
+        if (cancelled) return;
+
+        /**
+         * LEGACY: the per-chunk pointer map IS the media authority. The
+         * behaviour here is unchanged — `chunkPointers` is set and no
+         * container resolution happens.
+         */
+        if (readout.container === null) {
+
+          setChunkPointers(readout.chunkPointers);
+
+          return;
+
         }
+
+        /**
+         * CONTAINER: the publication record is the media authority.
+         *
+         * Every logical chunk's position is DERIVED from the canonical Vault
+         * chunk metadata through the Stage 2 layout — offsets are never read
+         * from storage. `resolveContainerChunks` fails closed on a chunk
+         * count / identity / layoutDigest mismatch, so a record that does not
+         * describe this Vault can never resolve.
+         *
+         * `readout.chunkPointers` is guaranteed EMPTY here: the fetch
+         * boundary fails closed when a capsule exposes both a container
+         * publication and legacy per-chunk pointers, so no container can be
+         * mistaken for N legacy chunks.
+         */
+        const items =
+          (openedVault.capsule?.items ?? []).map(
+            (item) =>
+              ((item as { chunks?: readonly ChunkMetadata[] }).chunks ?? [])
+          );
+
+        const resolved =
+          await resolveContainerChunks(
+            items,
+            readout.container
+          );
+
+        if (cancelled) return;
+
+        const byChunkId =
+          new Map<string, PublishedChunkMetadata>();
+
+        for (const chunk of resolved) {
+          byChunkId.set(chunk.chunkId, chunk);
+        }
+
+        setContainerChunks(byChunkId);
+        setChunkPointers(readout.chunkPointers);
+
       })
       .catch(() => {
         if (!cancelled) {
@@ -166,6 +247,7 @@ export default function CapsuleOpened({
 
   }, [
     state.status,
+    openedVault,
     _capsuleId,
   ]);
 
@@ -250,6 +332,7 @@ export default function CapsuleOpened({
             vault={state.vault}
             cryptoKey={state.cryptoKey}
             chunkPointers={chunkPointers}
+            containerChunks={containerChunks}
           />
 
         )}

@@ -6,6 +6,7 @@ import type {
 import { MANIFEST_VERSION } from "@/types/manifest";
 
 import type {
+  ChunkPointerReadout,
   StoragePointer
 } from "./storageAdapter";
 
@@ -463,6 +464,80 @@ export async function getChunkPointers(
 
 
 /* =========================
+   CONTAINER PUBLICATION READOUT (Stage 4.5)
+   ========================= */
+
+/**
+ * The additive readout: the legacy per-chunk pointer map PLUS the container
+ * publication record when the capsule was published as ONE media container.
+ *
+ * This is the ONLY client-side entry point that surfaces the container
+ * publication, so the open path never has to know the endpoint's shape.
+ * Legacy capsules get `container: null` and are unaffected.
+ */
+export async function getChunkPointerReadout(
+
+  capsuleId: string
+
+): Promise<ChunkPointerReadout> {
+
+  if (!isValidCapsuleId(capsuleId)) {
+
+    sealedError();
+
+  }
+
+
+  if (
+
+    !storageAdapter ||
+
+    typeof storageAdapter.getChunkPointerReadout !==
+      "function"
+
+  ) {
+
+    sealedError();
+
+  }
+
+
+  try {
+
+    const readout =
+      await storageAdapter.getChunkPointerReadout(
+        capsuleId
+      );
+
+
+    return Object.freeze({
+
+      chunkPointers:
+        assertChunkPointerMap(
+          readout.chunkPointers
+        ),
+
+      container:
+        readout.container,
+
+    });
+
+  }
+
+  catch (cause) {
+
+    if (import.meta.env.DEV) {
+      console.error("[storage] getChunkPointerReadout failed", cause);
+    }
+
+    sealedError();
+
+  }
+
+}
+
+
+/* =========================
    MANIFEST LOAD
    ========================= */
 
@@ -582,6 +657,8 @@ export const storage =
     getManifest,
 
     getChunkPointers,
+
+    getChunkPointerReadout,
 
     get name() {
 
