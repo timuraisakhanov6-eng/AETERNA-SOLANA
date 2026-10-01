@@ -437,6 +437,34 @@ export interface ChunkMetadata {
 }
 
 /**
+ * Physical position of a logical chunk inside a Stage 4 media CONTAINER.
+ *
+ * Container mode: ONE DataItem holds `[HEADER][CHUNK 0]…[CHUNK N-1]`, so a
+ * chunk's bytes are a WINDOW of the container object rather than the whole
+ * object. The window is DERIVED at read time from the Stage 2 layout — it is
+ * never persisted per chunk.
+ *
+ * This is an ADDITIVE, explicitly container-only structure. It is deliberately
+ * NOT folded into `pointer`: a legacy pointer identifies an object that IS the
+ * chunk, and that meaning must not be overloaded.
+ */
+export interface ChunkContainerPosition {
+
+  /** The single container DataItem every chunk of this capsule lives in. */
+  readonly containerTxId: StoragePointer;
+
+  /** Canonical global order position (Stage 2 `ContainerEntry.globalIndex`). */
+  readonly globalIndex: number;
+
+  /** Absolute byte offset of this chunk inside the container. */
+  readonly offset: number;
+
+  /** Exact physical length — equals `ChunkMetadata.size`. */
+  readonly length: number;
+
+}
+
+/**
  * Published chunk metadata.
  *
  * Runtime upload has completed.
@@ -453,6 +481,15 @@ export interface PublishedChunkMetadata
   extends ChunkMetadata {
 
   readonly pointer: StoragePointer;
+
+  /**
+   * Present ONLY in container mode (Stage 4 / Model 3).
+   *
+   * ABSENT for the legacy per-chunk DataItem model, where `pointer` alone
+   * identifies the whole object. Consumers MUST treat absence as
+   * "legacy: read the pointer at offset 0" — never as an error.
+   */
+  readonly container?: ChunkContainerPosition;
 
 }
 

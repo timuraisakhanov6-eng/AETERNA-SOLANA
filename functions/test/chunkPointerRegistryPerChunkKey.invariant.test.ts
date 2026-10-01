@@ -22,8 +22,15 @@
  *      old algorithm in the same file);
  *   B. same chunkId + same txId → idempotent 200;
  *   C. same chunkId + different txId → 409 CHUNK_ALREADY_BOUND;
- *   D. same txId + different chunkId → 409 TX_ALREADY_CLAIMED
- *      (mechanism unchanged: `publication-tx:<txId>` index);
+ *   D. same txId claimed by a DIFFERENT lifecycle → 409 TX_ALREADY_CLAIMED
+ *      (mechanism unchanged: `publication-tx:<txId>` index).
+ *
+ *   NOTE (Stage 4): the tx index used to match on lifecycle + capsule only,
+ *   so "same txId + different chunkId under the SAME lifecycle/capsule"
+ *   returned an idempotent 200 WITHOUT binding the second chunk. That was a
+ *   real defect and it is now fixed; its regression coverage lives in
+ *   `publicationClaim.invariant.test.ts` under
+ *   "Stage 4 — tx-index idempotency is EXACT-identity only".
  *   E. cross-capsule isolation → no leakage in either direction;
  *   F. read path with >1000 entries → pagination returns every entry;
  *   G. simulated `list` propagation lag → bounded retry succeeds;

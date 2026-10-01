@@ -70,10 +70,42 @@ export async function loadChunk(
         );
     }
 
+    /**
+     * Read window inside the source object.
+     *
+     * LEGACY (per-chunk DataItem): the pointer identifies an object that IS
+     * the chunk, so the window starts at offset 0. This is unchanged.
+     *
+     * CONTAINER (Stage 4 / Model 3): every logical chunk lives in ONE
+     * container DataItem, so the window is the chunk's DERIVED position.
+     * The offset is never persisted — it comes from the Stage 2 layout via
+     * `resolveContainerChunks()`.
+     */
+    const container = chunk.container;
+
+    let offset = 0;
+
+    if (container !== undefined) {
+        if (
+            container.containerTxId !== chunk.pointer ||
+            container.length !== expectedLength ||
+            !Number.isSafeInteger(container.offset) ||
+            container.offset < 0 ||
+            !Number.isSafeInteger(container.globalIndex) ||
+            container.globalIndex < 0
+        ) {
+            throw new Error(
+                "[AETERNA] Invalid chunk container position",
+            );
+        }
+
+        offset = container.offset;
+    }
+
     const encrypted =
         await storage.downloadRange(
             chunk.pointer,
-            0,
+            offset,
             expectedLength,
         );
 

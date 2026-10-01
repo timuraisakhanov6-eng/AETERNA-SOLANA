@@ -9,6 +9,9 @@ import type {
 import {
   uploadPreparedChunks,
 } from "@/lib/storage/uploadPreparedChunks";
+import {
+  assertSealUploadOutcome,
+} from "@/lib/capsule/sealUploadOutcome";
 
 import {
   MANIFEST_VERSION
@@ -1027,30 +1030,22 @@ export async function sealCapsuleCore(
         storageAdapter
       );
 
-    if (
-      uploadedChunks.length !==
-      chunkMetadata.length
-    ) {
-      throw new Error(
-        "[AETERNA] Chunk upload count mismatch"
-      );
-    }
-
-    const uniqueChunkIds =
-      new Set(
-        uploadedChunks.map(
-          chunk => chunk.chunkId
-        )
-      );
-
-    if (
-      uniqueChunkIds.size !==
-      uploadedChunks.length
-    ) {
-      throw new Error(
-        "[AETERNA] Duplicate chunk upload"
-      );
-    }
+    /**
+     * Stage 4 — media upload outcome contract.
+     *
+     * LEGACY (current production path): N logical chunks → N uploaded
+     * per-chunk records. CONTAINER (Model 3, not yet wired): N logical
+     * chunks → 1 container publication record.
+     *
+     * The contract is encoded once in `assertSealUploadOutcome`, which
+     * preserves the two existing failure messages and additionally verifies
+     * that the uploaded set actually IS the expected set (the previous
+     * inline checks compared counts and uniqueness only).
+     */
+    assertSealUploadOutcome(chunkMetadata, {
+      mode: "legacy",
+      uploadedChunks,
+    });
 
     const nowUtc =
       await getTrustedTime();

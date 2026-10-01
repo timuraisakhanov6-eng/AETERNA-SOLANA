@@ -54,6 +54,15 @@ type Operation =
   | { op: "finalize"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationVerified: boolean; sealVerified: boolean }
   | { op: "recover"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; publicationState: string; sealState: string }
   | { op: "vault-publication-claim"; creatorCreditId: string; creatorIdentityId: string; lifecycleId: string; capsuleId: string; outcome?: string }
+  | {
+      op: "container-publication-claim";
+      capsuleId: string;
+      lifecycleId: string;
+      creatorIdentityId: string;
+      containerTxId: string;
+      layoutDigest: string;
+      chunkIds: string[];
+    }
   | { op: "read"; creatorCreditId: string }
   | {
       op: "payment-tx-claim";
@@ -469,6 +478,189 @@ async function handleVaultPublicationClaim(state: DurableObjectState, env: Coord
     creatorCreditId,
     lifecycleId,
     revision: claim.revision,
+  });
+}
+
+/* ================= CONTAINER PUBLICATION CLAIM (Stage 4.1) ================= */
+
+/**
+ * The authoritative container publication claim, held in Durable Object
+ * storage.
+ *
+ * This is claim IDENTITY only. The verification `state`
+ * (PENDING/VERIFIED/REJECTED) lives in the KV projection and is advanced
+ * by /api/publication/verify exactly as before — the DO is authoritative
+ * for "does this claim exist, and whose is it", not for verification.
+ */
+export interface ContainerPublicationClaimRecord {
+  capsuleId: string;
+  lifecycleId: string;
+  creatorIdentityId: string;
+  containerTxId: string;
+  layoutDigest: string;
+  chunkIds: string[];
+}
+
+/** The global txId -> capsule binding for container publications. */
+export interface ContainerPublicationTxBinding {
+  capsuleId: string;
+  lifecycleId: string;
+}
+
+interface ContainerClaimOpResult {
+  ok: boolean;
+  outcome: string;
+  capsuleId: string;
+  containerTxId: string;
+  error?: string;
+}
+
+function containerClaimKey(capsuleId: string): string {
+  return `container-publication-claim:${capsuleId}`;
+}
+
+function containerTxBindingKey(containerTxId: string): string {
+  return `container-publication-tx:${containerTxId}`;
+}
+
+function containerClaimSuccessResponse(result: ContainerClaimOpResult): Response {
+  return new Response(JSON.stringify({ ...result, ok: true }), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+function containerClaimFailureResponse(result: ContainerClaimOpResult, status = 409): Response {
+  return new Response(JSON.stringify({ ...result, ok: false }), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+/**
+ * Atomic "create-if-absent / claim exactly once" for a container
+ * publication.
+ *
+ * Atomicity model
+ * ---------------
+ * `container-publication:<capsuleId>` in KV cannot express create-if-absent:
+ * Cloudflare KV has no compare-and-set, so a KV get followed by a KV put is
+ * two independent round-trips. Two concurrent conflicting container claims
+ * could both observe "absent", both write, and both report success while
+ * only one record survived.
+ *
+ * This operation moves the authoritative decision into Durable Object
+ * storage, which is strongly consistent and transactional, and executes it
+ * inside ONE serialized DO request: the read -> decide -> write sequence is
+ * separated by no non-storage await, so the DO input gate keeps every other
+ * request out (the same argument the payment-tx and grant claims rely on).
+ *
+ * Both records — the per-capsule claim and the per-tx binding — are written
+ * inside a SINGLE storage transaction, so a crash cannot leave one without
+ * the other.
+ *
+ * Outcomes:
+ *   CONTAINER_PUBLICATION_CLAIMED        — no claim existed; established now
+ *   CONTAINER_PUBLICATION_ALREADY_CLAIMED — byte-equal exact replay; idempotent
+ *   TX_ALREADY_CLAIMED                   — this txId owns a DIFFERENT capsule
+ *   CONTAINER_ALREADY_PUBLISHED          — this capsule owns a DIFFERENT claim
+ *
+ * KV is NOT atomic and is never claimed to be: the KV container record is a
+ * durable PROJECTION of this authoritative claim.
+ */
+async function handleContainerPublicationClaim(
+  state: DurableObjectState,
+  request: Operation & { op: "container-publication-claim" }
+): Promise<Response> {
+  const { capsuleId, lifecycleId, creatorIdentityId, containerTxId, layoutDigest, chunkIds } = request;
+
+  if (
+    typeof capsuleId !== "string" || !capsuleId ||
+    typeof lifecycleId !== "string" || !lifecycleId ||
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof containerTxId !== "string" || !containerTxId ||
+    typeof layoutDigest !== "string" || !layoutDigest ||
+    !Array.isArray(chunkIds) ||
+    chunkIds.length === 0 ||
+    chunkIds.some((id) => typeof id !== "string" || id.length === 0)
+  ) {
+    return containerClaimFailureResponse(
+      { ok: false, outcome: "INVALID_FIELDS", error: "INVALID_FIELDS", capsuleId: "", containerTxId: "" },
+      400
+    );
+  }
+
+  const txKey = containerTxBindingKey(containerTxId);
+  const claimKey = containerClaimKey(capsuleId);
+
+  /* --- read (no non-storage await until the write below) --- */
+
+  const txBinding = (await state.storage.get<ContainerPublicationTxBinding>(txKey)) ?? null;
+  if (txBinding && txBinding.capsuleId !== capsuleId) {
+    // Cross-capsule txId reuse: the tx is already spent. Deterministic
+    // conflict — the loser never receives success.
+    return containerClaimFailureResponse(
+      { ok: false, outcome: "TX_ALREADY_CLAIMED", error: "TX_ALREADY_CLAIMED", capsuleId, containerTxId },
+      409
+    );
+  }
+
+  const existing = (await state.storage.get<ContainerPublicationClaimRecord>(claimKey)) ?? null;
+
+  if (existing) {
+    const sameChunkSet =
+      existing.chunkIds.length === chunkIds.length &&
+      existing.chunkIds.every((id, i) => id === chunkIds[i]);
+
+    if (
+      existing.lifecycleId === lifecycleId &&
+      existing.creatorIdentityId === creatorIdentityId &&
+      existing.containerTxId === containerTxId &&
+      existing.layoutDigest === layoutDigest &&
+      sameChunkSet
+    ) {
+      // Exact replay: same authority, same tx, same ordered chunk set, same
+      // layout digest. Idempotent success. Repair a missing tx binding so a
+      // previously interrupted attempt converges.
+      if (!txBinding) {
+        await state.storage.put(txKey, { capsuleId, lifecycleId });
+      }
+      return containerClaimSuccessResponse({
+        ok: true,
+        outcome: "CONTAINER_PUBLICATION_ALREADY_CLAIMED",
+        capsuleId,
+        containerTxId,
+      });
+    }
+
+    // A capsule publishes exactly ONE container. Any other claim conflicts.
+    return containerClaimFailureResponse(
+      { ok: false, outcome: "CONTAINER_ALREADY_PUBLISHED", error: "CONTAINER_ALREADY_PUBLISHED", capsuleId, containerTxId },
+      409
+    );
+  }
+
+  /* --- write: both records, atomically, or neither --- */
+
+  const record: ContainerPublicationClaimRecord = {
+    capsuleId,
+    lifecycleId,
+    creatorIdentityId,
+    containerTxId,
+    layoutDigest,
+    chunkIds: [...chunkIds],
+  };
+
+  await state.storage.transaction(async (txn) => {
+    await txn.put(claimKey, record);
+    await txn.put(txKey, { capsuleId, lifecycleId });
+  });
+
+  return containerClaimSuccessResponse({
+    ok: true,
+    outcome: "CONTAINER_PUBLICATION_CLAIMED",
+    capsuleId,
+    containerTxId,
   });
 }
 
@@ -1095,6 +1287,8 @@ export class CreditOperationCoordinator {
         return handleRecover(this.state, this.env, body);
       case "vault-publication-claim":
         return handleVaultPublicationClaim(this.state, this.env, body);
+      case "container-publication-claim":
+        return handleContainerPublicationClaim(this.state, body);
       case "payment-tx-claim":
         return handlePaymentTxClaim(this.state, body);
       case "payment-tx-check":

@@ -26,6 +26,14 @@ import { getStoragePayment } from "../../lib/storage/storagePaymentStore";
 import {
   chunkPointerEntryKey,
 } from "../../lib/storage/chunkPointerRegistryStore";
+import {
+  assertContainerPublicationRecord,
+  buildContainerPublicationRecord,
+  containerPublicationKey,
+  putContainerPublication,
+  type ContainerPublicationRecord,
+} from "../../../src/lib/storage/container/containerPublication";
+import { claimContainerPublication } from "../../lib/containerPublicationClaim";
 import { SHA256_REGEX, STORAGE_POINTER_REGEX } from "../../../src/lib/crypto/validators";
 
 /* ================= ENV ================= */
@@ -47,6 +55,16 @@ interface PublicationClaimEnv {
   CHUNK_POINTER_REGISTRY: {
     get(key: string): Promise<string | null>;
     put(key: string, value: string): Promise<void>;
+  };
+  /**
+   * Authoritative serialization boundary for the container publication
+   * claim (Stage 4.1). Optional at the type level so a misconfigured
+   * environment fails CLOSED rather than silently falling back to a
+   * non-atomic KV read/check/put.
+   */
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(binding: { id: string }): DurableObjectStub;
   };
   DEBUG?: "true" | "false";
 }
@@ -141,17 +159,53 @@ export async function onRequestPost(
   const txId = parseInput(body.txId);
   const kind = parseInput(body.kind);
   const chunkId = parseInput(body.chunkId);
+  const layoutDigest = parseInput(body.layoutDigest);
+  const chunkIdsRaw = body.chunkIds;
 
   if (!creatorIdentityId || !lifecycleId || !capsuleId || !storagePaymentId || !txId) {
     return fail(origin, 400, "INVALID_FIELDS");
   }
 
-  if (kind !== "vault" && kind !== "chunk") {
+  if (kind !== "vault" && kind !== "chunk" && kind !== "container") {
     return fail(origin, 400, "INVALID_KIND");
   }
 
   if (kind === "chunk" && !chunkId) {
     return fail(origin, 400, "CHUNK_ID_REQUIRED");
+  }
+
+  /**
+   * Container claims carry the canonical ORDERED logical chunk identity and
+   * a digest over the canonical layout descriptor. Both are client EVIDENCE
+   * (like txId) — the server records them authoritatively only after node
+   * confirmation, and never treats them as capsule authority.
+   */
+  let containerChunkIds: string[] | null = null;
+
+  if (kind === "container") {
+    if (!Array.isArray(chunkIdsRaw) || chunkIdsRaw.length === 0) {
+      return fail(origin, 400, "CONTAINER_CHUNK_IDS_REQUIRED");
+    }
+
+    const seen = new Set<string>();
+    const collected: string[] = [];
+
+    for (const entry of chunkIdsRaw) {
+      if (typeof entry !== "string" || !SHA256_REGEX.test(entry)) {
+        return fail(origin, 400, "INVALID_CONTAINER_CHUNK_ID");
+      }
+      if (seen.has(entry)) {
+        return fail(origin, 400, "DUPLICATE_CONTAINER_CHUNK_ID");
+      }
+      seen.add(entry);
+      collected.push(entry);
+    }
+
+    if (!layoutDigest || !SHA256_REGEX.test(layoutDigest)) {
+      return fail(origin, 400, "INVALID_CONTAINER_LAYOUT_DIGEST");
+    }
+
+    containerChunkIds = collected;
   }
 
   if (!STORAGE_POINTER_REGEX.test(txId)) {
@@ -222,27 +276,79 @@ export async function onRequestPost(
 
   /* ================= 3. TX DUPLICATE PROTECTION (secondary index) ================= */
 
+  /**
+   * The secondary index answers one question: "has this txId already been
+   * claimed, and by whom?".
+   *
+   * It is an EXACT-REPLAY idempotency signal ONLY when the whole logical
+   * identity matches — same lifecycle, same capsule, same kind, and (for a
+   * chunk claim) the SAME chunkId.
+   *
+   * PREVIOUS BEHAVIOUR (defect): the comparison used lifecycle + capsule
+   * only. A SECOND chunk claiming the same txId under the same
+   * lifecycle/capsule therefore matched, returned `200 claimed:true`, and
+   * NEVER reached the chunk branch — so its pointer was never written and
+   * no node confirmation ran. The caller was told the chunk was bound while
+   * the registry had no entry for it. That is a silent partial publication,
+   * and it is exactly the shape a naive "one container txId for N chunks"
+   * implementation would have hit.
+   *
+   * `kind` and `chunkId` are already persisted on every index write, so no
+   * migration is required to make this comparison exact.
+   */
   const txIndexKey = `publication-tx:${txId}`;
   const txIndexRaw = await env.PUBLICATION_VERIFICATIONS.get(txIndexKey);
   if (txIndexRaw) {
-    let txIndex: { lifecycleId?: string; capsuleId?: string } | null = null;
+    let txIndex: {
+      lifecycleId?: string;
+      capsuleId?: string;
+      kind?: string;
+      chunkId?: string;
+    } | null = null;
     try {
       txIndex = JSON.parse(txIndexRaw);
     } catch {
       txIndex = null;
     }
-    if (
-      txIndex &&
+
+    const sameOwner =
+      txIndex !== null &&
       txIndex.lifecycleId === lifecycleId &&
-      txIndex.capsuleId === capsuleId
-    ) {
-      // Same tx, same lifecycle/capsule — idempotent replay.
+      txIndex.capsuleId === capsuleId;
+
+    // Cross-lifecycle / cross-capsule reuse is always forbidden.
+    if (!sameOwner) {
+      return fail(origin, 409, "TX_ALREADY_CLAIMED");
+    }
+
+    // Vault: an index hit for the same owner is an exact replay.
+    if (kind === "vault" && txIndex.kind === "vault") {
       return new Response(
         JSON.stringify({ ok: true, claimed: true, state: "PENDING", lifecycleId, capsuleId, txId }),
         { status: 200, headers: baseHeaders(origin) }
       );
     }
-    return fail(origin, 409, "TX_ALREADY_CLAIMED");
+
+    // Chunk: idempotent ONLY when the SAME chunkId was already bound.
+    // A different chunkId under the same owner means the txId is spent.
+    if (kind === "chunk") {
+      if (txIndex.kind === "chunk" && txIndex.chunkId === chunkId) {
+        return new Response(
+          JSON.stringify({ ok: true, claimed: true, state: "PENDING", lifecycleId, capsuleId, txId }),
+          { status: 200, headers: baseHeaders(origin) }
+        );
+      }
+      return fail(origin, 409, "TX_ALREADY_CLAIMED");
+    }
+
+    // Container: deliberately NOT short-circuited to 200 here. The tx index
+    // does not carry the ordered chunk set, so it cannot prove an exact
+    // replay. The container branch below owns the full identity comparison
+    // (txId + ordered chunk set + layout digest) and returns 200 only for a
+    // genuine replay, 409 CONTAINER_ALREADY_PUBLISHED otherwise.
+    if (kind !== "container") {
+      return fail(origin, 409, "TX_ALREADY_CLAIMED");
+    }
   }
 
   /* ================= 4. NODE-FIRST CONFIRMATION ================= */
@@ -315,6 +421,130 @@ export async function onRequestPost(
 
     return new Response(
       JSON.stringify({ ok: true, claimed: true, state: "PENDING", lifecycleId, capsuleId, txId }),
+      { status: 200, headers: baseHeaders(origin) }
+    );
+  }
+
+  /* kind === "container": ONE authoritative container publication record.
+
+     Model 3. The physical container is one DataItem holding N logical
+     chunks; the record binds the capsule/lifecycle to that single txId and
+     to the canonical ORDERED chunk identity list. Offsets are NOT stored —
+     they are derived at read time from the Vault's own chunk metadata.
+
+     Container mode writes exactly ONE KV record plus the shared tx index.
+     It NEVER writes N per-chunk registry entries: that would re-create the
+     per-chunk authority model the container exists to replace.
+
+     Stage 4.1 — RACE SAFETY. The claim itself is NOT decided here. KV has
+     no compare-and-set, so a KV get/check/put could not establish
+     "exactly one claim" for two concurrent conflicting claims. The
+     authoritative decision is made inside the CreditOperationCoordinator
+     Durable Object (see functions/lib/containerPublicationClaim.ts); the
+     KV record below is a durable PROJECTION of that decision. */
+
+  if (kind === "container") {
+    const chunkIds = containerChunkIds;
+    if (!chunkIds || !layoutDigest) {
+      return fail(origin, 400, "INVALID_FIELDS");
+    }
+
+    /**
+     * Atomic create-if-absent / claim-exactly-once.
+     *
+     * Exactly one of two concurrent conflicting claims can be told
+     * "claimed"; the other receives a deterministic conflict. A replay of
+     * the winner is idempotent. If coordination is unavailable the claim
+     * FAILS CLOSED — no authority is written and no success is returned.
+     */
+    const claimResult = await claimContainerPublication(env, {
+      capsuleId,
+      lifecycleId,
+      creatorIdentityId,
+      containerTxId: txId,
+      layoutDigest,
+      chunkIds,
+    });
+
+    if (!claimResult.ok) {
+      if (claimResult.reason === "UNAVAILABLE") {
+        return fail(origin, 503, "CONTAINER_CLAIM_UNAVAILABLE");
+      }
+      return fail(origin, 409, claimResult.reason);
+    }
+
+    /**
+     * The authoritative transition succeeded. Project it into the KV read
+     * surface.
+     *
+     * The projection is CREATE-IF-ABSENT and is never regressed: `state` is
+     * advanced to VERIFIED/REJECTED by /api/publication/verify (KV-only), so
+     * rewriting an existing record here would push a verified container back
+     * to PENDING.
+     */
+    const key = containerPublicationKey(capsuleId);
+    let state: string = "PENDING";
+
+    try {
+      const existingRaw = await env.PUBLICATION_VERIFICATIONS.get(key);
+
+      if (existingRaw === null || existingRaw === undefined) {
+        await putContainerPublication(
+          env,
+          buildContainerPublicationRecord({
+            capsuleId,
+            lifecycleId,
+            creatorIdentityId,
+            containerTxId: txId,
+            chunkIds,
+            layoutDigest,
+            now,
+          })
+        );
+      } else {
+        let existing: ContainerPublicationRecord;
+        try {
+          existing = assertContainerPublicationRecord(JSON.parse(existingRaw), capsuleId);
+        } catch {
+          return fail(origin, 503, "CONTAINER_PUBLICATION_CORRUPTED");
+        }
+
+        const sameChunkSet =
+          existing.chunkIds.length === chunkIds.length &&
+          existing.chunkIds.every((id, i) => id === chunkIds[i]);
+
+        // The projection must agree with the authoritative claim. A
+        // divergence is never reported as success.
+        if (
+          existing.lifecycleId !== lifecycleId ||
+          existing.containerTxId !== txId ||
+          existing.layoutDigest !== layoutDigest ||
+          !sameChunkSet
+        ) {
+          return fail(origin, 503, "CONTAINER_PUBLICATION_INCONSISTENT");
+        }
+
+        state = existing.state;
+      }
+
+      await env.PUBLICATION_VERIFICATIONS.put(
+        txIndexKey,
+        JSON.stringify({ lifecycleId, capsuleId, creatorIdentityId, kind })
+      );
+    } catch {
+      // The authoritative DO claim stands; the projection is retryable and a
+      // replay re-attempts it. Never report success without it.
+      return fail(origin, 503, "CONTAINER_PUBLICATION_PROJECTION_FAILED");
+    }
+
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        claimed: true,
+        state,
+        capsuleId,
+        containerTxId: txId,
+      }),
       { status: 200, headers: baseHeaders(origin) }
     );
   }

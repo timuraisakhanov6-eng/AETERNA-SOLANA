@@ -88,24 +88,74 @@ export function makeEventContext(
 
 import { CreditOperationCoordinator } from "./../do/creditOperationCoordinator";
 
-export interface FakeDurableObjectStorage {
-  data: Map<string, unknown>;
+export interface FakeDurableObjectTransaction {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<void>;
 }
 
+export interface FakeDurableObjectStorage {
+  data: Map<string, unknown>;
+  get<T>(key: string): Promise<T | undefined>;
+  put(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+  transaction<T>(
+    closure: (txn: FakeDurableObjectTransaction) => Promise<T>
+  ): Promise<T>;
+}
+
+/**
+ * In-memory Durable Object storage.
+ *
+ * `transaction()` emulates the real contract: writes are staged and
+ * applied ATOMICALLY on success, and a throw rolls every staged write
+ * back. Reads inside the closure observe staged writes, exactly like the
+ * real DurableObjectTransaction. This is what lets the container
+ * publication claim write its per-capsule claim and its per-tx binding
+ * all-or-nothing.
+ */
 export function createFakeDurableObjectStorage(): FakeDurableObjectStorage {
+  const data = new Map<string, unknown>();
+
   return {
-    data: new Map(),
+    data,
     async get<T>(key: string) {
-      return this.data.get(key) as T | undefined;
+      return data.get(key) as T | undefined;
     },
     async put(key: string, value: unknown) {
-      this.data.set(key, value);
+      data.set(key, value);
     },
     async delete(key: string) {
-      this.data.delete(key);
+      data.delete(key);
+    },
+    async transaction<T>(
+      closure: (txn: FakeDurableObjectTransaction) => Promise<T>
+    ): Promise<T> {
+      const staged = new Map<string, unknown>();
+      const deleted = new Set<string>();
+
+      const txn: FakeDurableObjectTransaction = {
+        async get<U>(key: string) {
+          if (deleted.has(key)) return undefined;
+          if (staged.has(key)) return staged.get(key) as U;
+          return data.get(key) as U | undefined;
+        },
+        async put(key: string, value: unknown) {
+          deleted.delete(key);
+          staged.set(key, value);
+        },
+        async delete(key: string) {
+          staged.delete(key);
+          deleted.add(key);
+        },
+      };
+
+      const result = await closure(txn);
+
+      for (const key of deleted) data.delete(key);
+      for (const [key, value] of staged) data.set(key, value);
+
+      return result;
     },
   };
 }

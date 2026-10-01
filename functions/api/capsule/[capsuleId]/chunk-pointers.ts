@@ -21,6 +21,16 @@ import {
   type ChunkPointerRegistryKV,
   type ChunkPointerMap,
 } from "../../../lib/storage/chunkPointerRegistryStore";
+import {
+  getContainerPublication,
+  type ContainerPublicationKV,
+} from "../../../../src/lib/storage/container/containerPublication";
+
+/**
+ * Read-path bindings: the per-chunk Registry (legacy) plus the container
+ * publication namespace (Stage 4 / Model 3).
+ */
+type ChunkPointerReadEnv = ChunkPointerRegistryKV & ContainerPublicationKV;
 
 /* ================= ORIGINS ================= */
 
@@ -101,7 +111,7 @@ function fail(
 /* ================= OPTIONS ================= */
 
 export const onRequestOptions = async (
-  context: EventContext<ChunkPointerRegistryKV, unknown, unknown>
+  context: EventContext<ChunkPointerReadEnv, unknown, unknown>
 ): Promise<Response> => {
   const origin = context.request.headers.get("origin") ?? "";
   return new Response(null, { status: 204, headers: baseHeaders(origin) });
@@ -110,7 +120,7 @@ export const onRequestOptions = async (
 /* ================= GET ================= */
 
 export const onRequestGet = async (
-  context: EventContext<ChunkPointerRegistryKV, unknown, unknown>
+  context: EventContext<ChunkPointerReadEnv, unknown, unknown>
 ): Promise<Response> => {
   const { request, env, params } = context;
 
@@ -193,15 +203,50 @@ export const onRequestGet = async (
   }
 
   /**
-   * Success — existing client contract:
-   * { ok, capsuleId, chunkPointers }
+   * CONTAINER MODE (Stage 4 / Model 3).
+   *
+   * A container capsule has NO per-chunk registry entries — the ONE
+   * container publication record is the authority. It is returned
+   * ADDITIVELY so the legacy `{ ok, capsuleId, chunkPointers }` contract is
+   * untouched for legacy capsules (where `container` is null).
+   *
+   * The record is NON-AUTHORITATIVE at this boundary in the sense that the
+   * client still derives the physical chunk map itself from the Vault's
+   * canonical chunk metadata; this endpoint only publishes the authoritative
+   * container binding.
    */
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      capsuleId,
-      chunkPointers,
-    }),
-    { status: 200, headers: baseHeaders(origin) }
-  );
+  let container: unknown = null;
+
+  try {
+    const publication = await getContainerPublication(
+      env as ChunkPointerReadEnv,
+      capsuleId
+    );
+    container = publication === null ? null : publication;
+  } catch {
+    // A present-but-malformed container record must fail closed; absence is
+    // legitimate (legacy capsules).
+    return fail(503, "CONTAINER_PUBLICATION_ERROR", origin);
+  }
+
+  /**
+   * Success — existing client contract preserved EXACTLY for legacy
+   * capsules: `container` is added ONLY when a container publication
+   * actually exists, so a legacy response is byte-for-byte the previous
+   * shape rather than a widened one.
+   */
+  const body: Record<string, unknown> = {
+    ok: true,
+    capsuleId,
+    chunkPointers,
+  };
+
+  if (container !== null) {
+    body["container"] = container;
+  }
+
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: baseHeaders(origin),
+  });
 };
