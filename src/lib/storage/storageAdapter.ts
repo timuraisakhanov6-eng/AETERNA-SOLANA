@@ -322,6 +322,37 @@ export interface StorageAdapter {
   ): Promise<Uint8Array<ArrayBuffer>>;
 
 
+  /**
+   * Bounded range read
+   *
+   * Reads exactly `length` bytes starting at `offset` of the object
+   * identified by `pointer`.
+   *
+   * Adapters MUST:
+   *
+   * fail closed
+   * reject corrupted payloads
+   * preserve byte integrity
+   * avoid silent gateway downgrade
+   * return EXACTLY `length` bytes
+   *
+   * Adapters MUST NOT:
+   *
+   * satisfy a range read from a full-object download
+   * (the whole point of the primitive is to avoid downloading
+   * an object larger than the requested window)
+   *
+   * Optional: read-only adapters that cannot serve ranges may
+   * omit it; callers MUST treat its absence as fail-closed.
+   */
+
+  downloadRange?(
+    pointer: StoragePointer,
+    offset: number,
+    length: number
+  ): Promise<Uint8Array<ArrayBuffer>>;
+
+
   /* =========================
      MANIFEST (PUBLIC)
      ========================= */

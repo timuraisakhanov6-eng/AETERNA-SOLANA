@@ -14,7 +14,10 @@ import {
   assertStoragePointer
 } from "./storageAdapter";
 
-import { executorStorage } from "./executorStorage";
+import {
+  assertRangeWindow,
+  executorStorage
+} from "./executorStorage";
 
 import {
   CAPSULE_ID_REGEX,
@@ -273,6 +276,129 @@ export async function download(
 
 
 /* =========================
+   BOUNDED RANGE READ
+   ========================= */
+
+
+/**
+ * Bounded range read.
+ *
+ * Reads exactly `length` bytes starting at `offset`.
+ *
+ * Cap re-scope (Stage 1):
+ *
+ * The whole-object cap exists to bound how much a single read may
+ * pull into memory. For a range read the bound is the REQUESTED
+ * WINDOW, never the object size — a 20 GB object must remain
+ * readable in a small window and must NOT be rejected merely
+ * because the object exceeds the whole-object cap.
+ *
+ * `download()` keeps its existing whole-object cap and semantics
+ * unchanged; only the range path is re-scoped here.
+ */
+
+export async function downloadRange(
+
+  txId: StoragePointer,
+
+  offset: number,
+
+  length: number
+
+): Promise<Uint8Array<ArrayBuffer>> {
+
+  assertStoragePointer(txId);
+
+
+  const window =
+    assertRangeWindow(offset, length);
+
+
+  if (
+    window.length >
+      MAX_CHUNK_DOWNLOAD_SIZE
+  ) {
+
+    sealedError();
+
+  }
+
+
+  if (
+
+    !storageAdapter ||
+
+    typeof storageAdapter.downloadRange !==
+      "function"
+
+  ) {
+
+    sealedError();
+
+  }
+
+
+  try {
+
+    const data =
+      await storageAdapter.downloadRange(
+        txId,
+        window.offset,
+        window.length
+      );
+
+
+    /**
+     * Exact-length contract.
+     *
+     * A short body means the gateway truncated the window; a long
+     * body means it ignored the Range header. Neither is a partial
+     * success, and neither is repaired by falling back to a
+     * whole-object download.
+     */
+
+    if (
+
+      !(data instanceof Uint8Array) ||
+
+      isDetachedBuffer(data) ||
+
+      data.byteLength !== window.length
+
+    ) {
+
+      sealedError();
+
+    }
+
+
+    if (import.meta.env.DEV) {
+
+      console.log(
+        `[storage:${storageAdapter.name}] range read complete`
+      );
+
+    }
+
+
+    return data;
+
+  }
+
+  catch (cause) {
+
+    if (import.meta.env.DEV) {
+      console.error("[storage] downloadRange failed", cause);
+    }
+
+    sealedError();
+
+  }
+
+}
+
+
+/* =========================
    RUNTIME CHUNK POINTER REGISTRY
    ========================= */
 
@@ -450,6 +576,8 @@ export const storage =
   Object.freeze({
 
     download,
+
+    downloadRange,
 
     getManifest,
 

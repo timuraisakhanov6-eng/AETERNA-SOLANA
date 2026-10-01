@@ -61,6 +61,87 @@ function isPlainObject(
 }
 
 /**
+ * Canonical bounded range window.
+ *
+ * A range read is a half-open request [offset, offset + length)
+ * expressed on the wire as the inclusive HTTP Range
+ * `bytes=<offset>-<offset + length - 1>`.
+ */
+export type RangeWindow = {
+  readonly offset: number;
+  readonly length: number;
+  readonly end: number;
+};
+
+/**
+ * Canonical range-window validator.
+ *
+ * Fail-closed boundary for every range read. Rejects:
+ *
+ * • non-numbers, non-integers, negatives
+ * • zero or negative length
+ * • unsafe integers and arithmetic overflow
+ *   (offset + length - 1 must itself remain a safe integer)
+ *
+ * The returned `end` is the INCLUSIVE last byte offset, so callers
+ * never re-derive it and can never disagree with the validator.
+ */
+export function assertRangeWindow(
+  offset: unknown,
+  length: unknown
+): RangeWindow {
+  if (
+    typeof offset !== "number" ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0
+  ) {
+    failClosed("[AETERNA] Invalid range offset");
+  }
+
+  if (
+    typeof length !== "number" ||
+    !Number.isSafeInteger(length) ||
+    length <= 0
+  ) {
+    failClosed("[AETERNA] Invalid range length");
+  }
+
+  const end = offset + length - 1;
+
+  /**
+   * Overflow guard.
+   *
+   * A safe offset plus a safe length can still leave the
+   * safe-integer domain. Worse, IEEE-754 rounding above 2^53 can
+   * silently NARROW the window without ever leaving it — e.g.
+   * offset = 2^53-1, length = 2 collapses to a 1-byte span.
+   *
+   * Either way the Range header would no longer describe the
+   * requested window, so the round-trip is asserted explicitly
+   * rather than assumed.
+   */
+  if (
+    !Number.isSafeInteger(end) ||
+    end < offset ||
+    end - offset + 1 !== length
+  ) {
+    failClosed("[AETERNA] Range arithmetic overflow");
+  }
+
+  return { offset, length, end };
+}
+
+/**
+ * Builds the canonical Irys/Arweave range-read URL.
+ *
+ * `https://<gateway>/tx/<txId>/data`
+ */
+function buildRangeUrl(gateway: string, txId: string): string {
+  const base = gateway.endsWith("/") ? gateway : gateway + "/";
+  return `${base}tx/${txId}/data`;
+}
+
+/**
  * Canonical Manifest validator.
  *
  * Validates the production ManifestV1 boundary before the manifest
@@ -145,10 +226,25 @@ function assertChunkPointerResponse(
  * Read-only storage contract: the subset of StorageAdapter that
  * remains after the Creator-paid upload path replaced Executor Hot.
  */
+/**
+ * Read-only storage contract: the subset of StorageAdapter that
+ * remains after the Creator-paid upload path replaced Executor Hot.
+ *
+ * `downloadRange` is REQUIRED here even though it is optional on the
+ * general StorageAdapter contract: this adapter does support bounded
+ * range reads, and callers of the read transport must be able to rely
+ * on that without an extra presence check.
+ */
 export type ExecutorReadStorageAdapter = Pick<
   StorageAdapter,
   "name" | "download" | "getManifest" | "getChunkPointers"
->;
+> & {
+  downloadRange(
+    pointer: StoragePointer,
+    offset: number,
+    length: number
+  ): Promise<Uint8Array<ArrayBuffer>>;
+};
 
 export const executorStorage: ExecutorReadStorageAdapter = {
   name: "executor-hot",
@@ -192,6 +288,87 @@ export const executorStorage: ExecutorReadStorageAdapter = {
     }
 
     failClosed("[AETERNA] All gateways failed");
+  },
+
+  /**
+   * Bounded range read.
+   *
+   * Reads exactly `length` bytes starting at `offset` of the object
+   * identified by `txId`, using the proven Irys/Arweave range
+   * endpoint:
+   *
+   *   GET https://<gateway>/tx/<txId>/data
+   *   Range: bytes=<offset>-<offset + length - 1>
+   *
+   * Contract (all fail-closed):
+   *
+   * • pointer, offset and length are validated before any I/O
+   * • a successful read MUST be HTTP 206 (Partial Content)
+   * • the received body MUST be EXACTLY `length` bytes
+   * • a 200 (full-object) response is NEVER accepted — the caller
+   *   asked for a bounded window, and a gateway that ignores Range
+   *   is not a valid range source
+   * • 4xx/5xx, empty bodies, HTML error pages and short/long bodies
+   *   are rejected
+   * • no silent full-object fallback exists on any path
+   *
+   * `Content-Range` is deliberately NOT required: Stage 0 proved the
+   * Irys gateway/CDN path returns it unreadable (null) to the browser
+   * even on a correct 206, so it cannot be a gate.
+   *
+   * Gateways are tried in the same order as `download()`: a gateway
+   * that cannot serve a correct 206 window is skipped, and if none
+   * can, the call fails closed. Skipping is NOT a fallback — a
+   * full-object response is never used to satisfy a range read.
+   */
+  async downloadRange(
+    txId: StoragePointer,
+    offset: number,
+    length: number
+  ): Promise<Uint8Array<ArrayBuffer>> {
+    assertStoragePointer(txId);
+
+    const window = assertRangeWindow(offset, length);
+
+    for (const gateway of GATEWAYS) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), GATEWAY_TIMEOUT);
+
+      try {
+        const url = buildRangeUrl(gateway, txId);
+
+        const res = await fetch(url, {
+          cache: "no-store",
+          signal: controller.signal,
+          headers: {
+            Range: `bytes=${window.offset}-${window.end}`,
+          },
+        });
+
+        // A range read is only satisfied by Partial Content.
+        if (res.status !== 206) continue;
+
+        const contentType = res.headers.get("content-type") ?? "";
+        if (contentType.includes("text/html")) continue;
+
+        const buffer = await res.arrayBuffer();
+
+        // Exact-length contract: a short or long body is a
+        // gateway/protocol failure, never a partial success.
+        if (buffer.byteLength !== window.length) continue;
+
+        clearTimeout(timeout);
+        return new Uint8Array(buffer);
+      } catch (cause) {
+        if (import.meta.env.DEV) {
+          console.warn(`[executor-hot] gateway range failed: ${gateway}`, cause);
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    failClosed("[AETERNA] Range read failed");
   },
 
   async getManifest(capsuleId: string): Promise<ManifestV1> {
