@@ -61,6 +61,27 @@ This specification explicitly excludes:
 
 ## 3. AUTHORITATIVE PUBLICATION VERIFICATION
 
+### 3.0 Canonical publication model (Container V1)
+
+Media publication has exactly ONE model:
+
+```
+logical encrypted chunks
+→ AETERNA Container V1 (deterministic layout)
+→ ONE Irys Container DataItem
+→ ONE containerTxId
+→ ONE container publication claim (lifecycle-bound)
+→ seal
+→ reopen via derived Container V1 offsets + bounded HTTP Range reads
+```
+
+The Vault remains a separate DataItem with its own vault publication claim.
+
+There is NO per-chunk publication, NO chunk publication, and NO Chunk Pointer
+Registry as an active publication mechanism. The container publication claim —
+NOT the containerTxId, the payment transaction id, the wallet, or storage
+evidence — is what authorizes the seal.
+
 ### 3.1 Client-reported publication vs authoritative evidence
 
 Client-reported publication:

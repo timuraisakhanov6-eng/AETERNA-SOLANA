@@ -15,10 +15,33 @@ Reference:
 This document defines the canonical boundary between:
 - AETERNA Service Payment;
 - Irys publication/storage economics;
-- chunked upload mechanics.
+- Container V1 media publication mechanics.
 
 This document does NOT implement Irys integration, browser wallet flow,
 Executor Hot runtime changes, or protocol core changes.
+
+---
+
+## 1A. CANONICAL MEDIA PUBLICATION MODEL (CONTAINER V1)
+
+The ONLY media publication model is AETERNA Container V1:
+
+```
+logical encrypted chunks
+→ AETERNA Container V1 (deterministic layout)
+→ ONE Irys Container DataItem
+→ ONE containerTxId
+→ ONE container publication claim
+→ seal
+→ reopen via derived Container V1 offsets + bounded HTTP Range reads
+```
+
+Consequences for this policy:
+- there is NO per-chunk Irys upload and NO per-chunk publication;
+- there is NO chunk publication and NO Chunk Pointer Registry as an active
+  storage/publication mechanism;
+- there is NO container feature flag — Container V1 is unconditional;
+- Irys cost is quoted and paid for the ONE container DataItem.
 
 ---
 
@@ -163,13 +186,13 @@ Resolved in the runtime:
 - active canonical creator rail is a supported Solana-compatible wallet; Base is frozen/reserved.
 
 Remaining gaps vs this canonical policy:
-- paymentIntentId migration is pending;
-- chunk-level AETERNA payment UX is not implemented and must remain pending.
+- paymentIntentId migration is pending.
 
 These gaps:
 - do NOT change the canonical target policy;
 - do NOT make Executor Hot publication the canonical business model;
-- do NOT justify per-chunk AETERNA payments.
+- do NOT reintroduce per-chunk AETERNA payments (Container V1 is the only
+  media publication model, so chunk count can never justify a payment).
 
 ---
 
