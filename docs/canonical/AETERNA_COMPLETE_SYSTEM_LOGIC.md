@@ -128,7 +128,7 @@ If the originally selected opening interval is 30 days or less, Heartbeat become
 If the originally selected opening interval exceeds 30 days, Heartbeat becomes available automatically during the final 30 days before opening.
 
 Creator Experience Principle
-During preparation and sealing, implementation details such as chunk processing, storage settlement, storage providers, Runtime Layer, Chunk Pointer Registry, and internal upload scheduling are not exposed to the creator.
+During preparation and sealing, implementation details such as chunk processing, storage settlement, storage providers, Runtime Layer, Container V1 publication record, and internal upload scheduling are not exposed to the creator.
 The creator interacts only with high-level preparation and sealing progress (e.g. “Preparing…”, “Uploading…”, “Finalizing…”).
 Builder Independence Principle
 Builder components never operate on encrypted media.
@@ -306,7 +306,7 @@ capsuleId
 recipientSecret
 creatorAuthority
 
-Storage pointers are not part of chunkMetadata and are not part of the immutable core. The Chunk Pointer Registry is the sole surface for chunk-to-storage-pointer mapping; entries are recorded during Upload and belong to Storage Authority (see "Chunk Pointer Registry" section below).
+Storage pointers are not part of chunkMetadata and are not part of the immutable core. The Container V1 publication record is the sole surface for media-to-storage mapping; it is recorded during Upload and belongs to Storage Authority (see "Container V1 Publication" section below).
 PreparedChunk ciphertext retention is implementation-defined.
 
 Critical Boundary
@@ -397,11 +397,11 @@ Chunk metadata core fields (chunkId, mediaId, index, size) are part of the Vault
 Chunk metadata describes the structure of encrypted media.
 Chunk metadata core fields participate in ciphertext continuity.
 Chunk metadata core fields become immutable after PREPARED.
-Storage pointers belong to Storage Authority (via the Chunk Pointer Registry) and are not part of Ciphertext Authority.
+Storage pointers belong to Storage Authority (via the Container V1 publication record) and are not part of Ciphertext Authority.
 
 Chunk metadata core fields do not contain storage provider pointers, transaction identifiers, capability values, or key material.
-Storage pointers are Storage Authority metadata only, held exclusively in the Chunk Pointer Registry. Storage pointers do not participate in ciphertext continuity, capability authority, key derivation, manifest integrity, or open authority.
-Changing the storage provider requires only updating the corresponding Chunk Pointer Registry entry — it must not require modifying core chunk metadata fields. Chunk metadata is used when reconstructing media in the OPENED state.
+Storage pointers are Storage Authority metadata only, held exclusively in the Container V1 publication record. Storage pointers do not participate in ciphertext continuity, capability authority, key derivation, manifest integrity, or open authority.
+Changing the storage provider requires only updating the corresponding Container V1 publication record — it must not require modifying core chunk metadata fields. Chunk metadata is used when reconstructing media in the OPENED state.
 
 Storage Pointer Management
 Storage provider pointers are operational metadata. They are not part of: vault authority, manifest authority, ciphertext continuity, capability authority, or key derivation.
@@ -409,8 +409,8 @@ Storage provider pointers may change without requiring: vault modification, mani
 Storage migration must preserve: ciphertext, chunk identifiers, recipient access, creator access, manifest integrity.
 
 Storage Authority Registry
-Storage Authority maintains a persistent Chunk Pointer Registry.
-The Chunk Pointer Registry is the canonical operational mapping between immutable chunk identifiers and storage-provider pointers.
+Storage Authority maintains a persistent Container V1 publication record.
+The Container V1 publication record is the canonical operational mapping between immutable chunk identifiers and the ONE media DataItem.
 Canonical structure:
 JavaScriptChunkPointerRegistry {
     chunkId
@@ -428,9 +428,9 @@ Storage Authority writes:
 textchunkId
 ↓
 pointer
-into the Chunk Pointer Registry.
-The Chunk Pointer Registry is operational metadata only.
-The Chunk Pointer Registry is NOT part of:
+into the Container V1 publication record.
+The Container V1 publication record is operational metadata only.
+The Container V1 publication record is NOT part of:
 
 Ciphertext Authority
 Capability Authority
@@ -438,7 +438,7 @@ Manifest Authority
 Open Authority
 Business Authority
 
-The Chunk Pointer Registry may be modified without:
+The Container V1 publication record may be modified without:
 
 re-encryption
 vault modification
@@ -456,7 +456,7 @@ textChunkMetadata[]
 ↓
 chunkId
 ↓
-Chunk Pointer Registry lookup
+Container V1 publication record lookup
 ↓
 pointer
 ↓
@@ -471,7 +471,7 @@ release processed memory
 Blob / MediaSource / File Stream
 ↓
 progressive render
-Emergency Runtime uses the same Chunk Pointer Registry lookup process.
+Emergency Runtime uses the same Container V1 publication lookup process.
 Loss of a storage provider does not require modification of:
 
 Vault
@@ -479,7 +479,7 @@ Manifest
 PreparedCapsule
 Capabilities
 
-Only the Chunk Pointer Registry may be updated.
+Only the Container V1 publication record may be updated.
 Chunk identifiers remain the canonical content authority.
 Storage pointers remain operational metadata.
 
@@ -549,7 +549,7 @@ re-encrypting chunks
 regenerating chunk identifiers
 modifying chunk metadata core fields (chunkId, mediaId, index, size)
 
-Recording or updating a chunk's entry in the Chunk Pointer Registry during Upload is permitted — the Chunk Pointer Registry belongs to Storage Authority and is not part of Ciphertext Authority.
+Recording or updating a chunk's entry in the Container V1 publication record during Upload is permitted — the Container V1 publication record belongs to Storage Authority and is not part of Ciphertext Authority.
 CAPSULE_HOLD processes ciphertext stored in the Runtime Layer.
 
 Prepared Boundary (Full Path)
@@ -858,7 +858,7 @@ storage settlement
 
 Storage Authority
 
-Chunk Pointer Registry
+Container V1 publication record
 storage pointers
 backend providers
 

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChunkId, ManifestV1 } from "@/types/manifest";
+import type { ManifestV1 } from "@/types/manifest";
 import type { ChunkMetadata, PublishedChunkMetadata, Vault } from "@/types/vault";
-import type { StoragePointer } from "@/lib/storage/storageAdapter";
 import { storage } from "@/lib/storage/storage";
 import { resolveContainerChunks } from "@/lib/capsule/open/resolveContainerChunks";
 import VaultRenderer from "./VaultRenderer";
@@ -57,25 +56,11 @@ export default function CapsuleOpened({
    */
 
   /**
-   * Canonical Chunk Pointer Registry map (chunkId → StoragePointer),
-   * resolved exclusively through Storage Authority. null while the
-   * registry read is in flight.
-   */
-
-  const [chunkPointers, setChunkPointers] =
-    useState<
-      Readonly<
-        Record<ChunkId, StoragePointer>
-      > | null
-    >(null);
-
-  /**
-   * Stage 4.5 — CONTAINER resolution, indexed by logical chunkId.
+   * CONTAINER V1 resolution, indexed by logical chunkId.
    *
-   * null means "no container publication" (the legacy case) OR "not yet
-   * resolved". A populated map means the logical chunk carries its DERIVED
-   * container position, so the runtime reads a window of the ONE container
-   * DataItem instead of a whole per-chunk object.
+   * null means "not yet resolved". A populated map means the logical chunk
+   * carries its DERIVED container position, so the runtime reads a window of
+   * the ONE container DataItem instead of a whole per-chunk object.
    *
    * Indexing by chunkId (rather than by media item) is deliberate:
    * `MediaItemV2` carries no item identifier, and the canonical identity of
@@ -155,13 +140,13 @@ export default function CapsuleOpened({
   }, [initialVault, initialCryptoKey]);
 
   /**
-   * Canonical Chunk Pointer Registry read.
+   * Canonical Container V1 publication read.
    *
-   * chunkId → StoragePointer is obtained exclusively through
-   * storage.getChunkPointers() (Storage Authority).
+   * The container publication record is obtained exclusively through
+   * storage.getChunkPointerReadout() (Storage Authority).
    * manifest.ext.chunkPointers is never a source here.
    *
-   * Fail-closed: if the Registry map cannot be obtained, the existing
+   * Fail-closed: if the publication cannot be obtained, the existing
    * error state is used — no fallback.
    */
 
@@ -182,32 +167,23 @@ export default function CapsuleOpened({
         if (cancelled) return;
 
         /**
-         * LEGACY: the per-chunk pointer map IS the media authority. The
-         * behaviour here is unchanged — `chunkPointers` is set and no
-         * container resolution happens.
-         */
-        if (readout.container === null) {
-
-          setChunkPointers(readout.chunkPointers);
-
-          return;
-
-        }
-
-        /**
-         * CONTAINER: the publication record is the media authority.
+         * CONTAINER V1: the publication record is the media authority.
          *
          * Every logical chunk's position is DERIVED from the canonical Vault
-         * chunk metadata through the Stage 2 layout — offsets are never read
-         * from storage. `resolveContainerChunks` fails closed on a chunk
+         * chunk metadata through the canonical layout — offsets are never
+         * read from storage. `resolveContainerChunks` fails closed on a chunk
          * count / identity / layoutDigest mismatch, so a record that does not
          * describe this Vault can never resolve.
          *
-         * `readout.chunkPointers` is guaranteed EMPTY here: the fetch
-         * boundary fails closed when a capsule exposes both a container
-         * publication and legacy per-chunk pointers, so no container can be
-         * mistaken for N legacy chunks.
+         * A missing publication fails closed: Container V1 is the ONLY media
+         * model, so there is no legacy fallback.
          */
+        if (readout.container === null) {
+          throw new Error(
+            "[AETERNA] Container publication is required"
+          );
+        }
+
         const items =
           (openedVault.capsule?.items ?? []).map(
             (item) =>
@@ -230,7 +206,6 @@ export default function CapsuleOpened({
         }
 
         setContainerChunks(byChunkId);
-        setChunkPointers(readout.chunkPointers);
 
       })
       .catch(() => {
@@ -320,7 +295,7 @@ export default function CapsuleOpened({
 
         </header>
 
-        {chunkPointers === null ? (
+        {containerChunks === null ? (
 
           <p className="text-sm text-muted-foreground">
             Opening capsule…
@@ -331,7 +306,6 @@ export default function CapsuleOpened({
           <VaultRenderer
             vault={state.vault}
             cryptoKey={state.cryptoKey}
-            chunkPointers={chunkPointers}
             containerChunks={containerChunks}
           />
 

@@ -87,21 +87,6 @@ describe("Phase D2a — creatorIrysStorage adapter", () => {
     expect(body.txId).toBe(DATA_TX);
   });
 
-  it("B. chunk upload: uploadCreatorData once, claim kind=chunk with correct chunkId", async () => {
-    const fetchMock = stubClaim();
-    const adapter = createCreatorIrysStorage(ctx);
-
-    const chunkId = "c".repeat(64);
-    const result = await adapter.uploadChunk(DATA, chunkId as never, "token" as never);
-
-    expect(result.txId).toBe(DATA_TX);
-    expect(uploadCreatorDataMock).toHaveBeenCalledTimes(1);
-    const body = lastClaimBody(fetchMock);
-    expect(body.kind).toBe("chunk");
-    expect(body.chunkId).toBe(chunkId);
-    expect(body.txId).toBe(DATA_TX);
-  });
-
   it("C. fund functions are never reachable from the adapter", async () => {
     const mod = await import("./../../src/lib/storage/creatorIrysStorage");
     const src = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -140,7 +125,7 @@ describe("Phase D2a — creatorIrysStorage adapter", () => {
   it("G. claim 503 (Node unavailable) → adapter throws, retry-compatible", async () => {
     stubClaim(503, { ok: false, error: "PUBLICATION_NODE_UNAVAILABLE" });
     const adapter = createCreatorIrysStorage(ctx);
-    await expect(adapter.uploadChunk(DATA, "c".repeat(64) as never, "token" as never)).rejects.toThrow(
+    await expect(adapter.upload(DATA, "token" as never)).rejects.toThrow(
       /publication claim failed/
     );
   });

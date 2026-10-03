@@ -100,7 +100,16 @@ function createStorageAdapter() {
   return {
     name: "mock-storage",
     upload: vi.fn(async () => ({ txId: VAULT_TX_ID })),
-    uploadChunk: vi.fn(async () => ({ txId: VAULT_TX_ID })),
+    uploadContainer: vi.fn(
+      async (
+        _runtime: unknown,
+        chunkMetadata: readonly { chunkId: string }[]
+      ) => ({
+        containerTxId: VAULT_TX_ID,
+        chunkIds: chunkMetadata.map((c) => c.chunkId),
+        layoutDigest: "a".repeat(64),
+      })
+    ),
     download: vi.fn(async () => new Uint8Array(0)),
   };
 }

@@ -89,7 +89,7 @@ vi.mock("@/lib/storage/creatorIrysStorage", () => ({
   createCreatorIrysStorage: vi.fn(() => ({
     name: "mock-storage",
     upload: vi.fn(),
-    uploadChunk: vi.fn(),
+    uploadContainer: vi.fn(),
     download: vi.fn(),
   })),
 }));

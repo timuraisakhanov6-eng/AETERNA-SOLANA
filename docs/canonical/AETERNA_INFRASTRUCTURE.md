@@ -371,7 +371,7 @@ Receives:
 Performs:
 - publishing the Vault via Storage Authority;
 - receiving vaultTxId;
-- publishing chunks and recording their locations in the Chunk Pointer Registry (the sole canonical chunk-to-storage-pointer mapping surface; see AI/07_PROJECT_GLOSSARY.md and AETERNA_COMPLETE_SYSTEM_LOGIC.md);
+- publishing the media payload as ONE Container V1 DataItem and recording its container publication (the sole canonical media-publication surface; see AI/07_PROJECT_GLOSSARY.md and AETERNA_COMPLETE_SYSTEM_LOGIC.md);
 - creating Storage Authority;
 - passing the result to Seal.
 
@@ -441,7 +441,7 @@ Does not know:
 - The Storage Layer begins publication only after receiving Upload Token.
 - Irys publication payment is separate from the AETERNA service payment. AETERNA service payment does not automatically fund Irys.
 - Storage Authority confirms successful publication of the Vault.
-- Manifest Authority is created only after a successful Seal and becomes the permanent source of truth for the Capsule's sealed identity, integrity, and Vault discovery. Per-object chunk-location resolution is a separate concern governed by Storage Authority via the Chunk Pointer Registry, not by the Manifest.
+- Manifest Authority is created only after a successful Seal and becomes the permanent source of truth for the Capsule's sealed identity, integrity, and Vault discovery. Per-object chunk-location resolution is a separate concern governed by Storage Authority via the Container V1 publication record, not by the Manifest.
 - Crypto Layer, Business Layer, Storage Layer, and Runtime Layer are fully isolated from one another and have independent areas of responsibility.
 - Each layer creates only its own Authority and has no right to modify the Authority of another layer.
 
@@ -460,7 +460,7 @@ Commercial Authority
       [Upload Token — operational, non-authoritative]
           ↓
 Storage Authority
-(via Chunk Pointer Registry)
+(via Container V1 publication)
           ↓
 Manifest Authority
 ```

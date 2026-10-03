@@ -1,20 +1,17 @@
 /**
  * =========================================================
- * AETERNA — Seal-side upload outcome contract (Stage 4)
+ * AETERNA — Seal-side upload outcome contract
  * =========================================================
  *
- * Seal must accept TWO legitimate media-upload outcomes:
+ * Seal accepts exactly ONE legitimate media-upload outcome:
  *
- *   LEGACY   : N logical chunks → N uploaded per-chunk records
  *   CONTAINER: N logical chunks → 1 container publication record
  *
- * The previous inline assertions in `sealCapsuleCore` only understood the
- * legacy shape, and only compared COUNTS (plus uniqueness) — they never
- * proved that the uploaded set actually IS the expected set.
+ * The legacy per-chunk outcome (N logical chunks → N uploaded per-chunk
+ * records) no longer exists: Container V1 is the only writer.
  *
- * This module encodes the contract once, for both modes, and STRENGTHENS the
- * legacy check to require set membership: "every expected logical chunk is
- * represented" is now actually verified, not merely implied by a count.
+ * The contract proves that the published set IS the expected set — not
+ * merely that the counts match.
  *
  * Purity: no I/O, no crypto, no Vault, no publication access.
  */
@@ -25,16 +22,11 @@ function failClosed(reason: string): never {
   throw new Error(reason);
 }
 
-export type SealUploadOutcome =
-  | {
-      readonly mode: "legacy";
-      readonly uploadedChunks: readonly { readonly chunkId: string }[];
-    }
-  | {
-      readonly mode: "container";
-      /** Canonical ORDERED logical chunk identity from the publication record. */
-      readonly containerChunkIds: readonly string[];
-    };
+export type SealUploadOutcome = {
+  readonly mode: "container";
+  /** Canonical ORDERED logical chunk identity from the publication record. */
+  readonly containerChunkIds: readonly string[];
+};
 
 function expectedIds(expected: readonly ChunkMetadata[]): Set<string> {
   const ids = new Set<string>();
@@ -90,21 +82,6 @@ export function assertSealUploadOutcome(
   }
   if (!outcome || typeof outcome !== "object") {
     failClosed("[AETERNA] Invalid upload outcome");
-  }
-
-  if (outcome.mode === "legacy") {
-    if (!Array.isArray(outcome.uploadedChunks)) {
-      failClosed("[AETERNA] Invalid upload outcome");
-    }
-
-    assertExactlyCovers(
-      expected,
-      outcome.uploadedChunks.map((c) => c.chunkId),
-      "[AETERNA] Duplicate chunk upload",
-      "[AETERNA] Chunk upload count mismatch"
-    );
-
-    return;
   }
 
   if (outcome.mode === "container") {

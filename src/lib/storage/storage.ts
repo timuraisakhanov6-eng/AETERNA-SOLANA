@@ -1,5 +1,4 @@
 import type {
-  ChunkId,
   ManifestV1
 } from "@/types/manifest";
 
@@ -11,7 +10,6 @@ import type {
 } from "./storageAdapter";
 
 import {
-  assertChunkPointerMap,
   assertStoragePointer
 } from "./storageAdapter";
 
@@ -400,80 +398,15 @@ export async function downloadRange(
 
 
 /* =========================
-   RUNTIME CHUNK POINTER REGISTRY
-   ========================= */
-
-
-export async function getChunkPointers(
-
-  capsuleId: string
-
-): Promise<
-  Readonly<Record<
-    ChunkId,
-    StoragePointer
-  >>
-> {
-
-  if (!isValidCapsuleId(capsuleId)) {
-
-    sealedError();
-
-  }
-
-
-  if (
-
-    !storageAdapter ||
-
-    typeof storageAdapter.getChunkPointers !==
-      "function"
-
-  ) {
-
-    sealedError();
-
-  }
-
-
-  try {
-
-    const chunkPointers =
-      await storageAdapter.getChunkPointers(
-        capsuleId
-      );
-
-
-    return assertChunkPointerMap(
-      chunkPointers
-    );
-
-  }
-
-  catch (cause) {
-
-    if (import.meta.env.DEV) {
-      console.error("[storage] getChunkPointers failed", cause);
-    }
-
-    sealedError();
-
-  }
-
-}
-
-
-/* =========================
-   CONTAINER PUBLICATION READOUT (Stage 4.5)
+   CONTAINER PUBLICATION READOUT
    ========================= */
 
 /**
- * The additive readout: the legacy per-chunk pointer map PLUS the container
- * publication record when the capsule was published as ONE media container.
+ * The canonical Container V1 publication readout.
  *
  * This is the ONLY client-side entry point that surfaces the container
  * publication, so the open path never has to know the endpoint's shape.
- * Legacy capsules get `container: null` and are unaffected.
+ * `container: null` means the capsule has no container publication yet.
  */
 export async function getChunkPointerReadout(
 
@@ -511,11 +444,6 @@ export async function getChunkPointerReadout(
 
 
     return Object.freeze({
-
-      chunkPointers:
-        assertChunkPointerMap(
-          readout.chunkPointers
-        ),
 
       container:
         readout.container,
@@ -655,8 +583,6 @@ export const storage =
     downloadRange,
 
     getManifest,
-
-    getChunkPointers,
 
     getChunkPointerReadout,
 

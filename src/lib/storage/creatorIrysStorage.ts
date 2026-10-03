@@ -15,7 +15,6 @@
  * Production callers: none until Phase D2b wiring.
  */
 
-import type { ChunkId } from "@/types/manifest";
 import type {
   StorageAdapter,
   StoragePointer,
@@ -72,8 +71,7 @@ const CLAIM_REQUEST_TIMEOUT_MS = 15_000;
 async function claimPublication(
   ctx: CreatorIrysStorageContext,
   txId: string,
-  kind: "vault" | "chunk" | "container",
-  chunkId?: string,
+  kind: "vault" | "container",
   container?: { readonly chunkIds: readonly string[]; readonly layoutDigest: string }
 ): Promise<void> {
   const controller = new AbortController();
@@ -92,7 +90,6 @@ async function claimPublication(
         storagePaymentId: ctx.storagePaymentId,
         txId,
         kind,
-        ...(chunkId !== undefined ? { chunkId } : {}),
         ...(container !== undefined
           ? { chunkIds: [...container.chunkIds], layoutDigest: container.layoutDigest }
           : {}),
@@ -158,20 +155,9 @@ export function createCreatorIrysStorage(
       return { txId: assertStoragePointer(dataTxId) };
     },
 
-    async uploadChunk(data: Uint8Array, chunkId: ChunkId, _uploadToken: UploadToken) {
-      const { dataTxId } = await uploadCreatorData(
-        data,
-        ctx.wallet,
-        ctx.rpcUrl
-      );
-
-      await claimPublication(ctx, dataTxId, "chunk", chunkId);
-
-      return { txId: assertStoragePointer(dataTxId) };
-    },
-
     /**
-     * Stage 4.5 — ONE container DataItem for the whole media payload.
+     * Canonical Container V1 — ONE container DataItem for the whole media
+     * payload.
      *
      * The SAME wallet, the SAME Irys builder and the SAME claim boundary as
      * `uploadChunk`; the only difference is that the Stage 3 writer streams
@@ -197,7 +183,7 @@ export function createCreatorIrysStorage(
         chunkMetadata,
         uploader,
         (containerTxId, chunkIds, layoutDigest) =>
-          claimPublication(ctx, containerTxId, "container", undefined, {
+          claimPublication(ctx, containerTxId, "container", {
             chunkIds,
             layoutDigest,
           })

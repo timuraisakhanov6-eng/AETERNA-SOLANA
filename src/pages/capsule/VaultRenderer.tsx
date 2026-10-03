@@ -22,25 +22,6 @@ import type {
   OpenableMediaItem,
 } from "@/lib/capsule/open/openTypes";
 
-import type {
-  ChunkId,
-} from "@/types/manifest";
-
-import type {
-  StoragePointer,
-} from "@/lib/storage/storageAdapter";
-
-import {
-  resolveChunkPointers,
-} from "@/lib/capsule/open/resolveChunkPointers";
-
-/**
- * Reads a full MediaSession into a single Blob object URL.
- *
- * This bounded fallback is used only when the File System Access
- * API is unavailable and the file is small enough to materialize
- * safely in JS memory.
- */
 export async function sessionToObjectUrl(
   session: MediaSession,
   size: number,
@@ -378,12 +359,6 @@ type Props = {
   vault: Vault;
   cryptoKey?: CryptoKey;
 
-  chunkPointers:
-    Readonly<Record<
-      ChunkId,
-      StoragePointer
-    >>;
-
   /**
    * Stage 4.5 — container resolution indexed by logical chunkId.
    *
@@ -404,7 +379,6 @@ type Props = {
 export default function VaultRenderer({
   vault,
   cryptoKey,
-  chunkPointers,
   containerChunks,
 }: Props) {
 
@@ -439,7 +413,6 @@ export default function VaultRenderer({
         <VaultV2Renderer
           vault={vault}
           cryptoKey={cryptoKey}
-          chunkPointers={chunkPointers}
           containerChunks={containerChunks}
         />
       );
@@ -496,16 +469,10 @@ function VaultV1Renderer({
 function VaultV2Renderer({
   vault,
   cryptoKey,
-  chunkPointers,
   containerChunks,
 }: {
   vault: VaultV2;
   cryptoKey: CryptoKey;
-  chunkPointers:
-    Readonly<Record<
-      ChunkId,
-      StoragePointer
-    >>;
   containerChunks?:
     ReadonlyMap<
       string,
@@ -545,7 +512,6 @@ function VaultV2Renderer({
             item,
             cryptoKey,
             capsuleId,
-            chunkPointers,
             containerChunks
           )}
         </div>
@@ -602,11 +568,6 @@ function renderItemV2(
   item: CapsuleItemV2,
   cryptoKey: CryptoKey,
   capsuleId: string,
-  chunkPointers:
-    Readonly<Record<
-      ChunkId,
-      StoragePointer
-    >>,
   containerChunks?:
     ReadonlyMap<
       string,
@@ -632,7 +593,6 @@ function renderItemV2(
           item={item}
           cryptoKey={cryptoKey}
           capsuleId={capsuleId}
-          chunkPointers={chunkPointers}
           containerChunks={containerChunks}
         />
       );
@@ -656,17 +616,11 @@ function MediaItemV2Block({
   item,
   cryptoKey,
   capsuleId,
-  chunkPointers,
   containerChunks,
 }: {
   item: MediaItemV2;
   cryptoKey: CryptoKey;
   capsuleId: string;
-  chunkPointers:
-    Readonly<Record<
-      ChunkId,
-      StoragePointer
-    >>;
   containerChunks?:
     ReadonlyMap<
       string,
@@ -742,33 +696,27 @@ function MediaItemV2Block({
          * container entry, so a legacy capsule behaves exactly as before.
          */
         const resolvedChunks =
-          containerChunks === null ||
-          containerChunks === undefined
-            ? resolveChunkPointers(
-                item.chunks ?? [],
-                chunkPointers,
-              )
-            : (item.chunks ?? []).map((chunk) => {
+          (item.chunks ?? []).map((chunk) => {
 
-                /**
-                 * Every logical chunk of this item MUST have a container
-                 * position: the publication record is the media authority, so
-                 * a chunk the record does not cover means the record does not
-                 * describe this Vault — fail closed rather than fall back to
-                 * a pointer that does not exist.
-                 */
-                const resolved =
-                  containerChunks.get(chunk.chunkId);
+            /**
+             * Every logical chunk of this item MUST have a container
+             * position: the publication record is the media authority, so
+             * a chunk the record does not cover means the record does not
+             * describe this Vault — fail closed. There is NO legacy
+             * pointer-map fallback: Container V1 is the only model.
+             */
+            const resolved =
+              containerChunks?.get(chunk.chunkId);
 
-                if (!resolved) {
-                  throw new Error(
-                    "[AETERNA] Container publication does not cover this chunk"
-                  );
-                }
+            if (!resolved) {
+              throw new Error(
+                "[AETERNA] Container publication does not cover this chunk"
+              );
+            }
 
-                return resolved;
+            return resolved;
 
-              });
+          });
 
         const media: OpenableMediaItem = {
           ...item,
@@ -952,7 +900,6 @@ function MediaItemV2Block({
     capsuleId,
     item,
     item.chunks,
-    chunkPointers,
     containerChunks,
   ]);
 

@@ -9,7 +9,7 @@
  *   → server-side Irys Node confirmation
  *   → server-authored publication authority
  *      (vault: PUBLICATION_VERIFICATIONS = PENDING,
- *       chunk: CHUNK_POINTER_REGISTRY entry)
+ *       container: PUBLICATION_VERIFICATIONS container record)
  *   → existing /api/publication/verify → VERIFIED
  *
  * Executor Hot is NOT part of this flow: no keys, no funding, no
@@ -23,9 +23,6 @@ import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { confirmTxOnIrysNode } from "../../lib/irys/node";
 import { getStoragePayment } from "../../lib/storage/storagePaymentStore";
-import {
-  chunkPointerEntryKey,
-} from "../../lib/storage/chunkPointerRegistryStore";
 import {
   assertContainerPublicationRecord,
   buildContainerPublicationRecord,
@@ -49,10 +46,6 @@ interface PublicationClaimEnv {
     get(key: string): Promise<string | null>;
   };
   PUBLICATION_VERIFICATIONS: {
-    get(key: string): Promise<string | null>;
-    put(key: string, value: string): Promise<void>;
-  };
-  CHUNK_POINTER_REGISTRY: {
     get(key: string): Promise<string | null>;
     put(key: string, value: string): Promise<void>;
   };
@@ -158,7 +151,6 @@ export async function onRequestPost(
   const storagePaymentId = parseInput(body.storagePaymentId);
   const txId = parseInput(body.txId);
   const kind = parseInput(body.kind);
-  const chunkId = parseInput(body.chunkId);
   const layoutDigest = parseInput(body.layoutDigest);
   const chunkIdsRaw = body.chunkIds;
 
@@ -166,12 +158,8 @@ export async function onRequestPost(
     return fail(origin, 400, "INVALID_FIELDS");
   }
 
-  if (kind !== "vault" && kind !== "chunk" && kind !== "container") {
+  if (kind !== "vault" && kind !== "container") {
     return fail(origin, 400, "INVALID_KIND");
-  }
-
-  if (kind === "chunk" && !chunkId) {
-    return fail(origin, 400, "CHUNK_ID_REQUIRED");
   }
 
   /**
@@ -210,10 +198,6 @@ export async function onRequestPost(
 
   if (!STORAGE_POINTER_REGEX.test(txId)) {
     return fail(origin, 400, "INVALID_TX_ID");
-  }
-
-  if (kind === "chunk" && !SHA256_REGEX.test(chunkId as string)) {
-    return fail(origin, 400, "INVALID_CHUNK_ID");
   }
 
   /* ================= 1. LIFECYCLE / IDENTITY / CAPSULE AUTHORITY ================= */
@@ -281,20 +265,10 @@ export async function onRequestPost(
    * claimed, and by whom?".
    *
    * It is an EXACT-REPLAY idempotency signal ONLY when the whole logical
-   * identity matches — same lifecycle, same capsule, same kind, and (for a
-   * chunk claim) the SAME chunkId.
+   * identity matches — same lifecycle, same capsule, same kind.
    *
-   * PREVIOUS BEHAVIOUR (defect): the comparison used lifecycle + capsule
-   * only. A SECOND chunk claiming the same txId under the same
-   * lifecycle/capsule therefore matched, returned `200 claimed:true`, and
-   * NEVER reached the chunk branch — so its pointer was never written and
-   * no node confirmation ran. The caller was told the chunk was bound while
-   * the registry had no entry for it. That is a silent partial publication,
-   * and it is exactly the shape a naive "one container txId for N chunks"
-   * implementation would have hit.
-   *
-   * `kind` and `chunkId` are already persisted on every index write, so no
-   * migration is required to make this comparison exact.
+   * `kind` is already persisted on every index write, so no migration is
+   * required to make this comparison exact.
    */
   const txIndexKey = `publication-tx:${txId}`;
   const txIndexRaw = await env.PUBLICATION_VERIFICATIONS.get(txIndexKey);
@@ -303,7 +277,6 @@ export async function onRequestPost(
       lifecycleId?: string;
       capsuleId?: string;
       kind?: string;
-      chunkId?: string;
     } | null = null;
     try {
       txIndex = JSON.parse(txIndexRaw);
@@ -329,26 +302,11 @@ export async function onRequestPost(
       );
     }
 
-    // Chunk: idempotent ONLY when the SAME chunkId was already bound.
-    // A different chunkId under the same owner means the txId is spent.
-    if (kind === "chunk") {
-      if (txIndex.kind === "chunk" && txIndex.chunkId === chunkId) {
-        return new Response(
-          JSON.stringify({ ok: true, claimed: true, state: "PENDING", lifecycleId, capsuleId, txId }),
-          { status: 200, headers: baseHeaders(origin) }
-        );
-      }
-      return fail(origin, 409, "TX_ALREADY_CLAIMED");
-    }
-
     // Container: deliberately NOT short-circuited to 200 here. The tx index
     // does not carry the ordered chunk set, so it cannot prove an exact
     // replay. The container branch below owns the full identity comparison
     // (txId + ordered chunk set + layout digest) and returns 200 only for a
     // genuine replay, 409 CONTAINER_ALREADY_PUBLISHED otherwise.
-    if (kind !== "container") {
-      return fail(origin, 409, "TX_ALREADY_CLAIMED");
-    }
   }
 
   /* ================= 4. NODE-FIRST CONFIRMATION ================= */
@@ -549,36 +507,7 @@ export async function onRequestPost(
     );
   }
 
-  /* kind === "chunk": CHUNK_POINTER_REGISTRY is the chunk authority.
-     A publication verification record is NOT created for chunks.
-
-     Per-chunk key model: this chunk owns its OWN KV entry
-     (`chunk-pointer-entry:<capsuleId>:<chunkId>`). There is no shared
-     capsule map and no read-modify-write, so two concurrent chunk
-     claims cannot overwrite each other's pointer. */
-
-  const entryKey = chunkPointerEntryKey(capsuleId, chunkId as string);
-
-  const existingPointer = await env.CHUNK_POINTER_REGISTRY.get(entryKey);
-
-  if (existingPointer !== null && existingPointer !== undefined) {
-    if (existingPointer !== txId) {
-      return fail(origin, 409, "CHUNK_ALREADY_BOUND");
-    }
-    return new Response(
-      JSON.stringify({ ok: true, claimed: true, state: "PENDING", chunkId, txId: existingPointer }),
-      { status: 200, headers: baseHeaders(origin) }
-    );
-  }
-
-  await env.CHUNK_POINTER_REGISTRY.put(entryKey, txId);
-  await env.PUBLICATION_VERIFICATIONS.put(
-    txIndexKey,
-    JSON.stringify({ lifecycleId, capsuleId, creatorIdentityId, kind, chunkId })
-  );
-
-  return new Response(
-    JSON.stringify({ ok: true, claimed: true, state: "PENDING", chunkId, txId }),
-    { status: 200, headers: baseHeaders(origin) }
-  );
+  /* Unreachable: `kind` is validated to be "vault" | "container" above and
+     both branches return. Fail closed rather than fall through. */
+  return fail(origin, 400, "INVALID_KIND");
 }

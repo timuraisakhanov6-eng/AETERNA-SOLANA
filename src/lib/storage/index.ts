@@ -34,7 +34,7 @@ import { executorStorage } from "./executorStorage";
  */
 type LegacyReadStorageAdapter = Pick<
   StorageAdapter,
-  "name" | "download" | "getManifest" | "getChunkPointers"
+  "name" | "download" | "getManifest" | "getChunkPointerReadout"
 >;
 
 

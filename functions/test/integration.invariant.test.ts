@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { preparePreparedCapsule } from "../../src/lib/capsule/preparePreparedCapsule";
-import { resolveChunkPointers } from "../../src/lib/capsule/open/resolveChunkPointers";
+import { openCapsule } from "../../src/lib/capsule/open/openCapsule";
 import { ByteRuntime } from "../../src/lib/capsule/runtime/byteRuntime";
 import { openCapsule } from "../../src/lib/capsule/openCapsule";
 import { parseCapsuleCapability } from "../../src/lib/capsule/parseCapsuleCapability";
@@ -218,16 +218,6 @@ describe("Opening security integration — no early opening", () => {
    ========================================================= */
 
 describe("Failure propagation — cross-layer fail-closed", () => {
-  it("missing chunk pointer does not fabricate runtime content", async () => {
-    const chunks = [
-      { chunkId: "missing", index: 0, size: 8 },
-    ];
-
-    expect(() =>
-      resolveChunkPointers(chunks, {}),
-    ).toThrow();
-  });
-
   it("malformed manifest schema does not open", async () => {
     await expect(
       openCapsule({

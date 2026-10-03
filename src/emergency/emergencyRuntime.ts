@@ -11,7 +11,7 @@ import {
 } from "@/shared/heartbeat/resolveEffectiveOpenAt";
 
 import {
-  getChunkPointers,
+  getChunkPointerReadout,
 } from "@/lib/storage/storage";
 
 import type {
@@ -21,24 +21,20 @@ import type {
 } from "@/lib/capsule/open/openTypes";
 
 import {
-  resolveChunkPointers,
-} from "@/lib/capsule/open/resolveChunkPointers";
+  resolveContainerChunks,
+} from "@/lib/capsule/open/resolveContainerChunks";
 
 import {
   createByteRuntime,
 } from "@/lib/capsule/runtime/byteRuntime";
 
 import type {
-  StoragePointer,
-} from "@/lib/storage/storageAdapter";
-
-import type {
-  ChunkId,
   ManifestV1,
 } from "@/types/manifest";
 
 import type {
   ChunkMetadata,
+  PublishedChunkMetadata,
   MediaItemV2,
   VaultV2,
 } from "@/types/vault";
@@ -103,7 +99,13 @@ export async function initEmergencyRuntime({
     return;
   }
 
-  const chunkPointers = await getChunkPointers(manifest.capsuleId);
+  const publicationReadout = await getChunkPointerReadout(manifest.capsuleId);
+  const publication = publicationReadout.container;
+
+  if (!publication) {
+    status.textContent = "Capsule publication unavailable.";
+    return;
+  }
 
   let nowUtc: number;
   try {
@@ -157,7 +159,15 @@ export async function initEmergencyRuntime({
       manifest,
     });
 
-    renderEmergencyVault(root, vault, status, chunkPointers);
+    const resolvedChunks = await resolveContainerChunks(
+      (vault?.capsule?.items ?? []).map(
+        (item) =>
+          ((item as { chunks?: readonly ChunkMetadata[] }).chunks ?? [])
+      ),
+      publication
+    );
+
+    renderEmergencyVault(root, vault, status, resolvedChunks);
     status.textContent = "Capsule opened.";
   } catch {
     status.textContent = "Capsule unavailable.";
@@ -299,7 +309,7 @@ function renderEmergencyVault(
   root: HTMLElement,
   vault: VaultV2,
   status: HTMLElement,
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>,
+  resolvedChunks: readonly PublishedChunkMetadata[],
 ): void {
   root.innerHTML = "";
 
@@ -418,7 +428,7 @@ function renderEmergencyVault(
         item: mediaItem,
         capsuleId: vault.capsule.capsuleId,
         chunks,
-        chunkPointers,
+        resolvedChunks,
         mediaType,
         mimeType,
         size,
@@ -430,7 +440,7 @@ function renderEmergencyVault(
         item: mediaItem,
         capsuleId: vault.capsule.capsuleId,
         chunks,
-        chunkPointers,
+        resolvedChunks,
         mimeType,
         size,
       });
@@ -441,7 +451,7 @@ function renderEmergencyVault(
         item: mediaItem,
         capsuleId: vault.capsule.capsuleId,
         chunks,
-        chunkPointers,
+        resolvedChunks,
         mimeType,
         size,
       });
@@ -459,7 +469,7 @@ function buildEmergencyMediaElement(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
+  resolvedChunks: readonly PublishedChunkMetadata[];
   mediaType: MediaItemV2["mediaType"];
   mimeType: string;
   size: number;
@@ -524,7 +534,7 @@ function buildEmergencyMediaElement(args: {
     item: args.item,
     capsuleId: args.capsuleId,
     chunks: args.chunks,
-    chunkPointers: args.chunkPointers,
+    resolvedChunks: args.resolvedChunks,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: (objectUrl) => {
@@ -545,7 +555,7 @@ function buildEmergencyImage(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
+  resolvedChunks: readonly PublishedChunkMetadata[];
   mimeType: string;
   size: number;
 }): void {
@@ -579,7 +589,7 @@ function buildEmergencyImage(args: {
     item: args.item,
     capsuleId: args.capsuleId,
     chunks: args.chunks,
-    chunkPointers: args.chunkPointers,
+    resolvedChunks: args.resolvedChunks,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: (url) => {
@@ -600,7 +610,7 @@ function buildEmergencyFile(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
+  resolvedChunks: readonly PublishedChunkMetadata[];
   mimeType: string;
   size: number;
 }): void {
@@ -638,7 +648,7 @@ function buildEmergencyFile(args: {
     item: args.item,
     capsuleId: args.capsuleId,
     chunks: args.chunks,
-    chunkPointers: args.chunkPointers,
+    resolvedChunks: args.resolvedChunks,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: (url) => {
@@ -666,7 +676,7 @@ function buildEmergencyMediaSession(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
+  resolvedChunks: readonly PublishedChunkMetadata[];
   mimeType: string;
   size: number;
   onStreamReady: (objectUrl: string) => void;
@@ -676,7 +686,7 @@ function buildEmergencyMediaSession(args: {
     item: args.item,
     capsuleId: args.capsuleId,
     chunks: args.chunks,
-    chunkPointers: args.chunkPointers,
+    resolvedChunks: args.resolvedChunks,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: args.onStreamReady,
@@ -712,16 +722,19 @@ function createEmergencyMediaSession(args: {
   item: Partial<MediaItemV2>;
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
+  resolvedChunks: readonly PublishedChunkMetadata[];
   mimeType: string;
   size: number;
   onStreamReady: (objectUrl: string) => void;
   status: HTMLElement;
   abortController: AbortController;
 }): MediaSession {
-  const resolvedChunks = resolveChunkPointers(
-    args.chunks as MediaItemV2["chunks"],
-    args.chunkPointers,
+  const itemChunkIds = new Set(
+    args.chunks.map((chunk) => chunk.chunkId)
+  );
+
+  const resolvedChunks = args.resolvedChunks.filter(
+    (chunk) => itemChunkIds.has(chunk.chunkId)
   );
 
   const request: OpenMediaRequest = {
@@ -734,7 +747,7 @@ function createEmergencyMediaSession(args: {
       size: args.size,
       chunks: resolvedChunks,
       createdAt: args.item.createdAt as string,
-    } as OpenableMediaItem,
+    } as unknown as OpenableMediaItem,
   };
 
   const runtime = createByteRuntime(

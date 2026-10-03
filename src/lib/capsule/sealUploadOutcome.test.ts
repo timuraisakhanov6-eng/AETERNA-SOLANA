@@ -1,9 +1,8 @@
 /**
- * Stage 4 — seal upload-outcome contract tests.
+ * Seal upload-outcome contract tests.
  *
- * Proves the seal logic can distinguish LEGACY (N chunks → N records) from
- * CONTAINER (N logical chunks → 1 publication record), and that the previous
- * count-only check is now a real set-membership check.
+ * Container V1 is the ONLY media model: N logical chunks → 1 container
+ * publication record. The legacy per-chunk outcome no longer exists.
  */
 import { describe, it, expect } from "vitest";
 
@@ -17,56 +16,6 @@ function chunk(mediaId: string, index: number): ChunkMetadata {
 
 const EXPECTED = [chunk("A", 0), chunk("A", 1), chunk("B", 0)];
 const IDS = EXPECTED.map((c) => c.chunkId);
-
-describe("seal upload outcome — LEGACY (N chunks → N records)", () => {
-  it("accepts an exact N/N cover", () => {
-    expect(() =>
-      assertSealUploadOutcome(EXPECTED, {
-        mode: "legacy",
-        uploadedChunks: IDS.map((chunkId) => ({ chunkId })),
-      })
-    ).not.toThrow();
-  });
-
-  it("accepts a single chunk", () => {
-    const one = [chunk("A", 0)];
-    expect(() =>
-      assertSealUploadOutcome(one, {
-        mode: "legacy",
-        uploadedChunks: [{ chunkId: one[0]!.chunkId }],
-      })
-    ).not.toThrow();
-  });
-
-  it("rejects a count mismatch with the legacy message", () => {
-    expect(() =>
-      assertSealUploadOutcome(EXPECTED, {
-        mode: "legacy",
-        uploadedChunks: [{ chunkId: IDS[0]! }],
-      })
-    ).toThrow("[AETERNA] Chunk upload count mismatch");
-  });
-
-  it("rejects a duplicate with the legacy message", () => {
-    expect(() =>
-      assertSealUploadOutcome(EXPECTED, {
-        mode: "legacy",
-        uploadedChunks: [{ chunkId: IDS[0]! }, { chunkId: IDS[0]! }, { chunkId: IDS[2]! }],
-      })
-    ).toThrow("[AETERNA] Duplicate chunk upload");
-  });
-
-  it("STRENGTHENED: rejects a same-count but WRONG identity set", () => {
-    // The previous inline check compared counts + uniqueness only, so this
-    // would have passed while covering the wrong chunks.
-    expect(() =>
-      assertSealUploadOutcome(EXPECTED, {
-        mode: "legacy",
-        uploadedChunks: [{ chunkId: IDS[0]! }, { chunkId: IDS[1]! }, { chunkId: "other" }],
-      })
-    ).toThrow("[AETERNA] Chunk upload count mismatch");
-  });
-});
 
 describe("seal upload outcome — CONTAINER (N logical chunks → 1 record)", () => {
   it("accepts a container covering every expected chunk", () => {
@@ -140,7 +89,7 @@ describe("seal upload outcome — malformed input", () => {
 
   it("rejects invalid expected metadata", () => {
     expect(() =>
-      assertSealUploadOutcome(null as never, { mode: "legacy", uploadedChunks: [] })
+      assertSealUploadOutcome(null as never, { mode: "container", containerChunkIds: [] })
     ).toThrow("[AETERNA] Invalid chunk metadata");
   });
 });

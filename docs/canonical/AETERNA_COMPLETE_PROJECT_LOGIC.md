@@ -337,7 +337,7 @@ Only the creator can use Confirm Presence, once that capability becomes availabl
 After opening
 
 As soon as the permitted opening moment arrives, the waiting page is no longer shown.
-After opening, the Manifest is loaded first. Based on it, the location of the Vault is determined and the Vault is downloaded and decrypted. Per-object chunk locations for the capsule's objects are then resolved via Storage Authority's Chunk Pointer Registry, after which the user receives the list of the capsule's objects. Each object opens independently.
+After opening, the Manifest is loaded first. Based on it, the location of the Vault is determined and the Vault is downloaded and decrypted. Per-object chunk locations for the capsule's objects are then resolved via Storage Authority's Container V1 publication record, after which the user receives the list of the capsule's objects. Each object opens independently.
 
 Text
 

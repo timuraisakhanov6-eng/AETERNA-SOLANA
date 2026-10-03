@@ -90,7 +90,7 @@ describe("emergencyRuntime.reachability.test.ts", () => {
     const entry = readFileSync(emergencyEntryPath, "utf8");
 
     expect(entry).toContain(
-      "resolveChunkPointers",
+      "resolveContainerChunks",
     );
     expect(entry).toContain(
       "createByteRuntime",

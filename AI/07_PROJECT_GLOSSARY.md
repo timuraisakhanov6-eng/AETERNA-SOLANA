@@ -297,7 +297,15 @@ Executor never makes business decisions.
 
 Chunk is a unit of encrypted media.
 
-Chunks are uploaded independently.
+Chunks are LOGICAL units: every logical chunk of a capsule's media is published together inside ONE AETERNA Container V1 DataItem, never as an independent upload.
+
+---
+
+## AETERNA Container V1
+
+AETERNA Container V1 is the canonical media-publication model.
+
+All logical encrypted chunks of a capsule's media are laid out deterministically and published as ONE Irys DataItem, producing ONE containerTxId and ONE container publication claim. Chunk positions (offset / length) are DERIVED from the canonical layout, never persisted, and read back through bounded HTTP Range requests. There is no per-chunk publication model.
 
 ---
 
@@ -323,9 +331,9 @@ Chunk Pointer identifies the storage location of a chunk.
 
 ---
 
-## Chunk Pointer Registry
+## Container V1 publication record
 
-Chunk Pointer Registry maps chunk identifiers to storage pointers.
+Container V1 publication record maps a capsule's logical chunk identifiers to the ONE container DataItem and its derived chunk positions.
 
 ---
 

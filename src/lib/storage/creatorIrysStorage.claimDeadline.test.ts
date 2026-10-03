@@ -131,9 +131,8 @@ describe("creatorIrysStorage — claim request deadline", () => {
     restoreFetch = router.restore;
 
     const storage = createCreatorIrysStorage(makeCtx());
-    const result = await storage.uploadChunk(
+    const result = await storage.upload(
       new Uint8Array([1, 2, 3]),
-      "chunk-1" as never,
       "token" as never
     );
 
@@ -148,9 +147,8 @@ describe("creatorIrysStorage — claim request deadline", () => {
     restoreFetch = router.restore;
 
     const storage = createCreatorIrysStorage(makeCtx());
-    const promise = storage.uploadChunk(
+    const promise = storage.upload(
       new Uint8Array([1, 2, 3]),
-      "chunk-1" as never,
       "token" as never
     );
 
@@ -166,9 +164,8 @@ describe("creatorIrysStorage — claim request deadline", () => {
     restoreFetch = router.restore;
 
     const storage = createCreatorIrysStorage(makeCtx());
-    const promise = storage.uploadChunk(
+    const promise = storage.upload(
       new Uint8Array([1, 2, 3]),
-      "chunk-1" as never,
       "token" as never
     );
 
@@ -196,9 +193,8 @@ describe("creatorIrysStorage — claim request deadline", () => {
     const storage = createCreatorIrysStorage(makeCtx());
 
     await expect(
-      storage.uploadChunk(
+      storage.upload(
         new Uint8Array([1, 2, 3]),
-        "chunk-1" as never,
         "token" as never
       )
     ).rejects.toThrow(/publication claim failed/);

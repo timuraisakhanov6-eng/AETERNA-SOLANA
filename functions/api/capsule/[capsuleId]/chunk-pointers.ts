@@ -1,36 +1,35 @@
 /**
  * AETERNA — GET /api/capsule/:capsuleId/chunk-pointers
  *
- * Canonical Chunk Pointer Registry read path (Storage Authority).
+ * Canonical Container V1 publication readout (Storage Authority).
  *
- * Runtime resolves chunkId → StoragePointer exclusively through this
- * endpoint. The response is sourced ONLY from the Chunk Pointer
- * Registry (independent Storage Authority state); manifest.ext.chunkPointers
- * is NEVER consulted and is not a source of truth here.
+ * Runtime resolves the capsule's media publication EXCLUSIVELY through
+ * this endpoint. The response is sourced ONLY from the container
+ * publication record (independent Storage Authority state);
+ * manifest.ext.chunkPointers is NEVER consulted and is not a source of
+ * truth here.
+ *
+ * The legacy per-chunk pointer registry NO LONGER EXISTS: Container V1
+ * is the only media model, so this endpoint answers with the ONE
+ * container publication record (or `container: null` when the capsule
+ * has not been published yet).
  *
  * This endpoint is strictly read-only: it never writes, deletes, or
- * modifies Registry state.
+ * modifies publication state.
  */
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { CAPSULE_ID_REGEX } from "../../../../src/lib/crypto/validators";
 import { assertCapsuleId } from "../../../../src/types/manifest";
-import { assertChunkPointerMap } from "../../../../src/lib/storage/storageAdapter";
-import {
-  getChunkPointerMap,
-  type ChunkPointerRegistryKV,
-  type ChunkPointerMap,
-} from "../../../lib/storage/chunkPointerRegistryStore";
 import {
   getContainerPublication,
   type ContainerPublicationKV,
 } from "../../../../src/lib/storage/container/containerPublication";
 
 /**
- * Read-path bindings: the per-chunk Registry (legacy) plus the container
- * publication namespace (Stage 4 / Model 3).
+ * Read-path bindings: the container publication namespace only.
  */
-type ChunkPointerReadEnv = ChunkPointerRegistryKV & ContainerPublicationKV;
+type ChunkPointerReadEnv = ContainerPublicationKV;
 
 /* ================= ORIGINS ================= */
 
@@ -49,9 +48,9 @@ const ALLOWED_ORIGINS = [
  * back only when it is in ALLOWED_ORIGINS; otherwise the CORS headers
  * are omitted entirely (never the literal "null").
  *
- * Cache-Control is no-store: the Registry is append-only during the
- * capsule creation window, so a long-lived immutable cache could serve
- * a partial map. Reads must observe the current persisted Registry.
+ * Cache-Control is no-store: the publication record is written during
+ * the capsule creation window, so a long-lived immutable cache could
+ * serve a stale read. Reads must observe the current persisted state.
  */
 function baseHeaders(origin?: string): Record<string, string> {
   const allowed =
@@ -78,21 +77,6 @@ function baseHeaders(origin?: string): Record<string, string> {
 }
 
 /* ================= ERROR ================= */
-
-/**
- * Bounded read-side retry for KV propagation lag.
- *
- * KV `list()` is eventually consistent; a just-written entry may not
- * be visible immediately. The Registry is append-only, so polling a
- * few times is deterministic and finite. This wraps ONLY the registry
- * read — it never retries validation or security failures.
- */
-const REGISTRY_READ_MAX_ATTEMPTS = 3;
-const REGISTRY_READ_RETRY_DELAY_MS = 100;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Canonical failure response — never leaks internal KV/storage details.
@@ -140,113 +124,31 @@ export const onRequestGet = async (
   }
 
   /**
-   * Chunk Pointer Registry binding required.
+   * Container publication binding required.
    */
-  if (!env?.CHUNK_POINTER_REGISTRY) {
+  if (!env?.PUBLICATION_VERIFICATIONS) {
     return fail(503, "STORAGE_UNAVAILABLE", origin);
   }
 
-  // Branded capsuleId refinement for the Registry store API. The
-  // Registry model is scoped per capsuleId through the per-chunk key
-  // prefix "chunk-pointer-entry:<capsuleId>:" — no shared capsule key.
+  // Branded capsuleId refinement for the container store API.
   assertCapsuleId(capsuleId);
 
-  /**
-   * KV is eventually consistent: a `list()` may not immediately
-   * reflect an entry written moments ago. The Registry is append-only
-   * and never mutated after a capsule is sealed, so a short bounded
-   * poll converts a transient propagation lag into a correct read
-   * instead of a spurious failure. The retry is finite and only wraps
-   * the registry read — validation and error semantics below are
-   * unchanged, and an exhausted budget still fails closed.
-   */
-  let map: ChunkPointerMap | null = null;
+  let container;
 
-  for (let attempt = 0; attempt < REGISTRY_READ_MAX_ATTEMPTS; attempt++) {
-
-    try {
-
-      map = await getChunkPointerMap(env, capsuleId);
-
-      break;
-
-    } catch {
-
-      if (attempt === REGISTRY_READ_MAX_ATTEMPTS - 1) {
-
-        // Fail closed. Registry unavailable or malformed — internal KV
-        // details are never exposed. Absent Registry data (no entry)
-        // is NOT an error: getChunkPointerMap returns an empty map, and
-        // a text-only capsule legitimately has an empty Registry.
-        return fail(503, "STORAGE_ERROR", origin);
-
-      }
-
-      await sleep(REGISTRY_READ_RETRY_DELAY_MS);
-
-    }
-
-  }
-
-  if (map === null) {
+  try {
+    container = await getContainerPublication(env, capsuleId);
+  } catch {
+    // Fail closed. KV unavailable or malformed — internal details are
+    // never exposed. An ABSENT record is NOT an error: it returns null.
     return fail(503, "STORAGE_ERROR", origin);
   }
 
-  let chunkPointers: ChunkPointerMap;
-
-  try {
-    // Canonical Registry integrity validation — every pointer MUST
-    // satisfy StoragePointer validation before reaching Runtime.
-    chunkPointers = assertChunkPointerMap(map);
-  } catch {
-    return fail(500, "REGISTRY_INVALID", origin);
-  }
-
-  /**
-   * CONTAINER MODE (Stage 4 / Model 3).
-   *
-   * A container capsule has NO per-chunk registry entries — the ONE
-   * container publication record is the authority. It is returned
-   * ADDITIVELY so the legacy `{ ok, capsuleId, chunkPointers }` contract is
-   * untouched for legacy capsules (where `container` is null).
-   *
-   * The record is NON-AUTHORITATIVE at this boundary in the sense that the
-   * client still derives the physical chunk map itself from the Vault's
-   * canonical chunk metadata; this endpoint only publishes the authoritative
-   * container binding.
-   */
-  let container: unknown = null;
-
-  try {
-    const publication = await getContainerPublication(
-      env as ChunkPointerReadEnv,
-      capsuleId
-    );
-    container = publication === null ? null : publication;
-  } catch {
-    // A present-but-malformed container record must fail closed; absence is
-    // legitimate (legacy capsules).
-    return fail(503, "CONTAINER_PUBLICATION_ERROR", origin);
-  }
-
-  /**
-   * Success — existing client contract preserved EXACTLY for legacy
-   * capsules: `container` is added ONLY when a container publication
-   * actually exists, so a legacy response is byte-for-byte the previous
-   * shape rather than a widened one.
-   */
-  const body: Record<string, unknown> = {
-    ok: true,
-    capsuleId,
-    chunkPointers,
-  };
-
-  if (container !== null) {
-    body["container"] = container;
-  }
-
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: baseHeaders(origin),
-  });
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      capsuleId,
+      container: container ?? null,
+    }),
+    { status: 200, headers: baseHeaders(origin) }
+  );
 };

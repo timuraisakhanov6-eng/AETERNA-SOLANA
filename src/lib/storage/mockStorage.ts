@@ -13,18 +13,58 @@ import type {
   StorageAdapter,
   StoragePointer,
   UploadToken,
+  ContainerUploadOutcome,
+  ChunkPointerReadout,
 } from "./storageAdapter";
 
 import {
-  assertChunkPointerMap,
   assertUploadToken,
   assertStoragePointer
 } from "./storageAdapter";
 
+import { uploadPreparedContainer } from "./uploadPreparedContainer";
+
+import type { RuntimeStorage } from "@/lib/runtime/runtimeStorage";
+
+import type { ChunkMetadata } from "@/types/vault";
+
+import type { ChunkingUploader } from "@irys/upload-core";
+
+import type { Readable } from "stream";
+
 import type {
-  ChunkId,
   ManifestV1
 } from "@/types/manifest";
+
+
+/**
+ * DEV-only fake Irys chunking uploader.
+ *
+ * Consumes the canonical container stream and returns a synthetic
+ * DataItem id. It exists so the mock can drive the REAL
+ * `uploadPreparedContainer` writer with no network access and no
+ * second container implementation.
+ */
+const mockChunkingUploader = {
+  setChunkSize(_size: number): void {
+    // No SDK tuning in the mock.
+  },
+  setBatchSize(_size: number): void {
+    // No SDK tuning in the mock.
+  },
+  async uploadData(
+    readable: Readable
+  ): Promise<{ status: number; data: { id: string } }> {
+    await new Promise<void>((resolve, reject) => {
+      readable.on("data", () => {
+        // Drain — the mock does not retain container bytes.
+      });
+      readable.on("end", () => resolve());
+      readable.on("error", reject);
+    });
+    return { status: 200, data: { id: generateMockPointer() } };
+  },
+} as unknown as ChunkingUploader;
 
 import {
   CAPSULE_ID_REGEX
@@ -232,37 +272,11 @@ StorageAdapter & {
   },
 
 
-  async uploadChunk(
-    data: Uint8Array,
-    chunkId: ChunkId,
+  async uploadContainer(
+    runtime: RuntimeStorage,
+    chunkMetadata: readonly ChunkMetadata[],
     uploadToken: UploadToken
-  ): Promise<{
-    txId: StoragePointer
-  }> {
-
-    /**
-     * MANDATORY CHUNK ID BOUNDARY
-     *
-     * chunkId REQUIRED
-     * NO chunkId → NO UPLOAD
-     *
-     * The adapter receives the canonical chunkId (SHA-256 of the
-     * chunk ciphertext, produced upstream by prepareMediaChunks)
-     * from the caller; it is never generated here and never
-     * extracted from ciphertext.
-     */
-
-    if (
-      typeof chunkId !== "string" ||
-      chunkId.length === 0
-    ) {
-
-      throw new Error(
-        "mockStorage: invalid chunkId"
-      );
-
-    }
-
+  ): Promise<ContainerUploadOutcome> {
 
     /**
      * REQUIRED PROTOCOL INVARIANT
@@ -273,44 +287,21 @@ StorageAdapter & {
     assertUploadToken(uploadToken);
 
 
-    if (!(data instanceof Uint8Array)) {
-
-      throw new Error(
-        "mockStorage: invalid upload data"
-      );
-
-    }
-
-
-    // detached-buffer parity with upload()
-    if (isDetachedBuffer(data)) {
-
-      throw new Error(
-        "mockStorage: empty or detached upload"
-      );
-
-    }
-
-
     /**
-     * Simulate immutable pointer
+     * DEV-only: the mock reuses the CANONICAL Container V1 writer
+     * (`uploadPreparedContainer`) so the mock exercises exactly the
+     * same layout, chunk order and layoutDigest semantics as
+     * production. ONLY the Irys transport is faked.
      */
 
-    const pointer =
-      generateMockPointer();
-
-
-    /**
-     * Store copy (immutability simulation)
-     */
-
-    vaultMemory[pointer] =
-      new Uint8Array(data);
-
-
-    return {
-      txId: pointer,
-    };
+    return uploadPreparedContainer(
+      runtime,
+      chunkMetadata,
+      mockChunkingUploader,
+      async () => {
+        // No publication state exists in the mock backend.
+      }
+    );
 
   },
 
@@ -389,14 +380,13 @@ StorageAdapter & {
   },
 
 
-  async getChunkPointers(
+  /**
+   * DEV-only: the mock backend keeps no container publication state, so the
+   * readout is always `container: null`.
+   */
+  async getChunkPointerReadout(
     capsuleId: string
-  ): Promise<
-    Readonly<Record<
-      ChunkId,
-      StoragePointer
-    >>
-  > {
+  ): Promise<ChunkPointerReadout> {
 
     if (
       typeof capsuleId !== "string" ||
@@ -410,46 +400,11 @@ StorageAdapter & {
     }
 
 
-    const manifest =
-      manifestMemory[capsuleId];
+    return Object.freeze({
 
+      container: null,
 
-    if (!manifest) {
-
-      throw new Error(
-        `mockStorage: manifest not found: ${capsuleId}`
-      );
-
-    }
-
-
-    const ext =
-      (manifest as ManifestV1 & {
-        ext?: unknown;
-      }).ext;
-
-
-    if (!isPlainObject(ext)) {
-
-      throw new Error(
-        "mockStorage: invalid manifest ext"
-      );
-
-    }
-
-
-    const rawChunkPointers =
-      (ext as Record<string, unknown>)["chunkPointers"];
-
-
-    if (rawChunkPointers === undefined) {
-      return Object.freeze({});
-    }
-
-
-    return assertChunkPointerMap(
-      rawChunkPointers
-    );
+    });
 
   },
 

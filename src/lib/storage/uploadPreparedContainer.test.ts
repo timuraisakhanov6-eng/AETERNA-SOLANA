@@ -33,10 +33,6 @@ import {
   computeContainerLayoutDigest,
   buildContainerPublicationRecord,
 } from "@/lib/storage/container/containerPublication";
-import {
-  CONTAINER_UPLOAD_ENV_KEY,
-  isContainerUploadEnabled,
-} from "@/lib/storage/container/containerUploadFlag";
 import { resolveContainerChunks } from "@/lib/capsule/open/resolveContainerChunks";
 import {
   groupChunkMetadataByMediaItem,
@@ -146,32 +142,6 @@ function makeUploader(opts: { fail?: boolean; id?: string } = {}) {
     bytes: () => captured,
   };
 }
-
-/* =========================
-   1. FLAG
-   ========================= */
-
-describe("Stage 4.5 — container upload flag", () => {
-  it("1. is OFF by default and for every non-\"true\" value", () => {
-    expect(isContainerUploadEnabled({})).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: undefined })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: "" })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: " " })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: "1" })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: "yes" })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: "on" })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: "false" })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: 1 })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: true })).toBe(false);
-    expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: {} })).toBe(false);
-  });
-
-  it("1b. is ON only for the exact token \"true\" (trimmed, case-insensitive)", () => {
-    for (const value of ["true", "TRUE", "True", " true ", "\ttrue\n"]) {
-      expect(isContainerUploadEnabled({ [CONTAINER_UPLOAD_ENV_KEY]: value })).toBe(true);
-    }
-  });
-});
 
 /* =========================
    2-8. ORDER, DIGEST, OFFSETS

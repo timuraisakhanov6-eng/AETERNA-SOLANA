@@ -4,12 +4,10 @@ import type {
 } from "./storageAdapter";
 
 import {
-  assertChunkPointerMap,
   assertStoragePointer,
 } from "./storageAdapter";
 
 import type {
-  ChunkId,
   ManifestV1
 } from "@/types/manifest";
 import { MANIFEST_VERSION } from "@/types/manifest";
@@ -202,42 +200,21 @@ function assertStrictManifestShape(
   }
 }
 
-function assertChunkPointerResponse(
-  value: unknown,
-  capsuleId: string
-): Readonly<Record<ChunkId, StoragePointer>> {
-  if (!isPlainObject(value)) {
-    failClosed("[AETERNA] Invalid chunk pointer response");
-  }
-
-  if (value["capsuleId"] !== capsuleId) {
-    failClosed("[AETERNA] Chunk pointer capsule mismatch");
-  }
-
-  if (!("chunkPointers" in value)) {
-    failClosed("[AETERNA] Missing chunk pointer payload");
-  }
-
-  try {
-    return assertChunkPointerMap(
-      value["chunkPointers"]
-    );
-  } catch {
-    failClosed("[AETERNA] Invalid chunk pointer payload");
-  }
-}
-
 /**
- * Stage 4.5 — reads the ADDITIVE container publication from the same
- * response. Absence (or an explicit null) is the legacy case and is not an
- * error; a present-but-malformed record fails closed.
+ * Reads the container publication from the readout response. Absence (or an
+ * explicit null) means the capsule is not published yet; a
+ * present-but-malformed record fails closed.
  */
 function readContainerPublication(
   value: unknown,
   capsuleId: string
 ): ContainerPublicationRecord | null {
   if (!isPlainObject(value)) {
-    failClosed("[AETERNA] Invalid chunk pointer response");
+    failClosed("[AETERNA] Invalid publication response");
+  }
+
+  if (value["capsuleId"] !== capsuleId) {
+    failClosed("[AETERNA] Publication capsule mismatch");
   }
 
   if (!("container" in value)) return null;
@@ -253,29 +230,7 @@ function readContainerPublication(
 }
 
 /**
- * Stage 4.5 — a capsule publishes EITHER N per-chunk pointers OR ONE
- * container. The container write path deliberately creates ZERO per-chunk
- * registry entries, so both being populated is an inconsistent state and
- * must fail closed rather than silently prefer one representation.
- */
-function assertUnambiguousPublication(
-  chunkPointers: Readonly<Record<ChunkId, StoragePointer>>,
-  container: ContainerPublicationRecord | null
-): void {
-  if (container === null) return;
-
-  if (Object.keys(chunkPointers).length > 0) {
-    failClosed(
-      "[AETERNA] Capsule exposes both a container publication and legacy chunk pointers"
-    );
-  }
-}
-
-/**
- * Stage 4.5 — the single fetch behind BOTH the legacy pointer map and the
- * additive container readout. The legacy `getChunkPointers` result is
- * byte-for-byte what it was before; the only added rule is the fail-closed
- * mixed-state guard, which can never trigger for a legitimate capsule.
+ * The single fetch behind the canonical Container V1 publication readout.
  */
 async function fetchChunkPointerReadout(
   capsuleId: string
@@ -304,15 +259,12 @@ async function fetchChunkPointerReadout(
 
     const payload: unknown = await res.json();
 
-    const chunkPointers = assertChunkPointerResponse(payload, capsuleId);
     const container = readContainerPublication(payload, capsuleId);
 
-    assertUnambiguousPublication(chunkPointers, container);
-
-    return Object.freeze({ chunkPointers, container });
+    return Object.freeze({ container });
   } catch (cause) {
     if (import.meta.env.DEV) {
-      console.error("[executor-hot] getChunkPointers failed", cause);
+      console.error("[executor-hot] container readout failed", cause);
     }
     failClosed(
       cause instanceof Error
@@ -339,7 +291,7 @@ async function fetchChunkPointerReadout(
  */
 export type ExecutorReadStorageAdapter = Pick<
   StorageAdapter,
-  "name" | "download" | "getManifest" | "getChunkPointers" | "getChunkPointerReadout"
+  "name" | "download" | "getManifest" | "getChunkPointerReadout"
 > & {
   downloadRange(
     pointer: StoragePointer,
@@ -517,24 +469,9 @@ export const executorStorage: ExecutorReadStorageAdapter = {
     }
   },
 
-  async getChunkPointers(
-    capsuleId: string
-  ): Promise<
-    Readonly<Record<
-      ChunkId,
-      StoragePointer
-    >>
-  > {
-    const readout = await fetchChunkPointerReadout(capsuleId);
-
-    return readout.chunkPointers;
-  },
-
   /**
-   * Stage 4.5 — the additive readout: the legacy per-chunk pointer map PLUS
-   * the container publication record when the capsule was published as ONE
-   * media container. Legacy capsules get `container: null` and behave
-   * exactly as before.
+   * The canonical Container V1 publication readout. `container: null` means
+   * the capsule has no container publication yet.
    */
   async getChunkPointerReadout(
     capsuleId: string

@@ -7,14 +7,8 @@ import type {
 } from "@/lib/storage/storageAdapter";
 
 import {
-  uploadPreparedChunks,
-} from "@/lib/storage/uploadPreparedChunks";
-import {
   assertSealUploadOutcome,
 } from "@/lib/capsule/sealUploadOutcome";
-import {
-  isContainerUploadEnabled,
-} from "@/lib/storage/container/containerUploadFlag";
 
 import {
   MANIFEST_VERSION
@@ -1026,79 +1020,41 @@ export async function sealCapsuleCore(
     }
 
     /**
-     * Stage 4.5 — flagged container branch.
+     * Canonical Container V1 media upload — the ONE and ONLY path.
      *
-     * OFF (the default): the existing multi-DataItem path runs EXACTLY as
-     * before — `uploadPreparedChunks` is called with the same arguments and
-     * the same legacy outcome contract is asserted.
-     *
-     * ON: the whole media payload is published as ONE container DataItem and
-     * claimed with ONE container publication claim. The decision is made
-     * ONCE, before any upload begins, and there is deliberately NO fallback
-     * from container to legacy afterwards — an adapter that cannot upload
-     * containers fails closed rather than silently degrading.
+     * The whole media payload is published as ONE container DataItem and
+     * claimed with ONE container publication claim. There is deliberately
+     * NO per-chunk fallback: an adapter that cannot upload containers
+     * fails closed rather than silently degrading.
      */
-    const containerUploadEnabled =
-      isContainerUploadEnabled();
-
-    if (containerUploadEnabled) {
-
-      if (
-        typeof storageAdapter.uploadContainer !==
-        "function"
-      ) {
-        throw new Error(
-          "[AETERNA] Container upload is enabled but the storage adapter cannot upload containers"
-        );
-      }
-
-      const containerOutcome =
-        await storageAdapter.uploadContainer(
-          runtime,
-          chunkMetadata,
-          token
-        );
-
-      /**
-       * Stage 4 — media upload outcome contract, container mode.
-       *
-       * N logical chunks → 1 physical container publication. The contract
-       * verifies the published set IS the expected set, that every chunk is
-       * represented exactly once, and that a multi-chunk capsule is not
-       * published as a single-chunk container.
-       */
-      assertSealUploadOutcome(chunkMetadata, {
-        mode: "container",
-        containerChunkIds: containerOutcome.chunkIds,
-      });
-
-    } else {
-
-      const uploadedChunks =
-        await uploadPreparedChunks(
-          runtime,
-          chunkMetadata,
-          token,
-          storageAdapter
-        );
-
-      /**
-       * Stage 4 — media upload outcome contract.
-       *
-       * LEGACY (current production path): N logical chunks → N uploaded
-       * per-chunk records.
-       *
-       * The contract is encoded once in `assertSealUploadOutcome`, which
-       * preserves the two existing failure messages and additionally verifies
-       * that the uploaded set actually IS the expected set (the previous
-       * inline checks compared counts and uniqueness only).
-       */
-      assertSealUploadOutcome(chunkMetadata, {
-        mode: "legacy",
-        uploadedChunks,
-      });
-
+    if (
+      typeof storageAdapter.uploadContainer !==
+      "function"
+    ) {
+      throw new Error(
+        "[AETERNA] The storage adapter cannot upload containers"
+      );
     }
+
+    const containerOutcome =
+      await storageAdapter.uploadContainer(
+        runtime,
+        chunkMetadata,
+        token
+      );
+
+    /**
+     * Stage 4 — media upload outcome contract, container mode.
+     *
+     * N logical chunks → 1 physical container publication. The contract
+     * verifies the published set IS the expected set, that every chunk is
+     * represented exactly once, and that a multi-chunk capsule is not
+     * published as a single-chunk container.
+     */
+    assertSealUploadOutcome(chunkMetadata, {
+      mode: "container",
+      containerChunkIds: containerOutcome.chunkIds,
+    });
 
     const nowUtc =
       await getTrustedTime();

@@ -1,5 +1,4 @@
 import type {
-  ChunkId,
   ManifestV1
 } from "@/types/manifest";
 
@@ -33,19 +32,16 @@ export interface ContainerUploadOutcome {
 }
 
 /**
- * Stage 4.5 — the additive chunk-pointer READOUT.
+ * The Container V1 publication READOUT.
  *
- * The chunk-pointers endpoint answers with the legacy per-chunk pointer map
- * AND, when the capsule was published as ONE media container, the container
+ * The chunk-pointers endpoint answers with the capsule's ONE container
  * publication record.
  *
- * `container === null` is the legacy case. A non-null container means the
- * capsule's media authority is the container publication, NOT the pointer
- * map — so the two can never both be populated (enforced fail-closed at the
- * fetch boundary).
+ * `container === null` means the capsule has no container publication yet.
+ * A non-null container means the capsule's media authority IS that
+ * publication.
  */
 export interface ChunkPointerReadout {
-  readonly chunkPointers: Readonly<Record<ChunkId, StoragePointer>>;
   readonly container: ContainerPublicationRecord | null;
 }
 
@@ -172,33 +168,6 @@ export function isStoragePointer(
 }
 
 
-export function assertChunkPointerMap(
-  value: unknown
-): Readonly<Record<ChunkId, StoragePointer>> {
-
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) {
-    throw new Error(
-      "[AETERNA] Invalid chunk pointer map"
-    );
-  }
-
-  const normalized: Record<ChunkId, StoragePointer> = {};
-
-  for (const [chunkId, pointer] of Object.entries(value)) {
-    normalized[chunkId as ChunkId] =
-      assertStoragePointer(pointer);
-  }
-
-  return Object.freeze(normalized);
-
-}
-
-
 /**
  * =========================================================
  * UPLOAD TOKEN VALIDATOR
@@ -307,44 +276,20 @@ export interface StorageAdapter {
 
 
   /**
-   * Upload encrypted chunk payload
+   * Upload the whole encrypted media payload as ONE Container V1 DataItem.
    *
-   * Mandatory capability boundary:
+   * Canonical media upload capability. It is REQUIRED on every adapter
+   * that participates in sealing: a per-chunk upload path no longer
+   * exists, so an adapter that cannot upload containers fails closed.
    *
-   * chunkId REQUIRED
-   * NO chunkId → NO UPLOAD
-   *
-   * MUST:
-   *
-   * upload raw encrypted bytes
-   * bind chunkId to the uploaded pointer
-   * return canonical txId pointer
-   *
-   * Ownership invariant:
-   *
-   * caller MUST NOT mutate `data`
-   * after uploadChunk() invocation.
-   *
-   * Adapters retaining async references
-   * MUST clone bytes defensively.
-   *
-   * Adapters MUST:
-   *
-   * fail closed
-   * reject partial uploads
-   * reject corrupted payloads
-   * avoid silent gateway downgrade
+   * The adapter reads the encrypted chunks itself through `runtime`, so
+   * no plaintext and no whole-container buffer crosses this boundary.
    */
-
-  uploadChunk(
-    data: Uint8Array,
-    chunkId: ChunkId,
+  uploadContainer(
+    runtime: RuntimeStorage,
+    chunkMetadata: readonly ChunkMetadata[],
     uploadToken: UploadToken
-  ): Promise<{
-
-    txId: string
-
-  }>;
+  ): Promise<ContainerUploadOutcome>;
 
 
   /**
@@ -412,20 +357,11 @@ export interface StorageAdapter {
 
 
   /**
-   * Runtime Chunk Pointer Registry access
+   * The Container V1 publication readout.
    *
    * Runtime-only Storage Authority lookup surface.
    * Not part of Manifest authority.
    */
-
-  getChunkPointers?(
-    capsuleId: string
-  ): Promise<
-    Readonly<Record<
-      ChunkId,
-      StoragePointer
-    >>
-  >;
 
   /**
    * Stage 4.5 — additive readout that ALSO surfaces the container
@@ -438,23 +374,5 @@ export interface StorageAdapter {
   getChunkPointerReadout?(
     capsuleId: string
   ): Promise<ChunkPointerReadout>;
-
-
-  /**
-   * Stage 4.5 — OPTIONAL container media upload capability.
-   *
-   * Present ONLY on adapters that can publish the whole media container as
-   * ONE DataItem (currently `creatorIrysStorage`). Its ABSENCE is meaningful:
-   * a caller that has been asked to use the container path MUST fail closed
-   * rather than silently fall back to the per-chunk path.
-   *
-   * The adapter reads the encrypted chunks itself through `runtime`, so no
-   * plaintext and no whole-container buffer crosses this boundary.
-   */
-  uploadContainer?(
-    runtime: RuntimeStorage,
-    chunkMetadata: readonly ChunkMetadata[],
-    uploadToken: UploadToken
-  ): Promise<ContainerUploadOutcome>;
 
 }

@@ -81,8 +81,15 @@ function buildStorage(): StorageAdapter {
     async upload() {
       return { txId: "tx".padEnd(43, "Z") };
     },
-    async uploadChunk(_data: Uint8Array, chunkId: string) {
-      return { txId: "ch".padEnd(43, "Z"), chunkId };
+    async uploadContainer(
+      _runtime: unknown,
+      chunkMetadata: readonly { chunkId: string }[]
+    ) {
+      return {
+        containerTxId: "ch".padEnd(43, "Z"),
+        chunkIds: chunkMetadata.map((c) => c.chunkId),
+        layoutDigest: "a".repeat(64),
+      };
     },
     async download() {
       throw new Error("[test] download not used");
