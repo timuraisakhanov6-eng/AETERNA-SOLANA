@@ -100,7 +100,7 @@ export const onRequestPost = async (
   const origin = request.headers.get("origin") ?? "";
 
   if (!ALLOWED_ORIGINS.includes(origin)) {
-    return new Response(JSON.stringify({ ok: false }), { status: 403 });
+    return fail(origin, 403, "ORIGIN_NOT_ALLOWED");
   }
 
   const contentType = request.headers.get("content-type") ?? "";
@@ -179,7 +179,7 @@ export const onRequestPost = async (
   }
 
   if (!creditRaw) {
-    return fail(origin, 403);
+    return fail(origin, 403, "LIFECYCLE_CREDIT_NOT_FOUND");
   }
 
   let credit: Record<string, unknown> | null = null;
@@ -189,12 +189,16 @@ export const onRequestPost = async (
     return fail(origin, 503);
   }
 
-  if (
-    !credit ||
-    credit.status !== "CONSUMING" ||
-    credit.creatorIdentityId !== creatorIdentityId
-  ) {
-    return fail(origin, 403);
+  if (!credit) {
+    return fail(origin, 403, "CREDIT_NOT_CONSUMING");
+  }
+
+  if (credit.status !== "CONSUMING") {
+    return fail(origin, 403, "CREDIT_NOT_CONSUMING");
+  }
+
+  if (credit.creatorIdentityId !== creatorIdentityId) {
+    return fail(origin, 403, "CREDIT_IDENTITY_MISMATCH");
   }
 
   /**
@@ -220,7 +224,7 @@ export const onRequestPost = async (
     paymentIntentId.trim().length > 0 &&
     paymentIntentId.trim() !== serverPaymentIntentId
   ) {
-    return fail(origin, 403);
+    return fail(origin, 403, "PAYMENT_INTENT_MISMATCH");
   }
 
   /* ================= STORAGE PAYMENT GATE (Phase D1) =================

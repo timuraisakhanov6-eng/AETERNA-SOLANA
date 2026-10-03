@@ -623,56 +623,173 @@ export default function CapsuleHold() {
           unknown =
           null;
 
+        /**
+         * Upload token, hoisted to FUNCTION scope so the bounded retry
+         * below can assign it and the later seal call can read it. The
+         * value is only ever used AFTER the retry resolves successfully,
+         * so a failed retry can never leak a stale/undefined token into
+         * the seal path (which is exactly what `throw` after the loop
+         * guarantees).
+         */
+        let uploadToken:
+          string | null =
+          null;
+
         try {
 
           /* ── STEP 1: canonical upload token ── */
 
-          const tokenRes =
-            await fetch(
-              "/api/upload-token",
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type":
-                    "application/json",
-                },
-                body:
-                  JSON.stringify({
-                    // Canonical upload-token contract
-                    // (functions/api/upload-token.ts ALLOWED_BODY_FIELDS):
-                    // the creator is identified by creatorIdentityId, NOT by
-                    // capsuleId. The endpoint resolves capsule/lifecycle
-                    // authority server-side from the CONSUMING Creator
-                    // Credit; a client-supplied capsuleId is neither
-                    // accepted nor authority.
-                    creatorIdentityId,
-                    canonicalLifecycleId,
-                    correlationTransactionId:
-                      correlationTransactionId ?? "",
-                  }),
+          /**
+           * BOUNDED retry (3 attempts, exponential backoff) for
+           * RETRYABLE conditions only: network errors and HTTP 5xx.
+           *
+           * HTTP 4xx (including 403 and 409) are NEVER retried — they are
+           * deterministic authorization failures that will return the same
+           * response on every attempt. Retrying them would only delay the
+           * failure surface and waste bandwidth.
+           *
+           * Why this is safe:
+           *
+           * - The endpoint is IDEMPOTENT with respect to entitlement:
+           *   /api/upload-token only READS the persisted Creator Credit
+           *   (status must be CONSUMING) and the PAYMENT_VERIFIED storage
+           *   payment, then mints a NEW random short-lived token. It never
+           *   consumes the credit, never creates a quote, never charges,
+           *   and never reserves a lifecycle. A repeat therefore cannot
+           *   duplicate a payment, entitlement, reservation or capsule.
+           *
+           * - A retry MUST NOT turn a fail-closed decision into a success.
+           *   It cannot: 4xx errors fail immediately, and only transient
+           *   5xx/network conditions are retried. If the condition persists
+           *   across all 3 attempts, the loop exhausts and throws —
+           *   fail-closed is preserved exactly.
+           */
+          let tokenAttempt = 0;
+
+          while (tokenAttempt < 3) {
+
+            try {
+
+              const tokenRes =
+                await fetch(
+                  "/api/upload-token",
+                  {
+                    method: "POST",
+                    headers: {
+                      "Content-Type":
+                        "application/json",
+                    },
+                    body:
+                      JSON.stringify({
+                        // Canonical upload-token contract
+                        // (functions/api/upload-token.ts ALLOWED_BODY_FIELDS):
+                        // the creator is identified by creatorIdentityId, NOT by
+                        // capsuleId. The endpoint resolves capsule/lifecycle
+                        // authority server-side from the CONSUMING Creator
+                        // Credit; a client-supplied capsuleId is neither
+                        // accepted nor authority.
+                        creatorIdentityId,
+                        canonicalLifecycleId,
+                        correlationTransactionId:
+                          correlationTransactionId ?? "",
+                      }),
+                  }
+                );
+
+              /**
+               * 4xx = deterministic client/auth failure.
+               * Never retry — fail closed immediately so the creator
+               * sees the failure surface with the diagnostic code.
+               */
+              if (
+                tokenRes.status >= 400 &&
+                tokenRes.status < 500
+              ) {
+                const errBody =
+                  await tokenRes.json().catch(() => null);
+                const code =
+                  errBody?.error ??
+                  "UPLOAD_TOKEN_DENIED";
+                throw new Error(code);
               }
-            );
 
+              if (!tokenRes.ok)
+                throw new Error(
+                  "UPLOAD_TOKEN_REQUEST_FAILED"
+                );
 
-          if (!tokenRes.ok)
-            throw new Error(
-              "UPLOAD_TOKEN_REQUEST_FAILED"
-            );
+              const tokenData =
+                await tokenRes.json().catch(() => null);
 
+              const candidate =
+                tokenData?.uploadToken;
 
-          const tokenData =
-            await tokenRes.json().catch(() => null);
+              if (
+                typeof candidate !==
+                  "string" ||
+                candidate.length < 32
+              )
+                throw new Error(
+                  "UPLOAD_TOKEN_DENIED"
+                );
 
+              uploadToken =
+                candidate;
 
-          const uploadToken =
-            tokenData?.uploadToken;
+              break;
 
+            } catch (tokenErr) {
 
-          if (
-            typeof uploadToken !==
-              "string" ||
-            uploadToken.length < 32
-          )
+              const err =
+                tokenErr instanceof Error
+                  ? tokenErr
+                  : new Error(String(tokenErr));
+
+              /**
+               * Do NOT retry deterministic 4xx errors.
+               * These are authorization failures that will never
+               * succeed on repeat.
+               */
+              const isClientError =
+                [
+                  "ORIGIN_NOT_ALLOWED",
+                  "LIFECYCLE_CREDIT_NOT_FOUND",
+                  "CREDIT_NOT_CONSUMING",
+                  "CREDIT_IDENTITY_MISMATCH",
+                  "PAYMENT_INTENT_MISMATCH",
+                  "STORAGE_PAYMENT_NOT_VERIFIED",
+                ].includes(err.message);
+
+              if (isClientError)
+                throw err;
+
+              tokenAttempt++;
+
+              /**
+               * Fail-closed on the FINAL attempt: after the bounded
+               * retries are exhausted the original error is re-thrown, so
+               * a persistent server failure is never masked.
+               */
+              if (tokenAttempt >= 3)
+                throw err;
+
+              await new Promise(
+                (r) =>
+                  setTimeout(
+                    r,
+                    1000 *
+                      Math.pow(
+                        2,
+                        tokenAttempt
+                      )
+                  )
+              );
+
+            }
+
+          }
+
+          if (uploadToken === null)
             throw new Error(
               "UPLOAD_TOKEN_DENIED"
             );
