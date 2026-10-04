@@ -292,3 +292,97 @@ describe("CreditOperationCoordinator", () => {
     expect(result.outcome).toBe("LIFECYCLE_NOT_FOUND");
   });
 });
+
+/**
+ * `op: "read"` — the authoritative, strongly consistent credit projection
+ * consumed by the upload-token gate instead of the eventually-consistent KV
+ * lifecycle key.
+ */
+describe("CreditOperationCoordinator — authoritative read", () => {
+  async function readRaw(coordinator: CreditOperationCoordinator, creatorCreditId: string) {
+    const response = await coordinator.fetch(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "read", creatorCreditId }),
+      })
+    );
+    expect(response.status).toBe(200);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  it("returns the full authoritative record for a reserved credit", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord());
+    await post(coordinator, {
+      op: "reserve",
+      creatorCreditId: "credit-1",
+      creatorIdentityId: "identity-1",
+      lifecycleId: "lifecycle-1",
+      capsuleId: "capsule-1",
+      paymentIntentId: "intent-1",
+    });
+
+    const json = await readRaw(coordinator, "credit-1");
+    expect(json.ok).toBe(true);
+    expect(json.outcome).toBe("FOUND");
+    expect(json.status).toBe("CONSUMING");
+    expect(json.creatorCreditId).toBe("credit-1");
+    expect(json.creatorIdentityId).toBe("identity-1");
+    expect(json.capsuleId).toBe("capsule-1");
+    expect(json.lifecycleId).toBe("lifecycle-1");
+    expect(json.paymentIntentId).toBe("intent-1");
+    expect(json.revision).toBe(2);
+  });
+
+  it("carries paymentIntentId as null when the reserve supplied none", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env, creditRecord());
+    await post(coordinator, {
+      op: "reserve",
+      creatorCreditId: "credit-1",
+      creatorIdentityId: "identity-1",
+      lifecycleId: "lifecycle-1",
+      capsuleId: "capsule-1",
+    });
+
+    const json = await readRaw(coordinator, "credit-1");
+    expect(json.outcome).toBe("FOUND");
+    expect(json.paymentIntentId).toBeNull();
+  });
+
+  it("reports NOT_FOUND for an unknown credit and never fabricates a binding", async () => {
+    const env = createEnv();
+    const { coordinator } = createCoordinator(env);
+
+    const json = await readRaw(coordinator, "credit-absent");
+    expect(json.ok).toBe(true);
+    expect(json.outcome).toBe("NOT_FOUND");
+    expect(json.status).toBe("AVAILABLE");
+    expect(json.creatorIdentityId).toBe("");
+    expect(json.capsuleId).toBe("");
+    expect(json.lifecycleId).toBeNull();
+    expect(json.paymentIntentId).toBeNull();
+    expect(json.revision).toBe(0);
+  });
+
+  it("is strictly read-only: repeated reads do not mutate DO storage", async () => {
+    const env = createEnv();
+    const { coordinator, state } = createCoordinator(env, creditRecord());
+    await post(coordinator, {
+      op: "reserve",
+      creatorCreditId: "credit-1",
+      creatorIdentityId: "identity-1",
+      lifecycleId: "lifecycle-1",
+      capsuleId: "capsule-1",
+    });
+
+    const before = new Map(state.data);
+    await readRaw(coordinator, "credit-1");
+    await readRaw(coordinator, "credit-1");
+    await readRaw(coordinator, "credit-absent");
+
+    expect([...state.data.keys()].sort()).toEqual([...before.keys()].sort());
+    expect(state.data.get("credit:credit-1")).toEqual(before.get("credit:credit-1"));
+  });
+});

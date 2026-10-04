@@ -203,6 +203,37 @@ function failureResponse(error: string, status = 409, creditId = "", lifecycleId
 }
 
 /**
+ * Authoritative read projection for `op: "read"`.
+ *
+ * This is the READ-ONLY view of the Durable Object's own credit record —
+ * the strongly consistent store that authored the reserve. Consumers that
+ * must not observe a stale KV projection (the upload-token gate) read the
+ * credit through here instead of KV, whose reads are eventually consistent
+ * (default read cacheTtl 60s) and cache negative lookups.
+ *
+ * No new state is introduced: these are the existing CreditRecord fields,
+ * surfaced verbatim. `op: "read"` performs no writes.
+ */
+interface CreditReadResult {
+  ok: boolean;
+  outcome: "FOUND" | "NOT_FOUND";
+  status: "AVAILABLE" | "CONSUMING" | "CONSUMED";
+  creatorCreditId: string;
+  creatorIdentityId: string;
+  capsuleId: string;
+  lifecycleId: string | null;
+  paymentIntentId: string | null;
+  revision: number;
+}
+
+function creditReadResponse(result: CreditReadResult): Response {
+  return new Response(JSON.stringify(result), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+/**
  * Normalizes a server-derived payment intent binding. A non-string or blank
  * value yields null (never a fabricated identifier); downstream gates fail
  * closed on null.
@@ -1298,21 +1329,27 @@ export class CreditOperationCoordinator {
       case "read": {
         const credit = await getCreditRecord(this.state, body.creatorCreditId);
         if (!credit) {
-          return successResponse({
+          return creditReadResponse({
             ok: true,
             outcome: "NOT_FOUND",
             status: "AVAILABLE",
             creatorCreditId: body.creatorCreditId,
+            creatorIdentityId: "",
+            capsuleId: "",
             lifecycleId: null,
+            paymentIntentId: null,
             revision: 0,
           });
         }
-        return successResponse({
+        return creditReadResponse({
           ok: true,
           outcome: "FOUND",
           status: credit.status,
           creatorCreditId: credit.id,
+          creatorIdentityId: credit.creatorIdentityId,
+          capsuleId: credit.capsuleId,
           lifecycleId: credit.lifecycleId,
+          paymentIntentId: credit.paymentIntentId ?? null,
           revision: credit.revision,
         });
       }

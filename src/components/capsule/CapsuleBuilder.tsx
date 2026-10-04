@@ -699,6 +699,7 @@ export default function CapsuleBuilder() {
           correlationTransactionId: null,
           canonicalLifecycleId: reserved.lifecycleId,
           creatorIdentityId,
+          creatorCreditId: result.creatorCreditId,
           storagePaymentId: result.storagePaymentId,
         },
       })

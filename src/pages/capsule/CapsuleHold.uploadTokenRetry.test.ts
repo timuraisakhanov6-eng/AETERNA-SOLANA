@@ -89,6 +89,7 @@ const RECIPIENT_SECRET = "c".repeat(64);
 const CREATOR_AUTHORITY = "d".repeat(64);
 const VAULT_SHA256 = "e".repeat(64);
 const CREATOR_IDENTITY_ID = "creator-1";
+const CREATOR_CREDIT_ID = "credit-1";
 const STORAGE_PAYMENT_ID = "storage-payment-1";
 const WALLET_ACCOUNT = "wallet-account-1";
 const LIFECYCLE_ID = "lifecycle-1";
@@ -114,17 +115,18 @@ function buildHoldState() {
   };
 }
 
-function locationState() {
+function locationState(withCreditId = true) {
   return {
     holdState: buildHoldState(),
     canonicalLifecycleId: LIFECYCLE_ID,
     creatorIdentityId: CREATOR_IDENTITY_ID,
+    ...(withCreditId ? { creatorCreditId: CREATOR_CREDIT_ID } : {}),
     storagePaymentId: STORAGE_PAYMENT_ID,
     correlationTransactionId: null,
   };
 }
 
-function renderHold() {
+function renderHold(withCreditId = true) {
   const walletValue = {
     state: {
       account: WALLET_ACCOUNT,
@@ -142,7 +144,7 @@ function renderHold() {
       MemoryRouter,
       {
         initialEntries: [
-          { pathname: "/create/hold", state: locationState() },
+          { pathname: "/create/hold", state: locationState(withCreditId) },
         ],
       },
       React.createElement(
@@ -515,6 +517,223 @@ describe("CapsuleHold — upload-token retry semantics", () => {
     );
 
     expect(requestCount).toBe(1);
+    expect(hoisted.sealCapsuleCore).not.toHaveBeenCalled();
+    expect(hoisted.navigate).not.toHaveBeenCalled();
+  }, 20_000);
+
+  /**
+   * H. AUTHORITATIVE-READ ADDRESS.
+   * When the navigation state carries creatorCreditId, the upload-token body
+   * must carry it too, so the server reads the Creator Credit from the
+   * Durable Object instead of the eventually-consistent KV lifecycle
+   * projection (the production LIFECYCLE_CREDIT_NOT_FOUND cause).
+   * The retry policy is unchanged: a 403 is still exactly 1 request.
+   */
+  it("H. sends creatorCreditId in the upload-token body and still does not retry 403", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let requestCount = 0;
+    const captured: { body: Record<string, unknown> | null } = { body: null };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: { body?: string }) => {
+        if (url === "/api/upload-token") {
+          requestCount++;
+          captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return {
+            ok: false,
+            status: 403,
+            json: async () => ({ error: "LIFECYCLE_CREDIT_NOT_FOUND" }),
+          };
+        }
+        if (url === "/api/time") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ nowUtc: TRUSTED_NOW }),
+          };
+        }
+        throw new Error("UNEXPECTED_FETCH:" + url);
+      })
+    );
+
+    renderHold();
+
+    await waitFor(
+      () => {
+        expect(
+          screen.queryByText(/we couldn't finish preparing your capsule/i)
+        ).toBeTruthy();
+      },
+      { timeout: 10_000 }
+    );
+
+    expect(requestCount).toBe(1);
+    expect(captured.body).toMatchObject({
+      creatorIdentityId: CREATOR_IDENTITY_ID,
+      canonicalLifecycleId: LIFECYCLE_ID,
+      creatorCreditId: CREATOR_CREDIT_ID,
+    });
+    expect(hoisted.sealCapsuleCore).not.toHaveBeenCalled();
+  }, 20_000);
+
+  /**
+   * I. LEGACY COMPATIBILITY.
+   * With no creatorCreditId in the navigation state the field must be
+   * OMITTED (not sent as null), so the server keeps the existing KV path and
+   * the legacy/recovery flows are byte-for-byte unchanged.
+   */
+  it("I. omits creatorCreditId entirely when the navigation state has none", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const captured: { body: Record<string, unknown> | null } = { body: null };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: { body?: string }) => {
+        if (url === "/api/upload-token") {
+          captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return {
+            ok: false,
+            status: 403,
+            json: async () => ({ error: "LIFECYCLE_CREDIT_NOT_FOUND" }),
+          };
+        }
+        if (url === "/api/time") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ nowUtc: TRUSTED_NOW }),
+          };
+        }
+        throw new Error("UNEXPECTED_FETCH:" + url);
+      })
+    );
+
+    renderHold(false);
+
+    await waitFor(
+      () => {
+        expect(captured.body).not.toBeNull();
+      },
+      { timeout: 10_000 }
+    );
+
+    expect(Object.keys(captured.body ?? {})).not.toContain("creatorCreditId");
+    expect(captured.body).toMatchObject({
+      creatorIdentityId: CREATOR_IDENTITY_ID,
+      canonicalLifecycleId: LIFECYCLE_ID,
+    });
+  }, 20_000);
+
+  /**
+   * J. ANY 4xx -> exactly 1 request.
+   *
+   * The retry decision is driven by the HTTP STATUS, never by the error
+   * text. Every row below either carries a code the client has never
+   * hardcoded or carries no code at all — all of them must fail closed on
+   * the FIRST attempt. (Under the previous message-text classification
+   * several of these were retried three times.)
+   */
+  it.each<{ status: number; code?: string | undefined }>([
+    { status: 400, code: "INVALID_BODY" },
+    { status: 400, code: undefined },
+    { status: 403, code: "SOME_UNKNOWN_CODE" },
+    { status: 403, code: "LIFECYCLE_CREDIT_NOT_FOUND" },
+    { status: 409, code: "STORAGE_PAYMENT_NOT_VERIFIED" },
+    { status: 415, code: undefined },
+    { status: 422, code: "UNPROCESSABLE_ENTITY" },
+    { status: 429, code: undefined },
+  ])(
+    "J. HTTP $status (code: $code) -> exactly 1 request, fail-closed",
+    async ({ status, code }) => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let requestCount = 0;
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url === "/api/upload-token") {
+            requestCount++;
+            return {
+              ok: false,
+              status,
+              json: async () => (code ? { error: code } : {}),
+            };
+          }
+          if (url === "/api/time") {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({ nowUtc: TRUSTED_NOW }),
+            };
+          }
+          throw new Error("UNEXPECTED_FETCH:" + url);
+        })
+      );
+
+      renderHold();
+
+      await waitFor(
+        () => {
+          expect(
+            screen.queryByText(/we couldn't finish preparing your capsule/i)
+          ).toBeTruthy();
+        },
+        { timeout: 10_000 }
+      );
+
+      expect(requestCount).toBe(1);
+      expect(hoisted.sealCapsuleCore).not.toHaveBeenCalled();
+      expect(hoisted.navigate).not.toHaveBeenCalled();
+    },
+    20_000
+  );
+
+  /**
+   * K. ANY 5xx -> retried.
+   * 500 is a second data point in the 5xx range beside the 503 tests above:
+   * three attempts, then fail-closed.
+   */
+  it("K. HTTP 500 -> retried (exactly 3 requests, then fail-closed)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let requestCount = 0;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/upload-token") {
+          requestCount++;
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ error: "INTERNAL_ERROR" }),
+          };
+        }
+        if (url === "/api/time") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ nowUtc: TRUSTED_NOW }),
+          };
+        }
+        throw new Error("UNEXPECTED_FETCH:" + url);
+      })
+    );
+
+    renderHold();
+
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    await waitFor(
+      () => {
+        expect(
+          screen.queryByText(/we couldn't finish preparing your capsule/i)
+        ).toBeTruthy();
+      },
+      { timeout: 10_000 }
+    );
+
+    expect(requestCount).toBe(3);
     expect(hoisted.sealCapsuleCore).not.toHaveBeenCalled();
     expect(hoisted.navigate).not.toHaveBeenCalled();
   }, 20_000);

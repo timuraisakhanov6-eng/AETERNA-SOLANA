@@ -88,6 +88,7 @@ type LocationState = Readonly<{
   correlationTransactionId?: string | null;
   canonicalLifecycleId?: string | null;
   creatorIdentityId?: string | null;
+  creatorCreditId?: string | null;
   storagePaymentId?: string | null;
 }>;
 
@@ -132,6 +133,55 @@ export function sealErrorDetail(value: unknown): string | undefined {
   return trimmed.length > MAX
     ? `${trimmed.slice(0, MAX)}…`
     : trimmed;
+}
+
+
+/* ================= UPLOAD-TOKEN RETRY CLASSIFICATION ================= */
+
+/**
+ * Upload-token failure carrying the HTTP outcome of the request.
+ *
+ * The retry decision is made on the HTTP STATUS, never on the error text:
+ * classifying by message text silently retried every 4xx whose body carried
+ * a code the client did not hardcode (a bare 400, 415 or 429), which
+ * contradicts the fail-closed policy and wastes the creator's time on an
+ * outcome that can never change.
+ *
+ * Policy:
+ *   4xx (400-499)              -> deterministic, NEVER retried
+ *   2xx/3xx without a token    -> protocol violation, NEVER retried
+ *   5xx (500-599)              -> transient, retried
+ *   fetch/network exception    -> no status, retried
+ */
+interface UploadTokenRequestError extends Error {
+  httpStatus?: number;
+}
+
+function uploadTokenError(
+  message: string,
+  httpStatus?: number
+): UploadTokenRequestError {
+  const error = new Error(message) as UploadTokenRequestError;
+  if (typeof httpStatus === "number") error.httpStatus = httpStatus;
+  return error;
+}
+
+/**
+ * True when the failure is worth retrying.
+ *
+ * Only 5xx responses and transport failures (which carry no status) are
+ * retryable. Any definite non-5xx HTTP answer we actually received — 2xx
+ * included, because a 2xx without a usable token is a protocol violation,
+ * not a transient condition — fails closed immediately.
+ */
+function isRetryableUploadTokenFailure(error: unknown): boolean {
+  const httpStatus =
+    error instanceof Error
+      ? (error as UploadTokenRequestError).httpStatus
+      : undefined;
+
+  if (typeof httpStatus !== "number") return true; // network/fetch failure
+  return httpStatus >= 500;
 }
 
 
@@ -321,6 +371,17 @@ export default function CapsuleHold() {
 
   const creatorIdentityId =
     locationState?.creatorIdentityId ?? null;
+
+  /**
+   * OPTIONAL authoritative-read address for /api/upload-token.
+   *
+   * Correlation only — it is NOT authority: the server reads the Creator
+   * Credit from the authoritative store and re-validates every field. It is
+   * omitted from the request body when absent so that legacy/recovery paths
+   * keep the existing server behaviour.
+   */
+  const creatorCreditId =
+    locationState?.creatorCreditId ?? null;
 
   const connectedWallet = useContext(AETERNAWalletContext);
   const storagePaymentId = locationState?.storagePaymentId ?? null;
@@ -690,6 +751,14 @@ export default function CapsuleHold() {
                         // accepted nor authority.
                         creatorIdentityId,
                         canonicalLifecycleId,
+                        // Authoritative-read address (optional). Present => the
+                        // server reads the credit from the Durable Object
+                        // instead of the eventually-consistent KV projection.
+                        // Omitted when unavailable so the legacy KV path is
+                        // preserved byte-for-byte.
+                        ...(creatorCreditId
+                          ? { creatorCreditId }
+                          : {}),
                         correlationTransactionId:
                           correlationTransactionId ?? "",
                       }),
@@ -700,6 +769,11 @@ export default function CapsuleHold() {
                * 4xx = deterministic client/auth failure.
                * Never retry — fail closed immediately so the creator
                * sees the failure surface with the diagnostic code.
+               *
+               * The status is carried on the error; the retry decision is
+               * never derived from the response body or the error text, so
+               * an unrecognised code (a bare 400, 415, 429, …) can never be
+               * retried.
                */
               if (
                 tokenRes.status >= 400 &&
@@ -710,12 +784,13 @@ export default function CapsuleHold() {
                 const code =
                   errBody?.error ??
                   "UPLOAD_TOKEN_DENIED";
-                throw new Error(code);
+                throw uploadTokenError(code, tokenRes.status);
               }
 
               if (!tokenRes.ok)
-                throw new Error(
-                  "UPLOAD_TOKEN_REQUEST_FAILED"
+                throw uploadTokenError(
+                  "UPLOAD_TOKEN_REQUEST_FAILED",
+                  tokenRes.status
                 );
 
               const tokenData =
@@ -729,8 +804,9 @@ export default function CapsuleHold() {
                   "string" ||
                 candidate.length < 32
               )
-                throw new Error(
-                  "UPLOAD_TOKEN_DENIED"
+                throw uploadTokenError(
+                  "UPLOAD_TOKEN_DENIED",
+                  tokenRes.status
                 );
 
               uploadToken =
@@ -746,21 +822,17 @@ export default function CapsuleHold() {
                   : new Error(String(tokenErr));
 
               /**
-               * Do NOT retry deterministic 4xx errors.
-               * These are authorization failures that will never
-               * succeed on repeat.
+               * Retry decision — driven by the HTTP STATUS only:
+               *   4xx                      -> never retry
+               *   2xx/3xx (malformed reply) -> never retry
+               *   5xx                      -> retry
+               *   no status (fetch/network) -> retry
+               *
+               * The error text is never consulted, so a 4xx whose body
+               * carries a code the client does not know still fails closed
+               * on the first attempt.
                */
-              const isClientError =
-                [
-                  "ORIGIN_NOT_ALLOWED",
-                  "LIFECYCLE_CREDIT_NOT_FOUND",
-                  "CREDIT_NOT_CONSUMING",
-                  "CREDIT_IDENTITY_MISMATCH",
-                  "PAYMENT_INTENT_MISMATCH",
-                  "STORAGE_PAYMENT_NOT_VERIFIED",
-                ].includes(err.message);
-
-              if (isClientError)
+              if (!isRetryableUploadTokenFailure(err))
                 throw err;
 
               tokenAttempt++;

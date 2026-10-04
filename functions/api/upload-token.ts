@@ -35,9 +35,29 @@ const TOKEN_TTL_SEC = TOKEN_TTL_MS / 1000;
 const ALLOWED_BODY_FIELDS = [
   "canonicalLifecycleId",
   "creatorIdentityId",
+  "creatorCreditId",
   "paymentIntentId",
   "correlationTransactionId",
 ];
+
+/**
+ * Bindings this endpoint may touch. Declared explicitly (mirroring
+ * reserve-lifecycle.ts) so the authoritative Durable Object read is typed;
+ * the handler's own generics are left untouched.
+ */
+interface UploadTokenEnv {
+  CREATOR_CREDITS: {
+    get(key: string): Promise<string | null>;
+  };
+  UPLOAD_TOKENS: {
+    get(key: string): Promise<string | null>;
+    put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+  };
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(binding: { id: string }): DurableObjectStub;
+  };
+}
 
 function toBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -135,6 +155,7 @@ export const onRequestPost = async (
   const {
     canonicalLifecycleId,
     creatorIdentityId,
+    creatorCreditId,
     paymentIntentId,
     correlationTransactionId,
   } = body;
@@ -153,11 +174,42 @@ export const onRequestPost = async (
     return fail(origin, 400);
   }
 
+  /**
+   * OPTIONAL authoritative-read address.
+   *
+   * When present, the Creator Credit is read from the Durable Object — the
+   * strongly consistent store that AUTHORED the reserve — instead of the KV
+   * lifecycle projection. KV reads are eventually consistent (default read
+   * cacheTtl 60s) and cache negative lookups, so a KV read issued
+   * immediately after reserve-lifecycle can observe a stale "absent" result
+   * and fail closed with LIFECYCLE_CREDIT_NOT_FOUND.
+   *
+   * The value is an ADDRESS only: every field that authorizes the token is
+   * taken from the server-persisted record and re-validated below. Absent
+   * (legacy client) => the unchanged KV path is used.
+   */
   if (
-    !env?.UPLOAD_TOKENS ||
-    !env?.CREATOR_CREDITS
+    creatorCreditId !== undefined &&
+    (typeof creatorCreditId !== "string" || creatorCreditId.trim().length === 0)
+  ) {
+    return fail(origin, 400);
+  }
+
+  const authoritativeCreditId =
+    typeof creatorCreditId === "string" ? creatorCreditId.trim() : "";
+
+  const bindings = env as unknown as UploadTokenEnv;
+
+  if (
+    !bindings?.UPLOAD_TOKENS ||
+    !bindings?.CREATOR_CREDITS
   ) {
     console.error("[AETERNA][upload-token] Missing KV bindings");
+    return fail(origin, 503);
+  }
+
+  if (authoritativeCreditId && !bindings?.CREDIT_OP_COORDINATOR) {
+    console.error("[AETERNA][upload-token] Missing credit coordinator binding");
     return fail(origin, 503);
   }
 
@@ -170,23 +222,76 @@ export const onRequestPost = async (
     return fail(origin, 500);
   }
 
-  const lifecycleKey = `creator:credit:lifecycle:${creatorIdentityId}:${canonicalLifecycleId}`;
-  let creditRaw: string | null = null;
-  try {
-    creditRaw = await env.CREATOR_CREDITS.get(lifecycleKey);
-  } catch {
-    return fail(origin, 503);
-  }
-
-  if (!creditRaw) {
-    return fail(origin, 403, "LIFECYCLE_CREDIT_NOT_FOUND");
-  }
-
+  /**
+   * Resolve the Creator Credit.
+   *
+   * Authoritative path: the Durable Object's own record (strongly
+   * consistent, same instance that performed the reserve). This path does
+   * NOT read the lifecycle key from KV.
+   *
+   * Legacy path: the KV lifecycle projection, retained unchanged for
+   * backward compatibility with clients that do not send creatorCreditId.
+   */
   let credit: Record<string, unknown> | null = null;
-  try {
-    credit = JSON.parse(creditRaw) as Record<string, unknown>;
-  } catch {
-    return fail(origin, 503);
+
+  if (authoritativeCreditId) {
+
+    let readResponse: Response;
+    try {
+      const coordinatorId =
+        bindings.CREDIT_OP_COORDINATOR!.idFromName(authoritativeCreditId);
+      const coordinator = bindings.CREDIT_OP_COORDINATOR!.get(coordinatorId);
+      readResponse = await coordinator.fetch(
+        new Request("https://aeterna-credit-coordinator.invalid", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            op: "read",
+            creatorCreditId: authoritativeCreditId,
+          }),
+        })
+      );
+    } catch {
+      return fail(origin, 503);
+    }
+
+    if (!readResponse.ok) {
+      return fail(origin, 503);
+    }
+
+    let readResult: Record<string, unknown> | null = null;
+    try {
+      readResult = (await readResponse.json()) as Record<string, unknown>;
+    } catch {
+      readResult = null;
+    }
+
+    if (!readResult || readResult.outcome !== "FOUND") {
+      return fail(origin, 403, "LIFECYCLE_CREDIT_NOT_FOUND");
+    }
+
+    credit = readResult;
+
+  } else {
+
+    const lifecycleKey = `creator:credit:lifecycle:${creatorIdentityId}:${canonicalLifecycleId}`;
+    let creditRaw: string | null = null;
+    try {
+      creditRaw = await bindings.CREATOR_CREDITS.get(lifecycleKey);
+    } catch {
+      return fail(origin, 503);
+    }
+
+    if (!creditRaw) {
+      return fail(origin, 403, "LIFECYCLE_CREDIT_NOT_FOUND");
+    }
+
+    try {
+      credit = JSON.parse(creditRaw) as Record<string, unknown>;
+    } catch {
+      return fail(origin, 503);
+    }
+
   }
 
   if (!credit) {
@@ -199,6 +304,18 @@ export const onRequestPost = async (
 
   if (credit.creatorIdentityId !== creatorIdentityId) {
     return fail(origin, 403, "CREDIT_IDENTITY_MISMATCH");
+  }
+
+  /**
+   * Lifecycle binding — AUTHORITATIVE PATH ONLY.
+   *
+   * The Durable Object record carries the lifecycleId that reserve-lifecycle
+   * wrote, so it must be the lifecycle THIS request asks for; a mismatch
+   * fails closed exactly like a missing record. The legacy KV path is keyed
+   * by lifecycleId and is left byte-for-byte unchanged.
+   */
+  if (authoritativeCreditId && credit.lifecycleId !== canonicalLifecycleId) {
+    return fail(origin, 403, "LIFECYCLE_CREDIT_NOT_FOUND");
   }
 
   /**
