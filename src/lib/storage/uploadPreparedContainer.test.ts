@@ -38,6 +38,11 @@ import {
   groupChunkMetadataByMediaItem,
   uploadPreparedContainer,
 } from "@/lib/storage/uploadPreparedContainer";
+import {
+  readSealDiagnostic,
+  SEAL_FAILURE_MESSAGE,
+  tagSealFailure,
+} from "@/lib/capsule/sealDiagnostic";
 
 /* =========================
    FIXTURES
@@ -438,5 +443,141 @@ describe("Stage 4.5 — grouping reproduces the Vault item grouping", () => {
     expect(groups.map((g) => g[0]!.mediaId)).toEqual(["b", "a"]);
     expect(groups[0]!.map((c) => c.index)).toEqual([0, 1]);
     expect(groups[1]!.map((c) => c.index)).toEqual([0, 1]);
+  });
+});
+
+/* =========================
+   DIAGNOSTIC STAGE CLASSIFICATION
+   ========================= */
+
+/**
+ * The 2026-10-04 production E2E failed inside the Container V1 upload and
+ * the original exception was destroyed, so the stage could not be named.
+ * These tests pin the classification that makes it nameable — while the
+ * fail-closed contract (no claim on a failed upload) stays unchanged.
+ */
+describe("Stage 4.5 — container upload diagnostic stages", () => {
+  async function stageOf(promise: Promise<unknown>): Promise<string | null> {
+    try {
+      await promise;
+      return null;
+    } catch (error) {
+      return readSealDiagnostic(error);
+    }
+  }
+
+  it("A. a pre-upload construction failure → CONTAINER_UPLOAD_CONSTRUCT", async () => {
+    const uploader = makeUploader();
+    const claim = vi.fn(async () => {});
+
+    // Empty chunk list fails inside the construction region.
+    const stage = await stageOf(
+      uploadPreparedContainer(
+        makeRuntime(new Map()),
+        [],
+        uploader.uploader,
+        claim
+      )
+    );
+
+    expect(stage).toBe("CONTAINER_UPLOAD_CONSTRUCT");
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it("F. a rejected publication claim → CONTAINER_PUBLICATION", async () => {
+    const meta = metadata();
+    const runtime = makeRuntime(ciphertexts(meta));
+    const uploader = makeUploader();
+    const claim = vi.fn(async () => {
+      throw new Error("[AETERNA] creatorIrys: publication claim failed");
+    });
+
+    const stage = await stageOf(
+      uploadPreparedContainer(runtime, meta, uploader.uploader, claim)
+    );
+
+    expect(stage).toBe("CONTAINER_PUBLICATION");
+    expect(claim).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a more precise inner tag through the container boundary", async () => {
+    const meta = metadata();
+    const runtime = makeRuntime(ciphertexts(meta));
+    const claim = vi.fn(async () => {});
+
+    // Simulate the wallet adapter having tagged a rejected signature.
+    const uploader = {
+      setChunkSize() {},
+      setBatchSize() {},
+      async uploadData(readable: Readable) {
+        for await (const _part of readable) {
+          // consume the producer so the writer releases
+        }
+        throw tagSealFailure(
+          new Error("user rejected"),
+          "WALLET_SIGN_FAILURE"
+        );
+      },
+    } as unknown as ChunkingUploader;
+
+    const stage = await stageOf(
+      uploadPreparedContainer(runtime, meta, uploader, claim)
+    );
+
+    expect(stage).toBe("CONTAINER_UPLOAD_SIGN");
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it("an unclassified upload failure → CONTAINER_UPLOAD_UNKNOWN", async () => {
+    const meta = metadata();
+    const runtime = makeRuntime(ciphertexts(meta));
+    const uploader = makeUploader({ fail: true });
+    const claim = vi.fn(async () => {});
+
+    const stage = await stageOf(
+      uploadPreparedContainer(runtime, meta, uploader.uploader, claim)
+    );
+
+    expect(stage).toBe("CONTAINER_UPLOAD_UNKNOWN");
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it("carries only the fixed message + code (no original message)", async () => {
+    const meta = metadata();
+    const runtime = makeRuntime(ciphertexts(meta));
+    const uploader = makeUploader({ fail: true });
+    const claim = vi.fn(async () => {});
+
+    let captured: unknown = null;
+    try {
+      await uploadPreparedContainer(runtime, meta, uploader.uploader, claim);
+    } catch (error) {
+      captured = error;
+    }
+
+    const error = captured as Error;
+    expect(error.message).toBe(
+      `${SEAL_FAILURE_MESSAGE}: CONTAINER_UPLOAD_UNKNOWN`
+    );
+    // The uploader's own message must NOT travel with the failure.
+    expect(error.message).not.toContain("irys exploded");
+  });
+
+  it("a successful upload still claims exactly once and reports no stage", async () => {
+    const meta = metadata();
+    const runtime = makeRuntime(ciphertexts(meta));
+    const uploader = makeUploader();
+    const claim = vi.fn(async () => {});
+
+    const outcome = await uploadPreparedContainer(
+      runtime,
+      meta,
+      uploader.uploader,
+      claim
+    );
+
+    expect(outcome.containerTxId).toBe(CONTAINER_TX);
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(uploader.calls.uploadData).toBe(1);
   });
 });

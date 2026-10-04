@@ -58,6 +58,7 @@ import {
   type ContainerUploadOptions,
 } from "@/lib/storage/container/containerUploader";
 import { computeContainerLayoutDigest } from "@/lib/storage/container/containerPublication";
+import { tagSealFailure } from "@/lib/capsule/sealDiagnostic";
 
 function failClosed(reason: string): never {
   throw new Error(reason);
@@ -131,37 +132,52 @@ export async function uploadPreparedContainer(
   claimContainer: ContainerClaimFn,
   options: ContainerUploadOptions = {}
 ): Promise<ContainerUploadOutcome> {
-  if (!runtime || typeof runtime.read !== "function") {
-    failClosed("[AETERNA] Runtime storage is required");
-  }
-  if (typeof claimContainer !== "function") {
-    failClosed("[AETERNA] A container publication claim is required");
-  }
-
-  const items = groupChunkMetadataByMediaItem(chunkMetadata);
-
-  // buildContainerLayout also validates every ChunkMetadata record.
-  const layout = buildContainerLayout(items);
-
   /**
-   * Canonical ORDERED logical chunk identity — the SAME order the reader
-   * reproduces from the Vault, and the same order the layout digest binds.
+   * Sub-stage A — CONTAINER_UPLOAD_CONSTRUCT.
+   *
+   * Everything before the first wallet interaction: runtime/adapter
+   * validation, chunk grouping, the canonical layout, the layout digest
+   * and the streaming writer. No signature can exist yet.
    */
-  const chunkIds = Object.freeze(layout.entries.map((entry) => entry.chunkId));
+  let chunkIds: readonly string[];
+  let layoutDigest: string;
+  let writer: ReturnType<typeof createContainerWriter>;
 
-  /**
-   * The digest binds ORDER and ciphertext SIZES (which is what fixes the
-   * physical offsets) — it is computed from the layout the writer will
-   * actually emit, so it cannot describe a different byte stream.
-   */
-  const layoutDigest = await computeContainerLayoutDigest(
-    layout.entries.map((entry) => ({
-      chunkId: entry.chunkId,
-      size: entry.length,
-    }))
-  );
+  try {
+    if (!runtime || typeof runtime.read !== "function") {
+      failClosed("[AETERNA] Runtime storage is required");
+    }
+    if (typeof claimContainer !== "function") {
+      failClosed("[AETERNA] A container publication claim is required");
+    }
 
-  const writer = createContainerWriter(layout, runtime);
+    const items = groupChunkMetadataByMediaItem(chunkMetadata);
+
+    // buildContainerLayout also validates every ChunkMetadata record.
+    const layout = buildContainerLayout(items);
+
+    /**
+     * Canonical ORDERED logical chunk identity — the SAME order the reader
+     * reproduces from the Vault, and the same order the layout digest binds.
+     */
+    chunkIds = Object.freeze(layout.entries.map((entry) => entry.chunkId));
+
+    /**
+     * The digest binds ORDER and ciphertext SIZES (which is what fixes the
+     * physical offsets) — it is computed from the layout the writer will
+     * actually emit, so it cannot describe a different byte stream.
+     */
+    layoutDigest = await computeContainerLayoutDigest(
+      layout.entries.map((entry) => ({
+        chunkId: entry.chunkId,
+        size: entry.length,
+      }))
+    );
+
+    writer = createContainerWriter(layout, runtime);
+  } catch (error) {
+    throw tagSealFailure(error, "CONTAINER_UPLOAD_CONSTRUCT");
+  }
 
   let containerTxId: string;
 
@@ -171,8 +187,10 @@ export async function uploadPreparedContainer(
   } catch (error) {
     // Release the producer and rethrow — NO claim is issued for a failed
     // upload, so a failure can never produce a successful publication.
+    // The container uploader's own sub-stage tag (B/C/D/E) is preserved;
+    // only an unclassified failure becomes CONTAINER_UPLOAD_UNKNOWN.
     writer.abort("[AETERNA] Container upload failed");
-    throw error;
+    throw tagSealFailure(error, "CONTAINER_UPLOAD_UNKNOWN");
   }
 
   /**
@@ -182,11 +200,15 @@ export async function uploadPreparedContainer(
    * emitted at exactly `layout.containerSize`.
    */
   if (!writer.stats().completed) {
-    failClosed("[AETERNA] Container stream did not complete");
+    throw tagSealFailure(null, "CONTAINER_UPLOAD_UNKNOWN");
   }
 
   // Only now — ONE container DataItem exists — is the publication claimed.
-  await claimContainer(containerTxId, chunkIds, layoutDigest);
+  try {
+    await claimContainer(containerTxId, chunkIds, layoutDigest);
+  } catch (error) {
+    throw tagSealFailure(error, "CONTAINER_PUBLICATION");
+  }
 
   return Object.freeze({
     containerTxId,

@@ -23,6 +23,12 @@ import type { ChunkingUploader } from "@irys/upload-core";
 import { PublicKey } from "@solana/web3.js";
 import { Buffer } from "buffer";
 
+import {
+  markWalletSignCompleted,
+  tagSealFailure,
+  WALLET_SIGN_FAILURE,
+} from "@/lib/capsule/sealDiagnostic";
+
 /**
  * Irys L1 Mainnet bundler — the endpoint that actually publishes
  * `usdc-solana` in its /info address registry, and therefore the only
@@ -122,10 +128,44 @@ export function toCreatorIrysWallet(wallet: AeternaWalletLike): CreatorIrysWalle
   }
   return {
     publicKey: new PublicKey(wallet.account),
-    signMessage: async (message: Uint8Array) =>
-      (await wallet.signMessage(message)).signature,
-    sendTransaction: async (transaction: unknown /*, connection */) =>
-      (await wallet.signAndSendTransaction(transaction)).signature,
+
+    /**
+     * Diagnostic boundary — the injected wallet rejected the DataItem
+     * signing request.
+     *
+     * The tag is deliberately NEUTRAL (context-free): this adapter is
+     * shared by the vault and the container upload, so it cannot know
+     * which one it serves. `tagSealFailure` replaces the neutral tag
+     * with the owning boundary's stage code.
+     *
+     * A successful call advances the sign-completion probe, which lets
+     * the container uploader separate "signed, then the SDK failed"
+     * from "failed before any signature".
+     *
+     * No message, signature, key or DataItem is recorded — an integer
+     * only.
+     */
+    signMessage: async (message: Uint8Array) => {
+      let signature: Uint8Array;
+      try {
+        signature = (await wallet.signMessage(message)).signature;
+      } catch (error) {
+        throw tagSealFailure(error, WALLET_SIGN_FAILURE);
+      }
+      markWalletSignCompleted();
+      return signature;
+    },
+
+    sendTransaction: async (transaction: unknown /*, connection */) => {
+      let signature: string;
+      try {
+        signature = (await wallet.signAndSendTransaction(transaction)).signature;
+      } catch (error) {
+        throw tagSealFailure(error, WALLET_SIGN_FAILURE);
+      }
+      markWalletSignCompleted();
+      return signature;
+    },
   };
 }
 

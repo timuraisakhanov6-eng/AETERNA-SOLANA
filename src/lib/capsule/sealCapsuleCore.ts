@@ -59,6 +59,11 @@ import {
 
 import { getTrustedTime } from "@/shared/time/getTrustedTime";
 
+import {
+  tagSealFailure,
+  type SealDiagnosticCode,
+} from "@/lib/capsule/sealDiagnostic";
+
 export interface SealCapsuleResult {
 
   capsuleId: string;
@@ -81,6 +86,32 @@ const SEALED_ERROR =
 function sealedError(): never {
 
   throw SEALED_ERROR;
+
+}
+
+/**
+ * Runs `operation`, re-tagging any failure with the stage `code` while
+ * PRESERVING a more precise tag an inner boundary already attached.
+ *
+ * Diagnostic only: it never alters control flow, retry policy, ordering or
+ * the fail-closed contract — it only classifies WHICH stage failed before
+ * the failure is masked. The original exception is never attached, logged
+ * or surfaced; only the fixed public message and the code travel on.
+ */
+async function withSealStage<T>(
+  code: SealDiagnosticCode,
+  operation: () => Promise<T>
+): Promise<T> {
+
+  try {
+
+    return await operation();
+
+  } catch (error) {
+
+    throw tagSealFailure(error, code);
+
+  }
 
 }
 
@@ -944,11 +975,15 @@ export async function sealCapsuleCore(
         deepFreeze(persistedManifest);
 
       const sealRes =
-        await fetchSealWithDeadline({
-          uploadToken: token,
-          manifest: reusedManifest,
-          creatorAuthorityFragment,
-        });
+        await withSealStage(
+          "SEAL_API",
+          () =>
+            fetchSealWithDeadline({
+              uploadToken: token,
+              manifest: reusedManifest,
+              creatorAuthorityFragment,
+            })
+        );
 
       if (!sealRes.ok) {
 
@@ -970,18 +1005,26 @@ export async function sealCapsuleCore(
       // Reuse path: the publication was verified before the original
       // seal commit — no re-upload, no second publication, no second
       // manifest. Only the idempotent seal verify + finalize run here.
-      await verifySealOrThrow(
-        creatorIdentityId,
-        canonicalLifecycleId,
-        capsuleId,
-        reusedManifest
+      await withSealStage(
+        "SEAL_VERIFY",
+        () =>
+          verifySealOrThrow(
+            creatorIdentityId,
+            canonicalLifecycleId,
+            capsuleId,
+            reusedManifest
+          )
       );
 
       const finalized =
-        await finalizeCreditOrPending(
-          creatorIdentityId,
-          canonicalLifecycleId,
-          capsuleId
+        await withSealStage(
+          "FINALIZE_CREDIT",
+          () =>
+            finalizeCreditOrPending(
+              creatorIdentityId,
+              canonicalLifecycleId,
+              capsuleId
+            )
         );
 
       // Retry caches are cleared only on full finalization. While
@@ -1037,10 +1080,14 @@ export async function sealCapsuleCore(
     }
 
     const containerOutcome =
-      await storageAdapter.uploadContainer(
-        runtime,
-        chunkMetadata,
-        token
+      await withSealStage(
+        "CONTAINER_UPLOAD_UNKNOWN",
+        () =>
+          storageAdapter.uploadContainer(
+            runtime,
+            chunkMetadata,
+            token
+          )
       );
 
     /**
@@ -1105,10 +1152,18 @@ export async function sealCapsuleCore(
 
     } else {
 
+      // Bind the narrowed payload to a const: the diagnostic wrapper is a
+      // closure, and TypeScript does not carry a `let` narrowing into one.
+      const vaultPayload = encryptedPayload;
+
       const vaultTxId =
-        await storageAdapter.upload(
-          encryptedPayload,
-          token
+        await withSealStage(
+          "VAULT_UPLOAD",
+          () =>
+            storageAdapter.upload(
+              vaultPayload,
+              token
+            )
         );
 
       txId =
@@ -1138,11 +1193,15 @@ export async function sealCapsuleCore(
      * submitted as evidence only — the server verifies against its
      * own PENDING record created by /api/publication/claim.
      */
-    await verifyPublicationOrThrow(
-      creatorIdentityId,
-      canonicalLifecycleId,
-      capsuleId,
-      txId
+    await withSealStage(
+      "PUBLICATION_VERIFY",
+      () =>
+        verifyPublicationOrThrow(
+          creatorIdentityId,
+          canonicalLifecycleId,
+          capsuleId,
+          txId
+        )
     );
 
     const manifest: ManifestV1 =
@@ -1193,11 +1252,15 @@ export async function sealCapsuleCore(
     );
 
     const sealRes =
-      await fetchSealWithDeadline({
-        uploadToken: token,
-        manifest,
-        creatorAuthorityFragment,
-      });
+      await withSealStage(
+        "SEAL_API",
+        () =>
+          fetchSealWithDeadline({
+            uploadToken: token,
+            manifest,
+            creatorAuthorityFragment,
+          })
+      );
 
     if (!sealRes.ok) {
 
@@ -1216,18 +1279,26 @@ export async function sealCapsuleCore(
 
     }
 
-    await verifySealOrThrow(
-      creatorIdentityId,
-      canonicalLifecycleId,
-      capsuleId,
-      manifest
+    await withSealStage(
+      "SEAL_VERIFY",
+      () =>
+        verifySealOrThrow(
+          creatorIdentityId,
+          canonicalLifecycleId,
+          capsuleId,
+          manifest
+        )
     );
 
     const finalized =
-      await finalizeCreditOrPending(
-        creatorIdentityId,
-        canonicalLifecycleId,
-        capsuleId
+      await withSealStage(
+        "FINALIZE_CREDIT",
+        () =>
+          finalizeCreditOrPending(
+            creatorIdentityId,
+            canonicalLifecycleId,
+            capsuleId
+          )
       );
 
     try {
@@ -1279,11 +1350,24 @@ export async function sealCapsuleCore(
 
   }
 
-  catch {
+  catch (error) {
 
-    sealedError();
-
-    throw sealedError();
+    /**
+     * Diagnostic stage preservation — CRITICAL ORDERING.
+     *
+     * Each inner boundary tags the failure with the exact stage BEFORE it
+     * reaches here; that tag is read FIRST and never overwritten, so the
+     * original failure is classified before anything is masked. Only a
+     * failure no boundary claimed falls back to SEAL_UNKNOWN.
+     *
+     * The propagated error carries ONLY the fixed public message and the
+     * code — never the original exception, its message, or any payload it
+     * may hold (tokens, URLs, bodies, plaintext).
+     *
+     * Fail-closed is unchanged: this catch still throws, exactly as the
+     * previous `sealedError()` did.
+     */
+    throw tagSealFailure(error, "SEAL_UNKNOWN");
 
   }
 

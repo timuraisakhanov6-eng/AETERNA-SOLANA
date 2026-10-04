@@ -47,6 +47,15 @@
 import type { ChunkingUploader } from "@irys/upload-core";
 import type { Readable } from "stream";
 
+import {
+  hasHttpStatusSignal,
+  readSealDiagnostic,
+  tagSealFailure,
+  walletSignCompletedCount,
+  WALLET_SIGN_FAILURE,
+  type SealDiagnosticCode,
+} from "@/lib/capsule/sealDiagnostic";
+
 function failClosed(reason: string): never {
   throw new Error(`[AETERNA] ${reason}`);
 }
@@ -106,6 +115,33 @@ export function assertContainerBatchSize(value: unknown): number {
 }
 
 /**
+ * Sub-stage classifier for a rejection from the SDK's single
+ * `uploadData()` call (sub-stages B–D).
+ *
+ * Only the SHAPE of the failure is inspected — never its message, body,
+ * headers or any other payload.
+ */
+function classifyUploadDataFailure(
+  error: unknown,
+  signatureProduced: boolean
+): SealDiagnosticCode {
+  // B — the injected wallet rejected the signing request.
+  if (readSealDiagnostic(error) === WALLET_SIGN_FAILURE) {
+    return "CONTAINER_UPLOAD_SIGN";
+  }
+
+  // D — the SDK surfaced an HTTP status.
+  if (hasHttpStatusSignal(error)) return "CONTAINER_UPLOAD_HTTP";
+
+  // C — a signature was produced, then the SDK failed without an HTTP
+  // status (chunking, stream or transport failure after signing).
+  if (signatureProduced) return "CONTAINER_UPLOAD_SIGNED";
+
+  // A / unknown — no signature reached the wallet before the failure.
+  return "CONTAINER_UPLOAD_UNKNOWN";
+}
+
+/**
  * Uploads `readable` as ONE Irys DataItem and returns its txId.
  *
  * `uploader` MUST be the real `ChunkingUploader`. The stream MUST be
@@ -117,49 +153,75 @@ export async function uploadContainer(
   readable: Readable,
   options: ContainerUploadOptions = {}
 ): Promise<ContainerUploadResult> {
-  if (!uploader || typeof uploader !== "object") {
-    failClosed("Irys chunking uploader is required");
-  }
-  if (typeof uploader.setChunkSize !== "function" || typeof uploader.setBatchSize !== "function") {
-    failClosed("Irys chunking uploader is not configurable");
-  }
-  if (typeof uploader.uploadData !== "function") {
-    failClosed("Irys chunking uploader cannot upload streams");
-  }
-  if (!readable || typeof readable.pipe !== "function") {
-    failClosed("Container stream must be a Node-style Readable");
+  /**
+   * Sub-stage A — CONTAINER_UPLOAD_CONSTRUCT.
+   *
+   * Adapter shape, stream shape and SDK chunk configuration. Nothing in
+   * this region can produce a creator signature, so a failure here is
+   * unambiguously "before wallet.signMessage".
+   */
+  try {
+    if (!uploader || typeof uploader !== "object") {
+      failClosed("Irys chunking uploader is required");
+    }
+    if (typeof uploader.setChunkSize !== "function" || typeof uploader.setBatchSize !== "function") {
+      failClosed("Irys chunking uploader is not configurable");
+    }
+    if (typeof uploader.uploadData !== "function") {
+      failClosed("Irys chunking uploader cannot upload streams");
+    }
+    if (!readable || typeof readable.pipe !== "function") {
+      failClosed("Container stream must be a Node-style Readable");
+    }
+
+    const chunkSize = assertContainerChunkSize(
+      options.chunkSize ?? PROVISIONAL_CONTAINER_CHUNK_SIZE
+    );
+    const batchSize = assertContainerBatchSize(
+      options.batchSize ?? PROVISIONAL_CONTAINER_BATCH_SIZE
+    );
+
+    // Configure EXPLICITLY — the SDK's own defaults are 25 MB / 5, the
+    // configuration Stage 0 measured as stalling the main thread.
+    uploader.setChunkSize(chunkSize);
+    uploader.setBatchSize(batchSize);
+  } catch (error) {
+    throw tagSealFailure(error, "CONTAINER_UPLOAD_CONSTRUCT");
   }
 
-  const chunkSize = assertContainerChunkSize(
-    options.chunkSize ?? PROVISIONAL_CONTAINER_CHUNK_SIZE
-  );
-  const batchSize = assertContainerBatchSize(
-    options.batchSize ?? PROVISIONAL_CONTAINER_BATCH_SIZE
-  );
-
-  // Configure EXPLICITLY — the SDK's own defaults are 25 MB / 5, the
-  // configuration Stage 0 measured as stalling the main thread.
-  uploader.setChunkSize(chunkSize);
-  uploader.setBatchSize(batchSize);
+  /**
+   * Sub-stages B–D — ONE SDK call.
+   *
+   * DataItem construction, the creator signature and the chunked HTTP
+   * upload all happen inside `uploadData()`. The wallet adapter tags a
+   * rejected signature (B); a produced signature combined with an HTTP
+   * status signal separates C from D. Only the SHAPE of the failure is
+   * inspected — never its message or payload.
+   */
+  const signsBefore = walletSignCompletedCount();
 
   let response: unknown;
   try {
     response = await uploader.uploadData(readable);
   } catch (error) {
-    failClosed(
-      `container upload failed: ${error instanceof Error ? error.message : String(error)}`
+    const signatureProduced = walletSignCompletedCount() > signsBefore;
+    throw tagSealFailure(
+      error,
+      classifyUploadDataFailure(error, signatureProduced)
     );
   }
 
+  /** Sub-stage D (explicit) — the SDK resolved with a non-200 status. */
   const status = (response as { status?: unknown } | null)?.status;
   if (status !== 200) {
-    failClosed(`container upload returned HTTP_${String(status)}`);
+    throw tagSealFailure(null, "CONTAINER_UPLOAD_HTTP");
   }
 
+  /** Sub-stage E — the DataItem exists but the receipt carries no id. */
   const data = (response as { data?: unknown } | null)?.data;
   const id = (data as { id?: unknown } | null)?.id;
   if (typeof id !== "string" || id.length === 0) {
-    failClosed("container upload receipt has no data item id");
+    throw tagSealFailure(null, "CONTAINER_UPLOAD_RECEIPT");
   }
 
   return Object.freeze({ txId: id });

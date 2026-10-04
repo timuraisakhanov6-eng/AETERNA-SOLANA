@@ -270,14 +270,14 @@ describe("container uploader — fails closed", () => {
   it("rejects a missing uploader", async () => {
     await expect(
       uploadContainer(null as never, Readable.from([Buffer.from([1])]))
-    ).rejects.toThrow("[AETERNA] Irys chunking uploader is required");
+    ).rejects.toThrow("CONTAINER_UPLOAD_CONSTRUCT");
   });
 
   it("rejects a non-Readable input", async () => {
     const transport = makeStubTransport();
     await expect(
       uploadContainer(makeUploader(transport), { pipe: undefined } as never)
-    ).rejects.toThrow("[AETERNA] Container stream must be a Node-style Readable");
+    ).rejects.toThrow("CONTAINER_UPLOAD_CONSTRUCT");
   });
 
   it("rejects an out-of-range chunk size", async () => {
@@ -324,7 +324,7 @@ describe("container uploader — fails closed", () => {
 
     await expect(
       uploadContainer(makeUploader(transport), createContainerWriter(layout, runtime).readable)
-    ).rejects.toThrow("[AETERNA] container upload failed");
+    ).rejects.toThrow("CONTAINER_UPLOAD_UNKNOWN");
   }, 120_000);
 
   it("fails closed when the receipt carries no id", async () => {
@@ -350,7 +350,7 @@ describe("container uploader — fails closed", () => {
 
     await expect(
       uploadContainer(makeUploader(transport), createContainerWriter(layout, runtime).readable)
-    ).rejects.toThrow("[AETERNA] container upload receipt has no data item id");
+    ).rejects.toThrow("CONTAINER_UPLOAD_RECEIPT");
   }, 120_000);
 
   it("fails closed on a non-200 upload response", async () => {
@@ -376,6 +376,6 @@ describe("container uploader — fails closed", () => {
 
     await expect(
       uploadContainer(makeUploader(transport), createContainerWriter(layout, runtime).readable)
-    ).rejects.toThrow();
+    ).rejects.toThrow("CONTAINER_UPLOAD_HTTP");
   }, 120_000);
 });
