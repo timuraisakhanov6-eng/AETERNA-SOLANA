@@ -55,7 +55,14 @@ describe("seal diagnostic — stage preservation", () => {
   it("keeps the canonical message prefix for every code", () => {
     for (const code of [
       "CONTAINER_UPLOAD_CONSTRUCT",
+      "CONTAINER_UPLOAD_SIGN",
+      "CONTAINER_UPLOAD_SIGNED",
+      "CONTAINER_UPLOAD_HTTP",
+      "CONTAINER_UPLOAD_RECEIPT",
+      "CONTAINER_UPLOAD_UNKNOWN",
       "CONTAINER_PUBLICATION",
+      "CONTAINER_UPLOADER_BUILD",
+      "CONTAINER_UPLOADER_RPC",
       "VAULT_UPLOAD",
       "PUBLICATION_VERIFY",
       "SEAL_API",

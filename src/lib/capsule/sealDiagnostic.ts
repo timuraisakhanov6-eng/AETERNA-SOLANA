@@ -29,6 +29,9 @@ export type SealDiagnosticCode =
   | "CONTAINER_UPLOAD_RECEIPT"
   | "CONTAINER_UPLOAD_UNKNOWN"
   | "CONTAINER_PUBLICATION"
+  /* The Irys uploader BUILD boundary — before any uploadData call */
+  | "CONTAINER_UPLOADER_BUILD"
+  | "CONTAINER_UPLOADER_RPC"
   /* Later sealing stages */
   | "VAULT_UPLOAD"
   | "PUBLICATION_VERIFY"
@@ -37,6 +40,26 @@ export type SealDiagnosticCode =
   | "FINALIZE_CREDIT"
   /* No boundary classified it */
   | "SEAL_UNKNOWN";
+
+/**
+ * Bounded, NON-SECRET sub-classification of a failure inside the Irys
+ * uploader build boundary (`buildCreatorChunkingUploader`).
+ *
+ * Every member is a fixed literal — never derived from a payload.
+ */
+export type ContainerBuildCategory =
+  /** The injected wallet/provider does not have the required shape. */
+  | "BUILD_ADAPTER"
+  /** The built uploader does not expose the streaming surface AETERNA drives. */
+  | "BUILD_CONFIG"
+  /** No usable same-origin Solana RPC transport. */
+  | "BUILD_RPC_TRANSPORT"
+  /** A Solana JSON-RPC / application-level error (numeric code present). */
+  | "BUILD_RPC_ERROR"
+  /** `builder.build()` threw or returned nothing. */
+  | "BUILD_SDK"
+  /** Anything else on that boundary. */
+  | "BUILD_UNKNOWN";
 
 /**
  * NEUTRAL, CONTEXT-FREE inner tag: the injected wallet rejected a
@@ -175,4 +198,137 @@ export function hasHttpStatusSignal(error: unknown): boolean {
   }
 
   return false;
+}
+
+/* ── Irys uploader BUILD boundary ────────────────────────────────────
+ *
+ * `creatorIrysStorage.uploadContainer()` builds the Irys uploader BEFORE
+ * it uploads anything. Every throw on that boundary used to be untagged,
+ * so it collapsed into CONTAINER_UPLOAD_UNKNOWN and the real cause was
+ * lost. These helpers classify it without retaining any payload.
+ */
+
+/** Property carrying the bounded build sub-classification. */
+export const BUILD_CATEGORY_PROPERTY = "sealBuildCategory";
+
+/** Property carrying a numeric JSON-RPC error code (safe: a number). */
+export const RPC_CODE_PROPERTY = "sealRpcCode";
+
+/**
+ * Attaches a NON-SECRET diagnostic property. Values are fixed literals or
+ * plain numbers only — never a message, body, token, key or signature.
+ */
+function defineDiagnosticProperty(
+  error: Error,
+  name: string,
+  value: string | number
+): void {
+  Object.defineProperty(error, name, {
+    value,
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+}
+
+/**
+ * Numeric JSON-RPC error code, when the failure carries one.
+ *
+ * Recognised shapes (read-only; nothing is retained):
+ *   • `@solana/web3.js` `SolanaJSONRPCError` — `.code` IS the JSON-RPC code;
+ *   • a bare numeric `.code` that is NEGATIVE — JSON-RPC error codes are
+ *     negative, so an unrelated POSITIVE numeric `code` is not mistaken
+ *     for an RPC failure;
+ *   • `data.error.code`.
+ *
+ * Returns the NUMBER only — never a message, data blob, header or URL.
+ */
+export function jsonRpcErrorCode(error: unknown): number | null {
+  if (error === null || typeof error !== "object") return null;
+
+  const candidate = error as Record<string, unknown>;
+
+  const own = candidate["code"];
+  if (
+    typeof own === "number" &&
+    Number.isInteger(own) &&
+    (candidate["name"] === "SolanaJSONRPCError" || own < 0)
+  ) {
+    return own;
+  }
+
+  const data = candidate["data"];
+  if (data !== null && typeof data === "object") {
+    const nested = (data as Record<string, unknown>)["error"];
+    if (nested !== null && typeof nested === "object") {
+      const nestedCode = (nested as Record<string, unknown>)["code"];
+      if (typeof nestedCode === "number" && Number.isInteger(nestedCode)) {
+        return nestedCode;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The SDK's own provider-shape signature: `InjectedSolanaSigner` throws
+ * this when the injected provider has no `publicKey`. Anchored and
+ * bounded; the message is never retained.
+ */
+const ADAPTER_SHAPE_IN_MESSAGE = /provider\.publicKey is undefined/;
+
+/**
+ * Returns the failure to propagate for the Irys uploader BUILD boundary.
+ *
+ * Fires ONLY for failures raised BEFORE `buildCreatorChunkingUploader`
+ * returns. A more precise tag already present is never overwritten.
+ *
+ * The propagated Error carries the fixed public message, the code
+ * (`CONTAINER_UPLOADER_RPC` when a numeric JSON-RPC code is present, else
+ * `CONTAINER_UPLOADER_BUILD`), a bounded category, and — for an RPC
+ * failure — the numeric code. No message, body, token, key, signature or
+ * plaintext is ever attached.
+ */
+export function tagContainerBuildFailure(
+  error: unknown,
+  category: ContainerBuildCategory
+): Error {
+  const existing = readSealDiagnostic(error);
+  if (existing !== null && existing !== WALLET_SIGN_FAILURE) {
+    // A precise inner classification already exists — keep it.
+    return error as Error;
+  }
+
+  const rpcCode = jsonRpcErrorCode(error);
+
+  let resolvedCategory: ContainerBuildCategory = category;
+  if (rpcCode !== null) {
+    resolvedCategory = "BUILD_RPC_ERROR";
+  } else if (category === "BUILD_UNKNOWN") {
+    const message =
+      error !== null && typeof error === "object"
+        ? (error as { message?: unknown }).message
+        : undefined;
+    if (
+      typeof message === "string" &&
+      message.length <= 500 &&
+      ADAPTER_SHAPE_IN_MESSAGE.test(message)
+    ) {
+      resolvedCategory = "BUILD_ADAPTER";
+    }
+  }
+
+  const code: SealDiagnosticCode =
+    rpcCode !== null ? "CONTAINER_UPLOADER_RPC" : "CONTAINER_UPLOADER_BUILD";
+
+  const tagged = new Error(`${SEAL_FAILURE_MESSAGE}: ${code}`);
+
+  defineDiagnosticProperty(tagged, DIAGNOSTIC_PROPERTY, code);
+  defineDiagnosticProperty(tagged, BUILD_CATEGORY_PROPERTY, resolvedCategory);
+  if (rpcCode !== null) {
+    defineDiagnosticProperty(tagged, RPC_CODE_PROPERTY, rpcCode);
+  }
+
+  return tagged;
 }

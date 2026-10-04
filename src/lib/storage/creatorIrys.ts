@@ -25,8 +25,10 @@ import { Buffer } from "buffer";
 
 import {
   markWalletSignCompleted,
+  tagContainerBuildFailure,
   tagSealFailure,
   WALLET_SIGN_FAILURE,
+  type ContainerBuildCategory,
 } from "@/lib/capsule/sealDiagnostic";
 
 /**
@@ -174,6 +176,25 @@ function failClosed(reason: string): never {
 }
 
 /**
+ * Diagnostic-only variant of `failClosed` for the Irys uploader BUILD
+ * boundary.
+ *
+ * The MESSAGE is byte-for-byte the same as `failClosed` would have
+ * produced — the reason keeps its original meaning. Only a bounded,
+ * non-secret diagnostic tag is added before the throw, so the failure can
+ * no longer collapse into an unnamed stage.
+ */
+function buildFailClosed(
+  reason: string,
+  category: ContainerBuildCategory
+): never {
+  throw tagContainerBuildFailure(
+    new Error(`[AETERNA] creatorIrys: ${reason}`),
+    category
+  );
+}
+
+/**
  * Same-origin AETERNA JSON-RPC transport for Irys's Solana reads.
  *
  * Irys's `@solana/web3.js` Connection reads the chain directly, and a browser
@@ -192,8 +213,9 @@ function resolveSameOriginRpcUrl(): string {
   const origin = typeof location !== "undefined" ? location.origin : "";
 
   if (typeof origin !== "string" || origin.length === 0) {
-    failClosed(
-      "a same-origin Solana RPC transport is required (no browser origin available)"
+    buildFailClosed(
+      "a same-origin Solana RPC transport is required (no browser origin available)",
+      "BUILD_RPC_TRANSPORT"
     );
   }
 
@@ -245,19 +267,28 @@ async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string):
     // so no legitimate human interaction is cut short. See the constant.
     .timeout(IRYS_SDK_REQUEST_TIMEOUT_MS);
 
+  // The SDK's own construction / `/info` resolution. A numeric JSON-RPC
+  // error raised here is classified as CONTAINER_UPLOADER_RPC.
+  let builtUploader: unknown;
+  try {
+    builtUploader = await builder.build();
+  } catch (error) {
+    throw tagContainerBuildFailure(error, "BUILD_SDK");
+  }
+
   // The narrow structural view AETERNA consumes (unchanged surface).
   // This is a narrowing cast, not an escape hatch: `BaseWebIrys` is
   // structurally wider (e.g. `fund(amount: BigNumber.Value)`), so the minimal
   // surface AETERNA actually uses is stated explicitly. The previous
   // `as unknown as` cast is gone — it was hiding the real API contract.
-  const uploader = (await builder.build()) as {
+  const uploader = builtUploader as {
     getPrice(byteLength: number): Promise<{ toString(): string }>;
     getBalance(): Promise<{ toString(): string }>;
     fund(amount: { toString(): string }): Promise<unknown>;
     upload(data: Uint8Array): Promise<{ id?: unknown }>;
   } | null;
 
-  if (!uploader) failClosed("failed to build Irys uploader");
+  if (!uploader) buildFailClosed("failed to build Irys uploader", "BUILD_SDK");
   return uploader;
 }
 
@@ -282,18 +313,34 @@ export async function buildCreatorChunkingUploader(
   wallet: CreatorIrysWallet,
   rpcUrl?: string
 ): Promise<ChunkingUploader> {
-  const built = (await buildCreatorUploader(wallet, rpcUrl)) as unknown as Record<
-    string,
-    unknown
-  >;
+  /**
+   * DIAGNOSTIC BOUNDARY — fires ONLY for a failure raised before this
+   * build returns (i.e. before any `uploadData()` call can happen).
+   *
+   * The classification is bounded and non-secret: a precise inner tag
+   * (RPC transport / SDK build / uploader surface) is preserved, a
+   * numeric JSON-RPC error becomes CONTAINER_UPLOADER_RPC with the code
+   * retained as a number, and anything else becomes
+   * CONTAINER_UPLOADER_BUILD. No message, token, key, signature or
+   * plaintext is ever attached, and no behaviour changes — the throw
+   * still aborts the seal exactly as before.
+   */
+  try {
+    const built = (await buildCreatorUploader(wallet, rpcUrl)) as unknown as Record<
+      string,
+      unknown
+    >;
 
-  for (const method of ["setChunkSize", "setBatchSize", "uploadData"] as const) {
-    if (typeof built[method] !== "function") {
-      failClosed(`Irys uploader does not expose ${method}`);
+    for (const method of ["setChunkSize", "setBatchSize", "uploadData"] as const) {
+      if (typeof built[method] !== "function") {
+        buildFailClosed(`Irys uploader does not expose ${method}`, "BUILD_CONFIG");
+      }
     }
-  }
 
-  return built as unknown as ChunkingUploader;
+    return built as unknown as ChunkingUploader;
+  } catch (error) {
+    throw tagContainerBuildFailure(error, "BUILD_UNKNOWN");
+  }
 }
 
 /**
