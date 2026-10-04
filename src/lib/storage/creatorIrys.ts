@@ -293,21 +293,31 @@ async function buildCreatorUploader(wallet: CreatorIrysWallet, rpcUrl?: string):
 }
 
 /**
- * Stage 4.5 — the SAME Irys uploader, declared with the SDK's streaming
- * (`ChunkingUploader`) surface so the Stage 3 container uploader can drive it.
+ * Stage 4.5 — the REAL SDK `ChunkingUploader` that drives the Container V1
+ * stream, obtained from the identical `buildCreatorUploader()` instance the
+ * vault path uses.
  *
- * This is NOT a second uploader and NOT a second wallet path: it builds the
- * identical object `uploadCreatorData()` uses, from the identical
- * `buildCreatorUploader()` call. Only the DECLARED type is widened, because
- * the concrete `BaseWebIrys` instance implements `setChunkSize` /
- * `setBatchSize` / `uploadData` while the narrow view used by the per-chunk
- * path does not mention them.
+ * WHERE THE STREAMING SURFACE ACTUALLY LIVES (measured, @irys/upload-core
+ * 0.0.10): it is NOT on the `Irys` / `BaseWebIrys` object that
+ * `builder.build()` returns. `setChunkSize` / `setBatchSize` exist ONLY on
+ * `ChunkingUploader`, and `Uploader` exposes it through the
+ * `chunkedUploader` GETTER:
  *
- * Fail-closed: if the installed SDK does not actually expose the streaming
- * surface, this throws rather than silently degrading to a non-streaming
- * upload. The wallet prompt behaviour is unchanged — the container path makes
- * exactly ONE `uploadData()` call and therefore exactly ONE creator
- * signature, the same as the SDK's own per-DataItem signing.
+ *     get chunkedUploader() { return new ChunkingUploader(this.tokenConfig, this.api); }
+ *
+ * The getter therefore CONSTRUCTS A NEW uploader on every access, so it is
+ * read EXACTLY ONCE here and the resulting instance is the one the container
+ * path drives. (On this version `useChunking` is a SETTER — `uploader.useChunking
+ * = true` — not a method, so it cannot be called.)
+ *
+ * This is NOT a second uploader and NOT a second wallet path: the
+ * `ChunkingUploader` is built from the SAME `tokenConfig` (hence the same
+ * injected wallet / signer) and the SAME node API client. The container path
+ * still makes exactly ONE `uploadData()` call against ONE instance, and the
+ * SDK still produces exactly ONE creator signature for that DataItem.
+ *
+ * Fail-closed: if the installed SDK does not expose the streaming surface,
+ * this throws rather than silently degrading to a non-streaming upload.
  */
 export async function buildCreatorChunkingUploader(
   wallet: CreatorIrysWallet,
@@ -326,18 +336,34 @@ export async function buildCreatorChunkingUploader(
    * still aborts the seal exactly as before.
    */
   try {
-    const built = (await buildCreatorUploader(wallet, rpcUrl)) as unknown as Record<
-      string,
-      unknown
-    >;
+    const irys = (await buildCreatorUploader(wallet, rpcUrl)) as unknown as {
+      uploader?: { chunkedUploader?: unknown };
+    };
+
+    /**
+     * Read the `chunkedUploader` getter EXACTLY ONCE: on this SDK version it
+     * constructs a new `ChunkingUploader` per access, and the container path
+     * must drive ONE instance for ONE `uploadData()` call.
+     */
+    const chunkingUploader = irys?.uploader?.chunkedUploader;
+
+    if (!chunkingUploader || typeof chunkingUploader !== "object") {
+      buildFailClosed(
+        "Irys instance does not expose a chunking uploader",
+        "BUILD_CONFIG"
+      );
+    }
 
     for (const method of ["setChunkSize", "setBatchSize", "uploadData"] as const) {
-      if (typeof built[method] !== "function") {
-        buildFailClosed(`Irys uploader does not expose ${method}`, "BUILD_CONFIG");
+      if (typeof (chunkingUploader as Record<string, unknown>)[method] !== "function") {
+        buildFailClosed(
+          `Irys chunking uploader does not expose ${method}`,
+          "BUILD_CONFIG"
+        );
       }
     }
 
-    return built as unknown as ChunkingUploader;
+    return chunkingUploader as ChunkingUploader;
   } catch (error) {
     throw tagContainerBuildFailure(error, "BUILD_UNKNOWN");
   }

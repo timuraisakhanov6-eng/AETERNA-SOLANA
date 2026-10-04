@@ -17,6 +17,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ChunkingUploader, Irys, Uploader } from "@irys/upload-core";
 
 import {
   BUILD_CATEGORY_PROPERTY,
@@ -56,12 +57,28 @@ const WALLET = {
 
 const RPC_URL = "https://example.invalid/api/solana/rpc";
 
-function workingUploader() {
+/**
+ * The streaming surface — lives on the SDK's `ChunkingUploader`, NOT on the
+ * `Irys`/`BaseWebIrys` instance that `builder.build()` returns.
+ */
+function chunkingSurface() {
   return {
-    setChunkSize() {},
-    setBatchSize() {},
+    setChunkSize() {
+      return this;
+    },
+    setBatchSize() {
+      return this;
+    },
     uploadData: async () => ({ status: 200, data: { id: "tx" } }),
   };
+}
+
+/**
+ * The shape `builder.build()` really returns: an Irys instance whose
+ * `uploader.chunkedUploader` GETTER yields the streaming uploader.
+ */
+function irysWithChunking(surface: unknown = chunkingSurface()) {
+  return { uploader: { chunkedUploader: surface } };
 }
 
 async function buildStage(
@@ -108,8 +125,21 @@ describe("Irys uploader build boundary — stage classification", () => {
     );
   });
 
-  it("A. an uploader without the streaming surface → CONTAINER_UPLOADER_BUILD (BUILD_CONFIG)", async () => {
-    hoisted.buildImpl.mockResolvedValue({ setChunkSize() {} });
+  it("A. an Irys instance with no chunking uploader → CONTAINER_UPLOADER_BUILD (BUILD_CONFIG)", async () => {
+    hoisted.buildImpl.mockResolvedValue({ uploader: {} });
+
+    const { code, error } = await buildStage();
+
+    expect(code).toBe("CONTAINER_UPLOADER_BUILD");
+    expect(
+      (error as Record<string, unknown>)[BUILD_CATEGORY_PROPERTY]
+    ).toBe("BUILD_CONFIG");
+  });
+
+  it("A. a chunking uploader without the streaming surface → BUILD_CONFIG", async () => {
+    hoisted.buildImpl.mockResolvedValue(
+      irysWithChunking({ setChunkSize() {} })
+    );
 
     const { code, error } = await buildStage();
 
@@ -190,11 +220,40 @@ describe("Irys uploader build boundary — stage classification", () => {
   });
 
   it("B. a successful build creates NO build failure", async () => {
-    hoisted.buildImpl.mockResolvedValue(workingUploader());
+    hoisted.buildImpl.mockResolvedValue(irysWithChunking());
 
     const { code } = await buildStage();
 
     expect(code).toBeNull();
+  });
+
+  it("B. the returned uploader exposes setChunkSize / setBatchSize / uploadData", async () => {
+    hoisted.buildImpl.mockResolvedValue(irysWithChunking());
+
+    const uploader = await buildCreatorChunkingUploader(WALLET as never, RPC_URL);
+
+    expect(typeof uploader.setChunkSize).toBe("function");
+    expect(typeof uploader.setBatchSize).toBe("function");
+    expect(typeof uploader.uploadData).toBe("function");
+  });
+
+  it("B. the chunking uploader is read EXACTLY ONCE (getter constructs per access)", async () => {
+    let reads = 0;
+    const surface = chunkingSurface();
+
+    hoisted.buildImpl.mockResolvedValue({
+      uploader: {
+        get chunkedUploader() {
+          reads++;
+          return surface;
+        },
+      },
+    });
+
+    const uploader = await buildCreatorChunkingUploader(WALLET as never, RPC_URL);
+
+    expect(reads).toBe(1);
+    expect(uploader).toBe(surface as never);
   });
 });
 
@@ -241,6 +300,114 @@ describe("Irys uploader build boundary — nothing sensitive travels", () => {
     await expect(
       buildCreatorChunkingUploader(WALLET as never, RPC_URL)
     ).rejects.toThrow(`${SEAL_FAILURE_MESSAGE}: CONTAINER_UPLOADER_BUILD`);
+  });
+});
+
+describe("REAL SDK contract — regression guard for the root cause", () => {
+  it("the streaming surface is NOT on Irys / BaseWebIrys", () => {
+    const proto = Irys.prototype as unknown as Record<string, unknown>;
+
+    expect(typeof proto["setChunkSize"]).not.toBe("function");
+    expect(typeof proto["setBatchSize"]).not.toBe("function");
+    // The Irys instance only delegates `upload`, never `uploadData`.
+    expect(typeof proto["uploadData"]).not.toBe("function");
+  });
+
+  it("`chunkedUploader` is a GETTER (no setter) on Uploader", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Uploader.prototype,
+      "chunkedUploader"
+    );
+
+    expect(typeof descriptor?.get).toBe("function");
+    expect(descriptor?.set).toBeUndefined();
+  });
+
+  it("`useChunking` is a SETTER on this version, NOT a method", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Uploader.prototype,
+      "useChunking"
+    );
+
+    expect(typeof descriptor?.set).toBe("function");
+    expect(descriptor?.get).toBeUndefined();
+  });
+
+  it("a real Uploader yields a ChunkingUploader carrying the streaming surface", () => {
+    const tokenConfig = {
+      name: "usdc-solana",
+      irys: { bundles: {} },
+      getSigner: () => ({}),
+    };
+
+    const uploader = new Uploader(
+      {} as never,
+      {} as never,
+      "usdc-solana" as never,
+      tokenConfig as never,
+      undefined as never
+    );
+
+    const chunking = (uploader as unknown as { chunkedUploader: ChunkingUploader })
+      .chunkedUploader;
+
+    expect(chunking).toBeInstanceOf(ChunkingUploader);
+    expect(typeof chunking.setChunkSize).toBe("function");
+    expect(typeof chunking.setBatchSize).toBe("function");
+    expect(typeof chunking.uploadData).toBe("function");
+  });
+});
+
+describe("container path — one uploadData call, no extra signing", () => {
+  beforeEach(() => {
+    hoisted.buildImpl.mockReset();
+  });
+
+  it("F. the built uploader is driven with exactly ONE uploadData call", async () => {
+    let uploadDataCalls = 0;
+    const surface = {
+      setChunkSize() {
+        return this;
+      },
+      setBatchSize() {
+        return this;
+      },
+      async uploadData() {
+        uploadDataCalls++;
+        return { status: 200, data: { id: "tx" } };
+      },
+    };
+
+    hoisted.buildImpl.mockResolvedValue(irysWithChunking(surface));
+
+    const uploader = await buildCreatorChunkingUploader(WALLET as never, RPC_URL);
+    await uploader.uploadData({} as never);
+
+    expect(uploadDataCalls).toBe(1);
+  });
+
+  it("G. building the chunking uploader never invokes the injected wallet", async () => {
+    let signCalls = 0;
+    let sendCalls = 0;
+
+    const wallet = {
+      publicKey: { toBuffer: () => new Uint8Array(32) },
+      signMessage: async () => {
+        signCalls++;
+        return new Uint8Array(64);
+      },
+      sendTransaction: async () => {
+        sendCalls++;
+        return { signature: "sig" };
+      },
+    };
+
+    hoisted.buildImpl.mockResolvedValue(irysWithChunking());
+
+    await buildCreatorChunkingUploader(wallet as never, RPC_URL);
+
+    expect(signCalls).toBe(0);
+    expect(sendCalls).toBe(0);
   });
 });
 
