@@ -167,6 +167,26 @@ export default function CapsuleOpened({
         if (cancelled) return;
 
         /**
+         * The capsule's canonical per-item chunk metadata, read from the
+         * OPENED Vault. This is the content signal that decides the media
+         * channel — never the presence or absence of a publication record.
+         *
+         * `chunkMetadata.length === 0` means the capsule has NO media bytes
+         * (a text-only capsule): its content lives entirely in the Vault, so
+         * the Vault-only path is canonical and no container is expected.
+         */
+        const items =
+          (openedVault.capsule?.items ?? []).map(
+            (item) =>
+              ((item as { chunks?: readonly ChunkMetadata[] }).chunks ?? [])
+          );
+
+        const hasChunks =
+          items.some(
+            (group) => Array.isArray(group) && group.length > 0
+          );
+
+        /**
          * CONTAINER V1: the publication record is the media authority.
          *
          * Every logical chunk's position is DERIVED from the canonical Vault
@@ -175,20 +195,31 @@ export default function CapsuleOpened({
          * count / identity / layoutDigest mismatch, so a record that does not
          * describe this Vault can never resolve.
          *
-         * A missing publication fails closed: Container V1 is the ONLY media
-         * model, so there is no legacy fallback.
+         * Media vs text-only is decided by the capsule's OWN content:
+         *
+         *   • has media chunks but NO container  → FAIL CLOSED. Container V1
+         *     is the ONLY media model, so there is no legacy fallback.
+         *
+         *   • NO media chunks (text-only)        → the Vault-only capsule is
+         *     VALID and simply has no container chunks. This is an explicit
+         *     content-based branch, NOT "missing container = valid": a
+         *     capsule that HAS chunks still fails closed without a record.
          */
         if (readout.container === null) {
-          throw new Error(
-            "[AETERNA] Container publication is required"
-          );
-        }
+          if (hasChunks) {
+            throw new Error(
+              "[AETERNA] Container publication is required"
+            );
+          }
 
-        const items =
-          (openedVault.capsule?.items ?? []).map(
-            (item) =>
-              ((item as { chunks?: readonly ChunkMetadata[] }).chunks ?? [])
+          if (cancelled) return;
+
+          setContainerChunks(
+            new Map<string, PublishedChunkMetadata>()
           );
+
+          return;
+        }
 
         const resolved =
           await resolveContainerChunks(

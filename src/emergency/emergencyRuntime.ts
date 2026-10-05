@@ -102,10 +102,17 @@ export async function initEmergencyRuntime({
   const publicationReadout = await getChunkPointerReadout(manifest.capsuleId);
   const publication = publicationReadout.container;
 
-  if (!publication) {
-    status.textContent = "Capsule publication unavailable.";
-    return;
-  }
+  /**
+   * NOTE: a missing container publication is NOT, by itself, fatal.
+   *
+   * A text-only capsule (zero media chunks) is canonical WITHOUT a
+   * container: its content lives entirely in the Vault. The media vs
+   * text-only decision is therefore made from the capsule's OWN chunk
+   * metadata AFTER the Vault is opened (below) — never from the mere
+   * absence of a record. This emergency path only adds that required
+   * zero-chunk Vault-only behaviour; it does not otherwise become
+   * container-aware.
+   */
 
   let nowUtc: number;
   try {
@@ -159,13 +166,34 @@ export async function initEmergencyRuntime({
       manifest,
     });
 
-    const resolvedChunks = await resolveContainerChunks(
+    const itemChunkGroups =
       (vault?.capsule?.items ?? []).map(
         (item) =>
           ((item as { chunks?: readonly ChunkMetadata[] }).chunks ?? [])
-      ),
-      publication
-    );
+      );
+
+    const hasChunks =
+      itemChunkGroups.some(
+        (group) => Array.isArray(group) && group.length > 0
+      );
+
+    /**
+     * Text-only capsule (no media chunks) → there is no container and none
+     * is expected: it opens Vault-only. A capsule WITH chunks but no
+     * container publication fails closed — Container V1 is the only media
+     * model and there is no legacy fallback.
+     */
+    if (!publication && hasChunks) {
+      status.textContent = "Capsule publication unavailable.";
+      return;
+    }
+
+    const resolvedChunks = publication
+      ? await resolveContainerChunks(
+          itemChunkGroups,
+          publication
+        )
+      : [];
 
     renderEmergencyVault(root, vault, status, resolvedChunks);
     status.textContent = "Capsule opened.";

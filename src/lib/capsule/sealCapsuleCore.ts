@@ -1063,45 +1063,62 @@ export async function sealCapsuleCore(
     }
 
     /**
-     * Canonical Container V1 media upload — the ONE and ONLY path.
+     * Canonical media upload — an EXPLICIT, content-based branch.
      *
-     * The whole media payload is published as ONE container DataItem and
-     * claimed with ONE container publication claim. There is deliberately
-     * NO per-chunk fallback: an adapter that cannot upload containers
-     * fails closed rather than silently degrading.
+     * The channel is decided from the capsule's OWN chunk metadata, BEFORE
+     * any upload is attempted — never from a failed upload and never from
+     * the absence of a record:
+     *
+     *   • chunkMetadata.length > 0  → Container V1: the whole media payload
+     *     is published as ONE container DataItem and claimed with ONE
+     *     container publication claim. There is deliberately NO per-chunk
+     *     fallback: an adapter that cannot upload containers fails closed
+     *     rather than silently degrading.
+     *
+     *   • chunkMetadata.length === 0 → Vault-only: a text-only capsule has
+     *     no media bytes, so there is no container to build and no
+     *     publication to claim. Its content already lives in the Vault,
+     *     which the unconditional Vault upload below publishes.
+     *
+     * This is NOT a fallback and NOT a silent degradation: the zero-chunk
+     * case never calls uploadContainer() and never reacts to a container
+     * error. A capsule that HAS chunks still takes the container path and
+     * still fails closed on any container failure.
      */
-    if (
-      typeof storageAdapter.uploadContainer !==
-      "function"
-    ) {
-      throw new Error(
-        "[AETERNA] The storage adapter cannot upload containers"
-      );
+    if (chunkMetadata.length > 0) {
+      if (
+        typeof storageAdapter.uploadContainer !==
+        "function"
+      ) {
+        throw new Error(
+          "[AETERNA] The storage adapter cannot upload containers"
+        );
+      }
+
+      const containerOutcome =
+        await withSealStage(
+          "CONTAINER_UPLOAD_UNKNOWN",
+          () =>
+            storageAdapter.uploadContainer(
+              runtime,
+              chunkMetadata,
+              token
+            )
+        );
+
+      /**
+       * Stage 4 — media upload outcome contract, container mode.
+       *
+       * N logical chunks → 1 physical container publication. The contract
+       * verifies the published set IS the expected set, that every chunk is
+       * represented exactly once, and that a multi-chunk capsule is not
+       * published as a single-chunk container.
+       */
+      assertSealUploadOutcome(chunkMetadata, {
+        mode: "container",
+        containerChunkIds: containerOutcome.chunkIds,
+      });
     }
-
-    const containerOutcome =
-      await withSealStage(
-        "CONTAINER_UPLOAD_UNKNOWN",
-        () =>
-          storageAdapter.uploadContainer(
-            runtime,
-            chunkMetadata,
-            token
-          )
-      );
-
-    /**
-     * Stage 4 — media upload outcome contract, container mode.
-     *
-     * N logical chunks → 1 physical container publication. The contract
-     * verifies the published set IS the expected set, that every chunk is
-     * represented exactly once, and that a multi-chunk capsule is not
-     * published as a single-chunk container.
-     */
-    assertSealUploadOutcome(chunkMetadata, {
-      mode: "container",
-      containerChunkIds: containerOutcome.chunkIds,
-    });
 
     const nowUtc =
       await getTrustedTime();
