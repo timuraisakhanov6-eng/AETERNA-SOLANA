@@ -13,6 +13,7 @@
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { sha256 } from "../../lib/sha256";
+import { canonicalStringify } from "../../lib/canonicalManifest";
 
 /* ================= ENV ================= */
 
@@ -88,8 +89,19 @@ function sealKey(lifecycleId: string): string {
   return `creator:seal:${lifecycleId}`;
 }
 
+/**
+ * Manifest identity is defined by the SINGLE canonical serialization
+ * shared with /api/capsule/seal (functions/lib/canonicalManifest).
+ *
+ * Both the stored and the submitted manifest MUST pass through this
+ * exact serializer, so two semantically identical manifests never
+ * diverge on object key order. Using plain JSON.stringify here was the
+ * cause of the 409 MANIFEST_MISMATCH production failure: the stored
+ * form is canonical (key-sorted) while the client submits declaration
+ * order. Never fall back to JSON.stringify for manifest identity.
+ */
 async function computeManifestHash(manifest: unknown): Promise<string> {
-  const text = JSON.stringify(manifest);
+  const text = canonicalStringify(manifest);
   const digest = await sha256(new TextEncoder().encode(text));
   return `manifest:${digest}`;
 }

@@ -33,6 +33,9 @@ import {
 import {
   MAX_ENCRYPTED_VAULT_SIZE
 } from "../../../src/lib/crypto/constants";
+import {
+  canonicalStringify,
+} from "../../lib/canonicalManifest";
 
 /* ================= ENV BINDINGS ================= */
 
@@ -159,24 +162,6 @@ function isPlainObject(
     return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(canonicalize);
-  }
-  if (isPlainObject(value)) {
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      sorted[key] = canonicalize(value[key]);
-    }
-    return sorted;
-  }
-  return value;
-}
-
-function canonicalStringify(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
 }
 
 function isValidChunkPointers(
