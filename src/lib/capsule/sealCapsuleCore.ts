@@ -813,6 +813,7 @@ export async function sealCapsuleCore(
     capsuleId,
     saltBase,
     openAt,
+    description,
     uploadToken,
     canonicalLifecycleId,
     creatorIdentityId,
@@ -1229,6 +1230,11 @@ export async function sealCapsuleCore(
 
         capsuleId:
           refinedCapsuleId,
+
+        ...(typeof description === "string" &&
+        description.length > 0
+          ? { description }
+          : {}),
 
         saltBase:
           refinedSaltBase,
