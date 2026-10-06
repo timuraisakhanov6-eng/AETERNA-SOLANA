@@ -852,7 +852,7 @@ export default function CapsuleController({
                   "warn",
                   "[AETERNA] confirmPresence: missing authority fragment"
                 );
-                return;
+                return "rejected";
               }
 
               try {
@@ -861,7 +861,7 @@ export default function CapsuleController({
                   await getTrustedTime();
 
                 if (stale())
-                  return;
+                  return "rejected";
 
                 const {
                   confirmPresence
@@ -872,7 +872,7 @@ export default function CapsuleController({
                 // FINDING 1 — a stale confirmation must not fire a
                 // server call for the previous capsule.
                 if (stale())
-                  return;
+                  return "rejected";
 
                 const result =
                   await confirmPresence({
@@ -899,7 +899,7 @@ export default function CapsuleController({
                 if (result === "confirmed") {
 
                   if (stale())
-                    return;
+                    return "confirmed";
 
                   devLog(
                     "log",
@@ -910,7 +910,7 @@ export default function CapsuleController({
                   try {
                     const freshRecord = await loadHeartbeatRecord(capsuleId);
                     if (stale())
-                      return;
+                      return "confirmed";
                     const freshTs = freshRecord?.lastConfirmedAt;
                     if (
                       typeof freshTs === "number" &&
@@ -960,6 +960,11 @@ export default function CapsuleController({
 
                 }
 
+                // Surface the authoritative outcome to the caller.
+                // The view arms the 15-min cooldown ONLY for
+                // "confirmed"; every other value re-enables the button.
+                return result;
+
               } catch (error) {
 
                 devLog(
@@ -967,6 +972,8 @@ export default function CapsuleController({
                   "[AETERNA] confirmPresence failed",
                   error
                 );
+
+                return "network-error";
 
               }
 

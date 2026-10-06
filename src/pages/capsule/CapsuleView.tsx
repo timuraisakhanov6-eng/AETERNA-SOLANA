@@ -9,6 +9,15 @@ import {
 import { cn } from "@/lib/utils";
 import { getUiTime } from "@/lib/utils/getUiTime";
 import QRCode from "qrcode";
+import type { ConfirmPresenceResult } from "@/lib/heartbeat/confirmPresence";
+import {
+  HEARTBEAT_COOLDOWN_MS,
+  heartbeatCooldownKey,
+  remainingCooldownMs,
+  runConfirmPresenceAttempt,
+  purgeLegacyCooldown,
+  clearInvalidConfirmedRecord,
+} from "@/lib/heartbeat/confirmPresenceCooldown";
 
 /* ===== TYPES ===== */
 
@@ -20,7 +29,7 @@ export type CapsuleViewState =
 
       authorityMode?: boolean;
 
-      onConfirmPresence?: () => Promise<void>;
+      onConfirmPresence?: () => Promise<ConfirmPresenceResult>;
 
       title?: string;
 
@@ -82,12 +91,9 @@ export default function CapsuleView({ state, className }: Props) {
   const [confirming, setConfirming] = useState(false);
   const [heartbeatCooldownActive, setHeartbeatCooldownActive] = useState(false);
 
-  const HEARTBEAT_COOLDOWN_MS =
-    15 * 60 * 1000;
-
-  const heartbeatCooldownKey =
+  const heartbeatCooldownKeyValue =
     state.status === "preview"
-      ? `aeterna-heartbeat-${state.capsuleId}`
+      ? heartbeatCooldownKey(state.capsuleId)
       : "";
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyCreatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -137,15 +143,27 @@ export default function CapsuleView({ state, className }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!heartbeatCooldownKey) return;
-    const last = localStorage.getItem(heartbeatCooldownKey);
-    if (!last) return;
-    const elapsed = Date.now() - Number(last);
-    if (Number.isFinite(elapsed) && elapsed < HEARTBEAT_COOLDOWN_MS) {
-      activateHeartbeatCooldown(HEARTBEAT_COOLDOWN_MS - elapsed);
+    if (!heartbeatCooldownKeyValue) return;
+    // HARDENING (v2): the legacy unversioned key was written on ANY
+    // outcome by an earlier buggy build and is NEVER trustworthy.
+    // Purge it (best-effort) so it can never arm a cooldown.
+    purgeLegacyCooldown(localStorage, state.status === "preview" ? state.capsuleId : "");
+    // Drop a corrupt / wrong-version v2 value so it cannot linger.
+    clearInvalidConfirmedRecord(localStorage, heartbeatCooldownKeyValue);
+    // Restore the cooldown ONLY from a valid v2 SUCCESSFUL
+    // confirmation record. A malformed / absent value yields 0.
+    const remaining = remainingCooldownMs(
+      localStorage,
+      heartbeatCooldownKeyValue,
+      Date.now()
+    );
+    if (remaining > 0) {
+      activateHeartbeatCooldown(remaining);
     }
+  // heartbeatCooldownKeyValue is the derived capsule-scoped key; the
+  // effect must re-run only when that key changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [heartbeatCooldownKey]);
+  }, [heartbeatCooldownKeyValue]);
 
   const openAtPrimitive = state.status === "preview" ? state.openAt : 0;
   const daysLeft = useMemo(
@@ -296,63 +314,41 @@ export default function CapsuleView({ state, className }: Props) {
     if (confirming)
       return;
 
+    // Guard + invoke + cooldown arming are owned by the single pure
+    // helper. The click is blocked ONLY by an ACTIVE cooldown backed
+    // by a persisted SUCCESSFUL confirmation timestamp; the cooldown
+    // arms ONLY on a "confirmed" result.
+    setConfirming(true);
+
     try {
 
-      if (heartbeatCooldownKey) {
+      await runConfirmPresenceAttempt({
+        handler: handleConfirmPresence,
+        storage: localStorage,
+        key: heartbeatCooldownKeyValue,
+        nowMs: () => Date.now(),
+        legacyCapsuleId:
+          state.status === "preview" ? state.capsuleId : "",
+        onConfirmed: () => {
+          setConfirmSuccess(true);
+          activateHeartbeatCooldown(HEARTBEAT_COOLDOWN_MS);
 
-        const lastHeartbeat =
-          localStorage.getItem(
-            heartbeatCooldownKey
-          );
+          if (confirmTimerRef.current)
+            clearTimeout(confirmTimerRef.current);
 
-        if (lastHeartbeat) {
-
-          const elapsed =
-            Date.now() -
-            Number(lastHeartbeat);
-
-          if (
-            Number.isFinite(elapsed) &&
-            elapsed <
-              HEARTBEAT_COOLDOWN_MS
-          ) {
-
-            return;
-
-          }
-
-        }
-
-      }
-
-      setConfirming(true);
-
-      await handleConfirmPresence();
-
-      setConfirmSuccess(true);
-      activateHeartbeatCooldown(HEARTBEAT_COOLDOWN_MS);
-
-      if (heartbeatCooldownKey) {
-
-        localStorage.setItem(
-          heartbeatCooldownKey,
-          String(Date.now())
-        );
-
-      }
-
-      if (confirmTimerRef.current)
-        clearTimeout(confirmTimerRef.current);
-
-      confirmTimerRef.current =
-        setTimeout(
-          () => setConfirmSuccess(false),
-          3000
-        );
+          confirmTimerRef.current =
+            setTimeout(
+              () => setConfirmSuccess(false),
+              3000
+            );
+        },
+      });
 
     } catch {
 
-      // ignore
+      // runConfirmPresenceAttempt never throws for a handler error
+      // (it maps to "network-error"); this guards only against an
+      // unexpected internal fault so the button can never stick.
 
     } finally {
 
