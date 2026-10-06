@@ -158,6 +158,170 @@ function readCachedVaultTxId(capsuleId: string): ArweaveTxId | null {
 
 }
 
+/* ── Container retry cache ────────────────────────────────────────
+ *
+ * Lost-response / late-failure retry cache for the Container V1 upload.
+ *
+ * WHY THIS EXISTS (root cause)
+ * ----------------------------
+ * The Vault upload already had a txId cache, but the Container upload
+ * did NOT. A container DataItem is produced by ONE `uploadData()` call
+ * that carries ONE creator signature — so if the container upload
+ * succeeded but a LATER stage (vault upload, publication verify, seal
+ * commit, seal verify) failed, a retry re-entered the container branch
+ * and re-signed a NEW container DataItem, costing an extra Phantom
+ * `signMessage` prompt for data that was already published.
+ *
+ * WHAT IS CACHED
+ * --------------
+ * The FULL immutable outcome of a successful container upload —
+ * `containerTxId` PLUS the `chunkIds` and `layoutDigest` it was
+ * published with. The chunkIds/layoutDigest are NOT decoration: they are
+ * exactly what `assertSealUploadOutcome()` re-checks, so a reused
+ * container outcome is re-validated against the current chunk set and
+ * fails closed if the capsule's media changed since the upload.
+ *
+ * FAIL-CLOSED CONTRACT
+ * --------------------
+ * A cache entry is accepted ONLY when it is well-formed:
+ *   • a structurally valid storage-pointer txId (assertArweaveTxId),
+ *   • a non-empty array of chunk ids,
+ *   • a sha256-shaped layoutDigest.
+ * Anything missing, malformed, truncated or ambiguous returns null and
+ * falls back to a normal first upload. The cache NEVER invents a txId,
+ * never fabricates a chunk set and never guesses a digest. Like the
+ * vault cache, this is client-side EVIDENCE only — the server-side
+ * PENDING publication record remains authoritative at verify time, so a
+ * stale/poisoned entry fails closed there too.
+ */
+
+/** sessionStorage key for the container upload outcome of one capsule. */
+function containerCacheKey(capsuleId: string): string {
+  return `aeterna-container-upload:${capsuleId}`;
+}
+
+/**
+ * Read a previously recorded container upload outcome for this capsule.
+ * Returns null unless EVERY field is present and well-formed.
+ */
+function readCachedContainerOutcome(
+  capsuleId: string
+): { containerTxId: string; chunkIds: readonly string[]; layoutDigest: string } | null {
+
+  try {
+
+    const raw = sessionStorage.getItem(containerCacheKey(capsuleId));
+
+    if (typeof raw !== "string" || raw.length === 0) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as {
+      containerTxId?: unknown;
+      chunkIds?: unknown;
+      layoutDigest?: unknown;
+    } | null;
+
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    const { containerTxId, chunkIds, layoutDigest } = parsed;
+
+    // txId must be a structurally valid storage pointer.
+    if (typeof containerTxId !== "string") {
+      return null;
+    }
+    assertArweaveTxId(containerTxId);
+
+    // Chunk ids must be a non-empty array of non-empty strings.
+    if (!Array.isArray(chunkIds) || chunkIds.length === 0) {
+      return null;
+    }
+    for (const id of chunkIds) {
+      if (typeof id !== "string" || id.length === 0) {
+        return null;
+      }
+    }
+
+    // layoutDigest must be sha256-shaped.
+    if (typeof layoutDigest !== "string" || !SHA256_REGEX.test(layoutDigest)) {
+      return null;
+    }
+
+    return {
+      containerTxId,
+      chunkIds: [...(chunkIds as string[])],
+      layoutDigest,
+    };
+
+  } catch {
+
+    return null;
+
+  }
+
+}
+
+/**
+ * Persist the immutable outcome of a successful container upload so a
+ * retry can reuse the EXISTING DataItem instead of creating (and
+ * re-signing) a new one. Only a fully well-formed outcome is written; a
+ * malformed write is skipped and degrades to a normal upload.
+ */
+function writeCachedContainerOutcome(
+  capsuleId: string,
+  outcome: { containerTxId: string; chunkIds: readonly string[]; layoutDigest: string }
+): void {
+
+  try {
+
+    if (
+      typeof outcome.containerTxId !== "string" ||
+      !Array.isArray(outcome.chunkIds) ||
+      outcome.chunkIds.length === 0 ||
+      typeof outcome.layoutDigest !== "string"
+    ) {
+      return;
+    }
+
+    assertArweaveTxId(outcome.containerTxId);
+
+    if (!SHA256_REGEX.test(outcome.layoutDigest)) {
+      return;
+    }
+
+    sessionStorage.setItem(
+      containerCacheKey(capsuleId),
+      JSON.stringify({
+        containerTxId: outcome.containerTxId,
+        chunkIds: [...outcome.chunkIds],
+        layoutDigest: outcome.layoutDigest,
+      })
+    );
+
+  } catch {
+
+    // Intentional no-op: cache failure degrades to re-upload on retry.
+
+  }
+
+}
+
+function clearCachedContainerOutcome(capsuleId: string): void {
+
+  try {
+
+    sessionStorage.removeItem(containerCacheKey(capsuleId));
+
+  } catch {
+
+    // Intentional no-op: cleanup failure must not alter fail-closed path.
+
+  }
+
+}
+
 function finalizationDelay(attempt: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
 }
@@ -1043,6 +1207,8 @@ export async function sealCapsuleCore(
           // Intentional no-op: cleanup failure must not alter fail-closed path.
         }
 
+        clearCachedContainerOutcome(capsuleId);
+
         clearPersistedSealManifest(capsuleId);
 
       }
@@ -1097,16 +1263,51 @@ export async function sealCapsuleCore(
         );
       }
 
+      /**
+       * Container retry cache — reuse an ALREADY-published container.
+       *
+       * If a previous attempt already uploaded the container DataItem
+       * (ONE signature) and a LATER stage then failed, this re-enters
+       * the container branch. A cached, well-formed outcome lets the
+       * flow SKIP `uploadContainer()` entirely: no new DataItem, no
+       * second Phantom `signMessage` prompt. The reused outcome carries
+       * the same chunkIds/layoutDigest and is re-validated by
+       * `assertSealUploadOutcome()` below exactly like a fresh upload,
+       * so a capsule whose media changed since the upload fails closed
+       * rather than silently reusing a stale container.
+       *
+       * A missing / malformed / ambiguous cache returns null and falls
+       * through to a normal first upload. The cache NEVER invents a
+       * txId.
+       */
+      const cachedContainerOutcome =
+        readCachedContainerOutcome(capsuleId);
+
       const containerOutcome =
-        await withSealStage(
-          "CONTAINER_UPLOAD_UNKNOWN",
-          () =>
-            storageAdapter.uploadContainer(
-              runtime,
-              chunkMetadata,
-              token
-            )
-        );
+        cachedContainerOutcome !== null
+          ? cachedContainerOutcome
+          : await withSealStage(
+              "CONTAINER_UPLOAD_UNKNOWN",
+              () =>
+                storageAdapter.uploadContainer(
+                  runtime,
+                  chunkMetadata,
+                  token
+                )
+            );
+
+      /**
+       * Record the immutable outcome ONLY when this call actually
+       * performed the upload — a reused cache entry is already stored
+       * and must not be rewritten (it is byte-identical anyway).
+       */
+      if (cachedContainerOutcome === null) {
+        writeCachedContainerOutcome(capsuleId, {
+          containerTxId: containerOutcome.containerTxId,
+          chunkIds: containerOutcome.chunkIds,
+          layoutDigest: containerOutcome.layoutDigest,
+        });
+      }
 
       /**
        * Stage 4 — media upload outcome contract, container mode.
@@ -1371,6 +1572,8 @@ export async function sealCapsuleCore(
       } catch {
         // Intentional no-op.
       }
+
+      clearCachedContainerOutcome(capsuleId);
 
       clearPersistedSealManifest(capsuleId);
 
