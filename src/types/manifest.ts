@@ -23,6 +23,20 @@ import {
   STORAGE_POINTER_REGEX, // FIX (Issue 1) — storage authority via transport/storage pointer, not backend-specific validator
 } from "@/lib/crypto/validators";
 
+import {
+  HEARTBEAT_INTERVAL_MIN_MS,
+} from "@/shared/heartbeat/resolveEffectiveOpenAt";
+
+/**
+ * Canonical maximum opening interval (100 years, in ms).
+ *
+ * Mirrors the server-side seal bound
+ * (functions/api/capsule/seal.ts HEARTBEAT_INTERVAL_MAX).
+ */
+export const HEARTBEAT_INTERVAL_MAX_MS = 3153600000000;
+
+export { HEARTBEAT_INTERVAL_MIN_MS };
+
 /* =========================
    VERSION
    ========================= */
@@ -192,8 +206,8 @@ export function assertHeartbeatIntervalBounds(
   if (
     !Number.isFinite(value) ||
     !Number.isSafeInteger(value) ||
-    value < 86400000 ||
-    value > 3153600000000
+    value < HEARTBEAT_INTERVAL_MIN_MS ||
+    value > HEARTBEAT_INTERVAL_MAX_MS
   ) {
 
     throw new Error(

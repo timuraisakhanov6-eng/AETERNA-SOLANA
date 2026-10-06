@@ -8,6 +8,10 @@ import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 
 import {
+  minAllowedOpenDayUtcMs,
+} from "@/shared/heartbeat/resolveEffectiveOpenAt";
+
+import {
   Dialog,
   DialogContent,
   DialogTitle,
@@ -232,25 +236,15 @@ export function DateTimePickerModal({
             )
           );
 
-
-
-        const todayUtc =
-          new Date();
-
-        todayUtc.setUTCHours(
-          0,
-          0,
-          0,
-          0
-        );
-
         if (
           isValid(
             parsed
           ) &&
 
           parsed.getTime() >=
-            todayUtc.getTime() &&
+            minAllowedOpenDayUtcMs(
+              Date.now()
+            ) &&
 
           parsed.getUTCDate() ===
             Number(dd) &&
@@ -557,19 +551,26 @@ export function DateTimePickerModal({
 
               disabled={(d) => {
 
-                const todayUtc =
-                  new Date();
-
-                todayUtc.setUTCHours(
-                  0,
-                  0,
-                  0,
-                  0
-                );
+                /**
+                 * Minimum-open invariant (canonical).
+                 *
+                 * The selected day normalizes to 12:00 UTC. Only days
+                 * whose 12:00-UTC instant is at least
+                 * HEARTBEAT_INTERVAL_MIN_MS (1 day) after "now" satisfy
+                 * the seal bound heartbeatInterval = openAt - sealedAt
+                 * >= 1 day; earlier days are disabled so a capsule can
+                 * never be built with a sub-day opening interval.
+                 *
+                 * All arithmetic is UTC — never local time.
+                 */
+                const minDayMs =
+                  minAllowedOpenDayUtcMs(
+                    Date.now()
+                  );
 
                 return (
                   d.getTime() <
-                    todayUtc.getTime()
+                    minDayMs
                 );
 
               }}

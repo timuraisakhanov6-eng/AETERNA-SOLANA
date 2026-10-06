@@ -23,7 +23,8 @@ import {
   Sha256Hex,
   HeartbeatInterval,
   ArweaveTxId,
-  assertArweaveTxId
+  assertArweaveTxId,
+  assertHeartbeatConsistency
 } from "@/types/manifest";
 
 import type {
@@ -1261,6 +1262,27 @@ export async function sealCapsuleCore(
         },
 
       });
+
+    /**
+     * Fail-closed heartbeat invariant (client-side, pre-POST).
+     *
+     * The seal endpoint rejects a manifest whose
+     * heartbeatInterval = openAt - sealedAt is outside the canonical
+     * bounds (>= 1 day, <= 100 years) with 400 INVALID_HEARTBEAT. That
+     * request is guaranteed unusable, so it MUST NOT be sent: validate
+     * locally with the canonical guard and abort with the generic seal
+     * failure BEFORE persisting the manifest or hitting the network.
+     *
+     * This is the canonical, purpose-built heartbeat validator
+     * (assertHeartbeatConsistency -> assertHeartbeatIntervalBounds);
+     * it is deliberately reused rather than re-derived here so the
+     * client and the seal endpoint share one source of truth.
+     */
+    try {
+      assertHeartbeatConsistency(manifest);
+    } catch {
+      sealedError();
+    }
 
     /**
      * Publish manifest with retry-safe manifest cache.

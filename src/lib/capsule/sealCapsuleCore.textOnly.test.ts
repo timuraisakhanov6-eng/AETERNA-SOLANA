@@ -175,7 +175,11 @@ function baseParams(
     saltBase: SALT_BASE,
     recipientSecret: RECIPIENT_SECRET,
     creatorAuthority: CREATOR_AUTHORITY,
-    openAt: Date.now() + 86_400_000,
+    // Comfortably above the 1-day heartbeat minimum: the seal time is
+    // read from trusted time AFTER this fixture is built, so an exact
+    // 86,400,000 ms boundary would drift below the minimum and be
+    // (correctly) rejected by the client fail-fast guard.
+    openAt: Date.now() + 3 * 86_400_000,
     uploadToken: UPLOAD_TOKEN,
     canonicalLifecycleId: LIFECYCLE_ID,
     creatorIdentityId: IDENTITY_ID,

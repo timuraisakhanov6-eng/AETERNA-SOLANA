@@ -31,6 +31,67 @@ import type {
 
 export const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * Canonical minimum opening interval for a sealed capsule.
+ *
+ * Mirrors the server-side seal bound (functions/api/capsule/seal.ts
+ * HEARTBEAT_INTERVAL_MIN) and the client validator
+ * (assertHeartbeatIntervalBounds): a sealed capsule must open at least
+ * ONE FULL DAY after its sealedAt, i.e.
+ *
+ *   heartbeatInterval = openAt - sealedAt >= HEARTBEAT_INTERVAL_MIN_MS
+ *
+ * A capsule whose normalized openAt lands within 24 h of sealing is
+ * rejected by the seal endpoint with 400 INVALID_HEARTBEAT.
+ */
+export const HEARTBEAT_INTERVAL_MIN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Earliest calendar day a date-only picker may allow.
+ *
+ * The picker is date-only: the chosen day is normalized to 12:00 UTC
+ * (see normalizeOpenAt). For the resulting openAt to satisfy the seal
+ * bound openAt >= nowUtc + HEARTBEAT_INTERVAL_MIN_MS, the chosen day's
+ * 12:00-UTC instant must be at least HEARTBEAT_INTERVAL_MIN_MS after
+ * `nowUtc`.
+ *
+ * Returns the FIRST UTC midnight whose 12:00-UTC instant satisfies the
+ * bound, computed entirely in UTC (never local time). Days strictly
+ * before the returned value must be disabled by the picker.
+ *
+ * Pure + deterministic; `nowUtc` is injected (no ambient clock).
+ */
+export function minAllowedOpenDayUtcMs(
+  nowUtc: number
+): number {
+
+  if (
+    !Number.isFinite(nowUtc) ||
+    !Number.isSafeInteger(nowUtc)
+  ) {
+    throw new Error(
+      "[AETERNA] minAllowedOpenDayUtcMs requires a safe-integer UTC instant"
+    );
+  }
+
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const NOON_OFFSET_MS = 12 * 60 * 60 * 1000;
+
+  // Start at the current UTC day's midnight, then advance whole days
+  // until that day's 12:00-UTC instant is >= now + the minimum.
+  let midnight =
+    Math.floor(nowUtc / DAY_MS) * DAY_MS;
+
+  const minOpenAt = nowUtc + HEARTBEAT_INTERVAL_MIN_MS;
+
+  while (midnight + NOON_OFFSET_MS < minOpenAt) {
+    midnight += DAY_MS;
+  }
+
+  return midnight;
+
+}
+
 
 type Params = {
 
