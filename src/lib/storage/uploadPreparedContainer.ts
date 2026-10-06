@@ -22,7 +22,7 @@
  *  • does not build a whole-container buffer (the writer is a pull producer)
  *  • does not touch the Vault (which stays a separate DataItem)
  *  • does not write N chunk-pointer registry entries
- *  • does not claim a publication itself — the claim is injected, so the
+ *  • does not OWN the authority path — a claim can be injected, so the
  *    authority path stays owned by `creatorIrysStorage`
  *
  * ORDERING CONTRACT
@@ -34,13 +34,23 @@
  * read path (`resolveContainerChunks`) derives the same layout from
  * `items[].chunks`, so write and read cannot drift.
  *
+ * UPLOAD/CLAIM SPLIT (retry-safety)
+ * ---------------------------------
+ * The upload and the publication claim are SEPARATE steps. The production
+ * seal path calls this function WITHOUT a claim, caches the returned
+ * outcome, and only then issues the claim through
+ * `StorageAdapter.claimContainerUpload`. This guarantees an
+ * already-signed container DataItem is never discarded — and therefore
+ * never re-signed — because a LATER claim failed. The injected
+ * `claimContainer` parameter remains for the legacy single-call form.
+ *
  * FAIL-CLOSED
  * -----------
  * Empty input, an inconsistent layout, a Runtime read error, a short/long
  * chunk, a stream that does not complete, or an upload failure all throw.
- * The publication claim is issued ONLY after the container DataItem exists
- * AND the stream reported an exact byte count — so a failed upload can
- * never produce a successful publication.
+ * When a claim IS injected it is issued ONLY after the container DataItem
+ * exists AND the stream reported an exact byte count — so a failed upload
+ * can never produce a successful publication.
  */
 
 import type { ChunkingUploader } from "@irys/upload-core";
@@ -69,6 +79,12 @@ function failClosed(reason: string): never {
  *
  * Injected rather than imported so this module stays free of any HTTP or
  * authority knowledge — `creatorIrysStorage` owns the claim boundary.
+ *
+ * OPTIONAL on `uploadPreparedContainer()`: when omitted, the upload step
+ * stops at the created DataItem and the claim is issued SEPARATELY by the
+ * orchestrator (`StorageAdapter.claimContainerUpload`) after the outcome
+ * has been cached. That split is what lets a claim failure be retried
+ * against the SAME DataItem instead of re-signing a new one.
  */
 export type ContainerClaimFn = (
   containerTxId: string,
@@ -120,16 +136,30 @@ export function groupChunkMetadataByMediaItem(
 }
 
 /**
- * Uploads the media container as ONE Irys DataItem and claims its
- * publication.
+ * Uploads the media container as ONE Irys DataItem.
  *
  * Returns the exact tuple the container publication claim records.
+ *
+ * ORDERING CONTRACT (the fix for the repeated-signature retry bug)
+ * ---------------------------------------------------------------
+ * A successful upload RESOLVES with the full outcome and the caller is
+ * expected to CACHE it immediately. When `claimContainer` is supplied,
+ * the claim runs AFTER the DataItem exists (never before), and a claim
+ * failure PROPAGATES — deliberately. The caller must therefore treat the
+ * returned outcome as the point of no return: once `uploadPreparedContainer`
+ * resolves, the DataItem exists, and the ONLY correct retry behaviour is
+ * to reuse it (via the cache) rather than upload again.
+ *
+ * Passing `claimContainer` is the LEGACY single-call form (used by the
+ * mock/dev adapter). The PRODUCTION seal path passes NO claim here and
+ * instead issues it through `StorageAdapter.claimContainerUpload` after
+ * caching — see `sealCapsuleCore`.
  */
 export async function uploadPreparedContainer(
   runtime: RuntimeStorage,
   chunkMetadata: readonly ChunkMetadata[],
   uploader: ChunkingUploader,
-  claimContainer: ContainerClaimFn,
+  claimContainer?: ContainerClaimFn,
   options: ContainerUploadOptions = {}
 ): Promise<ContainerUploadOutcome> {
   /**
@@ -147,8 +177,8 @@ export async function uploadPreparedContainer(
     if (!runtime || typeof runtime.read !== "function") {
       failClosed("[AETERNA] Runtime storage is required");
     }
-    if (typeof claimContainer !== "function") {
-      failClosed("[AETERNA] A container publication claim is required");
+    if (claimContainer !== undefined && typeof claimContainer !== "function") {
+      failClosed("[AETERNA] A container publication claim must be a function");
     }
 
     const items = groupChunkMetadataByMediaItem(chunkMetadata);
@@ -203,16 +233,25 @@ export async function uploadPreparedContainer(
     throw tagSealFailure(null, "CONTAINER_UPLOAD_UNKNOWN");
   }
 
-  // Only now — ONE container DataItem exists — is the publication claimed.
-  try {
-    await claimContainer(containerTxId, chunkIds, layoutDigest);
-  } catch (error) {
-    throw tagSealFailure(error, "CONTAINER_PUBLICATION");
-  }
-
-  return Object.freeze({
+  const outcome: ContainerUploadOutcome = Object.freeze({
     containerTxId,
     chunkIds,
     layoutDigest,
   });
+
+  /**
+   * LEGACY single-call form: the caller asked for the claim to be issued
+   * inline. The claim ALWAYS runs after the DataItem exists. A rejection
+   * here propagates; the production path avoids this shape precisely so a
+   * claim failure cannot invalidate an already-signed DataItem.
+   */
+  if (claimContainer !== undefined) {
+    try {
+      await claimContainer(containerTxId, chunkIds, layoutDigest);
+    } catch (error) {
+      throw tagSealFailure(error, "CONTAINER_PUBLICATION");
+    }
+  }
+
+  return outcome;
 }

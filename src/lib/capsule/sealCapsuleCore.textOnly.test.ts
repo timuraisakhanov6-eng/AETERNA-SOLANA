@@ -60,6 +60,7 @@ interface RecordingAdapter {
   adapter: StorageAdapter;
   uploadCalls: number;
   uploadContainerCalls: number;
+  uploadContainerClaimCalls: number;
   lastContainerChunkIds: readonly string[] | null;
 }
 
@@ -67,11 +68,15 @@ interface RecordingAdapter {
  * A StorageAdapter that records which upload channels were used. Both
  * `upload()` (Vault) and `uploadContainer()` (media) resolve with
  * well-formed values so the flow can reach the post-upload POSTs.
+ *
+ * The container publication claim is a SEPARATE step
+ * (`claimContainerUpload`) and is recorded on its own counter.
  */
 function buildRecordingStorage(): RecordingAdapter {
   const rec: RecordingAdapter = {
     uploadCalls: 0,
     uploadContainerCalls: 0,
+    uploadContainerClaimCalls: 0,
     lastContainerChunkIds: null,
     adapter: null as unknown as StorageAdapter,
   };
@@ -93,6 +98,9 @@ function buildRecordingStorage(): RecordingAdapter {
         chunkIds: chunkMetadata.map((c) => c.chunkId),
         layoutDigest: "a".repeat(64),
       };
+    },
+    async claimContainerUpload() {
+      rec.uploadContainerClaimCalls++;
     },
     async download() {
       throw new Error("[test] download not used");
@@ -224,6 +232,7 @@ describe("sealCapsuleCore — text-only vault-only branch", () => {
 
     // The container channel was NEVER attempted and NO claim was made.
     expect(storage.uploadContainerCalls).toBe(0);
+    expect(storage.uploadContainerClaimCalls).toBe(0);
     expect(
       router.calls.some((u) => u.includes("/api/publication/claim"))
     ).toBe(false);
@@ -251,6 +260,10 @@ describe("sealCapsuleCore — text-only vault-only branch", () => {
     // EXACTLY ONE container upload, carrying the full chunk set.
     expect(storage.uploadContainerCalls).toBe(1);
     expect(storage.lastContainerChunkIds).toHaveLength(2);
+
+    // …and EXACTLY ONE container publication claim, issued as a SEPARATE
+    // step (upload/claim split), never a second DataItem.
+    expect(storage.uploadContainerClaimCalls).toBe(1);
 
     // Still exactly one Vault upload — no per-chunk upload path exists.
     expect(storage.uploadCalls).toBe(1);

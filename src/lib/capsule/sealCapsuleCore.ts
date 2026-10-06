@@ -4,6 +4,7 @@ import type {
 
 import type {
   StorageAdapter,
+  ContainerUploadOutcome,
 } from "@/lib/storage/storageAdapter";
 
 import {
@@ -1264,7 +1265,21 @@ export async function sealCapsuleCore(
       }
 
       /**
-       * Container retry cache — reuse an ALREADY-published container.
+       * The claim is a SEPARATE capability from the upload. An adapter
+       * that can upload a container but cannot claim it is unusable for
+       * sealing, so this fails closed BEFORE any wallet interaction.
+       */
+      if (
+        typeof storageAdapter.claimContainerUpload !==
+        "function"
+      ) {
+        throw new Error(
+          "[AETERNA] The storage adapter cannot claim container publications"
+        );
+      }
+
+      /**
+       * Container retry cache — reuse an ALREADY-created container.
        *
        * If a previous attempt already uploaded the container DataItem
        * (ONE signature) and a LATER stage then failed, this re-enters
@@ -1283,25 +1298,36 @@ export async function sealCapsuleCore(
       const cachedContainerOutcome =
         readCachedContainerOutcome(capsuleId);
 
-      const containerOutcome =
-        cachedContainerOutcome !== null
-          ? cachedContainerOutcome
-          : await withSealStage(
-              "CONTAINER_UPLOAD_UNKNOWN",
-              () =>
-                storageAdapter.uploadContainer(
-                  runtime,
-                  chunkMetadata,
-                  token
-                )
-            );
+      let containerOutcome: ContainerUploadOutcome;
 
-      /**
-       * Record the immutable outcome ONLY when this call actually
-       * performed the upload — a reused cache entry is already stored
-       * and must not be rewritten (it is byte-identical anyway).
-       */
-      if (cachedContainerOutcome === null) {
+      if (cachedContainerOutcome !== null) {
+        containerOutcome = cachedContainerOutcome;
+      } else {
+        containerOutcome = await withSealStage(
+          "CONTAINER_UPLOAD_UNKNOWN",
+          () =>
+            storageAdapter.uploadContainer(
+              runtime,
+              chunkMetadata,
+              token
+            )
+        );
+
+        /**
+         * CRITICAL ORDERING — write the retry cache IMMEDIATELY after the
+         * upload resolves and BEFORE the publication claim.
+         *
+         * The container DataItem now exists and has been signed. If the
+         * claim below fails, this cache entry is what allows the NEXT
+         * attempt to reuse the SAME DataItem instead of creating (and
+         * re-signing) a new one. Writing it later — after the claim —
+         * was the bug: a claim failure would leave a created-but-uncached
+         * DataItem, so every retry asked Phantom to sign again.
+         *
+         * The cached value is EVIDENCE only. It cannot make a publication
+         * VERIFIED; server authority is unchanged. A stale / mismatched
+         * entry still fails closed at `assertSealUploadOutcome` below.
+         */
         writeCachedContainerOutcome(capsuleId, {
           containerTxId: containerOutcome.containerTxId,
           chunkIds: containerOutcome.chunkIds,
@@ -1316,11 +1342,32 @@ export async function sealCapsuleCore(
        * verifies the published set IS the expected set, that every chunk is
        * represented exactly once, and that a multi-chunk capsule is not
        * published as a single-chunk container.
+       *
+       * This runs for BOTH a fresh and a cached outcome — a stale cache
+       * therefore fails closed HERE, before the claim, and never triggers
+       * a new upload.
        */
       assertSealUploadOutcome(chunkMetadata, {
         mode: "container",
         containerChunkIds: containerOutcome.chunkIds,
       });
+
+      /**
+       * Publication claim — issued AFTER the outcome is durably cached,
+       * for the SAME txId whether it was freshly uploaded or reused.
+       *
+       * Server-side idempotent: a corroborated already-claimed replay is
+       * accepted; a genuine conflict fails closed (the seal is retried
+       * later, reusing the cached DataItem — no second signature).
+       */
+      await withSealStage(
+        "CONTAINER_PUBLICATION",
+        () =>
+          storageAdapter.claimContainerUpload!(
+            containerOutcome,
+            token
+          )
+      );
     }
 
     const nowUtc =

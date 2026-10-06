@@ -292,17 +292,31 @@ StorageAdapter & {
      * (`uploadPreparedContainer`) so the mock exercises exactly the
      * same layout, chunk order and layoutDigest semantics as
      * production. ONLY the Irys transport is faked.
+     *
+     * Upload-only: the claim is a separate step
+     * (`claimContainerUpload`) so the mock mirrors the production
+     * upload/claim split.
      */
 
     return uploadPreparedContainer(
       runtime,
       chunkMetadata,
-      mockChunkingUploader,
-      async () => {
-        // No publication state exists in the mock backend.
-      }
+      mockChunkingUploader
     );
 
+  },
+
+
+  /**
+   * No publication state exists in the mock backend, so the claim is a
+   * no-op. Present so the mock satisfies the same upload/claim split the
+   * production adapter exposes.
+   */
+  async claimContainerUpload(
+    _outcome: ContainerUploadOutcome,
+    uploadToken: UploadToken
+  ): Promise<void> {
+    assertUploadToken(uploadToken);
   },
 
 

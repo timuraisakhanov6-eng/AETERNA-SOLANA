@@ -284,12 +284,47 @@ export interface StorageAdapter {
    *
    * The adapter reads the encrypted chunks itself through `runtime`, so
    * no plaintext and no whole-container buffer crosses this boundary.
+   *
+   * UPLOAD-ONLY CONTRACT.
+   *
+   * This method creates the ONE container DataItem and returns its
+   * outcome. It MUST NOT issue the publication claim: the claim is a
+   * SEPARATE step (`claimContainerUpload`) that the sealing orchestrator
+   * runs only AFTER the outcome has been durably cached. Splitting the
+   * two means a later claim failure can never discard a successfully
+   * created (and signed) DataItem — a retry then reuses the cached
+   * outcome and re-claims WITHOUT a second container signature.
    */
   uploadContainer(
     runtime: RuntimeStorage,
     chunkMetadata: readonly ChunkMetadata[],
     uploadToken: UploadToken
   ): Promise<ContainerUploadOutcome>;
+
+
+  /**
+   * Issue the container publication claim for an ALREADY-CREATED
+   * container DataItem.
+   *
+   * This is the authority step that follows `uploadContainer()`. It is
+   * invoked with the container outcome (fresh, or reused from the retry
+   * cache) so the same txId is claimed exactly once regardless of which
+   * attempt actually uploaded the DataItem.
+   *
+   * It is OPTIONAL so read-only / non-container adapters remain
+   * constructible, but every adapter that implements `uploadContainer()`
+   * for sealing MUST implement it; the sealing path fails closed when it
+   * is absent.
+   *
+   * Server authority is unchanged: this only REQUESTS the claim. The
+   * server's Node-confirmed publication record stays authoritative, and
+   * publication VERIFIED is only ever established by
+   * `/api/publication/verify`.
+   */
+  claimContainerUpload?(
+    outcome: ContainerUploadOutcome,
+    uploadToken: UploadToken
+  ): Promise<void>;
 
 
   /**

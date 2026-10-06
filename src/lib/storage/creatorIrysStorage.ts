@@ -51,6 +51,87 @@ interface ClaimResponse {
 }
 
 /**
+ * Server 409 reasons that mean "the publication claim ALREADY holds for
+ * exactly this txId / this capsule" — i.e. a benign idempotent replay.
+ *
+ * These are NOT success by default. A replay is only accepted when the
+ * server's own response explicitly reports the ALREADY-claimed outcome
+ * (`claimed:true` / `state`), which `classifyClaimFailure` checks. Anything
+ * else — including a same-code response we cannot positively corroborate
+ * — fails closed with the original error, because the client cache must
+ * never be able to promote a publication to a verified state on its own.
+ */
+const BENIGN_REPLAY_409 = new Set([
+  // Container: the coordinator holds the byte-equal container record.
+  "ALREADY_CLAIMED",
+  // Container: the capsule already has a container publication record.
+  "CONTAINER_ALREADY_PUBLISHED",
+  // Vault: an identical replay of the same lifecycle+tx is idempotent.
+  "ALREADY_BOUND",
+]);
+
+/**
+ * Server 409 reasons that are a GENUINE CONFLICT — the request is
+ * coherent but the authoritative state forbids it. These must NEVER be
+ * treated as success; the caller fails closed and the seal is retried
+ * only after the conflict is resolved server-side.
+ *
+ * Enumerated from `functions/api/publication/claim.ts` and
+ * `functions/lib/containerPublicationClaim.ts`:
+ *   LIFECYCLE_NOT_RESERVED          — no lifecycle record for this identity
+ *   CREDIT_NOT_CONSUMING            — lifecycle is not in CONSUMING state
+ *   IDENTITY_MISMATCH               — lifecycle belongs to another creator
+ *   CAPSULE_MISMATCH                — lifecycle is bound to another capsule
+ *   STORAGE_PAYMENT_NOT_VERIFIED    — payment record missing / not verified
+ *   STORAGE_PAYMENT_BINDING_MISMATCH— payment bound to other identity/lifecycle/capsule
+ *   TX_ALREADY_CLAIMED              — this txId is already spent on another capsule
+ *   PUBLICATION_NOT_CONFIRMED       — Irys node does not yet confirm the tx
+ *   PUBLICATION_ALREADY_BOUND       — lifecycle already claimed a DIFFERENT tx
+ */
+const CONFLICT_409 = new Set([
+  "LIFECYCLE_NOT_RESERVED",
+  "CREDIT_NOT_CONSUMING",
+  "IDENTITY_MISMATCH",
+  "CAPSULE_MISMATCH",
+  "STORAGE_PAYMENT_NOT_VERIFIED",
+  "STORAGE_PAYMENT_BINDING_MISMATCH",
+  "TX_ALREADY_CLAIMED",
+  "PUBLICATION_NOT_CONFIRMED",
+  "PUBLICATION_ALREADY_BOUND",
+]);
+
+/**
+ * Classification of a server claim failure. `replay` is the ONLY outcome
+ * that callers may treat as a completed claim without re-issuing it;
+ * everything else propagates as a failure (fail closed).
+ */
+type ClaimFailureClass = "replay" | "conflict" | "unknown";
+
+/**
+ * Classifies a parsed claim error body. A benign replay is recognised
+ * ONLY when the server positively reports the already-claimed outcome
+ * (`claimed === true`, or a terminal `state` of PENDING/VERIFIED). A bare
+ * 409 code that merely happens to match the benign set is NOT enough:
+ * without corroboration it degrades to "unknown" and fails closed.
+ */
+function classifyClaimFailure(body: ClaimResponse | null): ClaimFailureClass {
+  const code = body?.error;
+  if (typeof code !== "string") return "unknown";
+
+  if (BENIGN_REPLAY_409.has(code)) {
+    const corroborated =
+      body?.claimed === true ||
+      body?.state === "PENDING" ||
+      body?.state === "VERIFIED";
+    return corroborated ? "replay" : "unknown";
+  }
+
+  if (CONFLICT_409.has(code)) return "conflict";
+
+  return "unknown";
+}
+
+/**
  * Operation-level deadline for the discrete `POST /api/publication/claim`.
  *
  * Bounds ONE request only — not the Irys upload, not the capsule
@@ -68,12 +149,21 @@ interface ClaimResponse {
  */
 const CLAIM_REQUEST_TIMEOUT_MS = 15_000;
 
+/**
+ * Issues `POST /api/publication/claim` for one txId.
+ *
+ * Returns `true` when the claim is established OR is a corroborated
+ * idempotent replay; throws otherwise (fail closed). The client NEVER
+ * derives "published" from this call — the returned boolean only means
+ * "the claim request was accepted or was already satisfied", which lets
+ * the orchestrator proceed to the authoritative `/api/publication/verify`.
+ */
 async function claimPublication(
   ctx: CreatorIrysStorageContext,
   txId: string,
   kind: "vault" | "container",
   container?: { readonly chunkIds: readonly string[]; readonly layoutDigest: string }
-): Promise<void> {
+): Promise<boolean> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), CLAIM_REQUEST_TIMEOUT_MS);
 
@@ -102,9 +192,30 @@ async function claimPublication(
 
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as
-      | { error?: string; reason?: string }
+      | { error?: string; reason?: string; claimed?: unknown; state?: unknown }
       | null;
+
     const detail = body?.error ?? body?.reason ?? `HTTP_${res.status}`;
+
+    /**
+     * 409 handling — deliberately conservative.
+     *
+     * A 409 is NEVER accepted as success merely because the code looks
+     * like a replay. `classifyClaimFailure` requires positive
+     * corroboration for a replay; a genuine conflict (or an
+     * unrecognised / uncorroborated 409) throws and the seal fails
+     * closed. Server authority is untouched: publication VERIFIED can
+     * only ever come from `/api/publication/verify`.
+     */
+    if (res.status === 409) {
+      const parsed = (body ?? null) as ClaimResponse | null;
+      if (classifyClaimFailure(parsed) === "replay") {
+        // Corroborated idempotent replay: the claim already holds for this
+        // exact txId. Proceed to the authoritative verify step.
+        return true;
+      }
+    }
+
     throw new Error(`[AETERNA] creatorIrys: publication claim failed: ${detail}`);
   }
 
@@ -112,6 +223,7 @@ async function claimPublication(
   if (!json || json.ok !== true) {
     throw new Error("[AETERNA] creatorIrys: publication claim malformed response");
   }
+  return true;
 }
 
 /**
@@ -162,11 +274,13 @@ export function createCreatorIrysStorage(
      * The SAME wallet, the SAME Irys builder and the SAME claim boundary as
      * `uploadChunk`; the only difference is that the Stage 3 writer streams
      * every encrypted chunk into ONE DataItem instead of N separate ones, so
-     * there is exactly ONE creator signature and exactly ONE
-     * `kind:"container"` publication claim.
+     * there is exactly ONE creator signature for it.
      *
-     * No chunk-pointer registry entry is written here or anywhere else on
-     * this path — the container publication record IS the authority.
+     * UPLOAD-ONLY: this method creates the DataItem and returns its
+     * outcome. It does NOT claim the publication. The orchestrator caches
+     * the outcome and only then calls `claimContainerUpload`, so a later
+     * claim failure can never discard (and therefore never re-sign) an
+     * already-created container DataItem.
      */
     async uploadContainer(
       runtime: RuntimeStorage,
@@ -178,16 +292,27 @@ export function createCreatorIrysStorage(
         ctx.rpcUrl
       );
 
-      return uploadPreparedContainer(
-        runtime,
-        chunkMetadata,
-        uploader,
-        (containerTxId, chunkIds, layoutDigest) =>
-          claimPublication(ctx, containerTxId, "container", {
-            chunkIds,
-            layoutDigest,
-          })
-      );
+      // No claim injected: the production seal path owns the ordering and
+      // issues the claim AFTER caching the outcome.
+      return uploadPreparedContainer(runtime, chunkMetadata, uploader);
+    },
+
+    /**
+     * Issues the container publication claim for an ALREADY-CREATED
+     * container DataItem (fresh or reused from the retry cache).
+     *
+     * Idempotent server-side: a corroborated already-claimed replay is
+     * accepted; a genuine conflict (or an uncorroborated 409) throws and
+     * the seal fails closed. Server publication authority is unchanged.
+     */
+    async claimContainerUpload(
+      outcome: ContainerUploadOutcome,
+      _uploadToken: UploadToken
+    ): Promise<void> {
+      await claimPublication(ctx, outcome.containerTxId, "container", {
+        chunkIds: outcome.chunkIds,
+        layoutDigest: outcome.layoutDigest,
+      });
     },
 
     // Read path is storage-provider independent (canonical gateways)

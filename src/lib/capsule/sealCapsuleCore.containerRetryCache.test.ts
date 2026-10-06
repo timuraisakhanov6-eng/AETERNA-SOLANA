@@ -70,6 +70,8 @@ interface RecordingAdapter {
   adapter: StorageAdapter;
   uploadCalls: number;
   uploadContainerCalls: number;
+  claimCalls: number;
+  claimedTxIds: string[];
   lastContainerChunkIds: readonly string[] | null;
   containerTxIds: string[];
 }
@@ -78,11 +80,18 @@ interface RecordingAdapter {
  * A StorageAdapter that records container uploads (== container
  * signatures at this boundary). Each successful uploadContainer() returns
  * a DISTINCT txId so a reuse vs a re-sign is observable.
+ *
+ * The upload/claim split is mirrored here: `uploadContainer()` creates the
+ * DataItem (the signing event), and the separate `claimContainerUpload()`
+ * records the claim for whatever txId the orchestrator passes — which, on
+ * a retry, is the CACHED one.
  */
 function buildRecordingStorage(): RecordingAdapter {
   const rec: RecordingAdapter = {
     uploadCalls: 0,
     uploadContainerCalls: 0,
+    claimCalls: 0,
+    claimedTxIds: [],
     lastContainerChunkIds: null,
     containerTxIds: [],
     adapter: null as unknown as StorageAdapter,
@@ -108,6 +117,10 @@ function buildRecordingStorage(): RecordingAdapter {
         chunkIds: chunkMetadata.map((c) => c.chunkId),
         layoutDigest: "a".repeat(64),
       };
+    },
+    async claimContainerUpload(outcome: { containerTxId: string }) {
+      rec.claimCalls++;
+      rec.claimedTxIds.push(outcome.containerTxId);
     },
     async download() {
       throw new Error("[test] download not used");
