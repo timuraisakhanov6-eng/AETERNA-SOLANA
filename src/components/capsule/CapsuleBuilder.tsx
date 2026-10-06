@@ -100,7 +100,24 @@ export function walletFlowEvent(
   return null;
 }
 
-type SealPhase = "idle" | "preparing";
+/**
+ * Create-flow preparation phases.
+ *
+ * - "idle":      no preparation in progress; the Create/Review UI is live.
+ * - "preparing": the capsule is being prepared / a quote is being fetched.
+ * - "awaiting-verification":
+ *                the creator ALREADY returned from Phantom with the Irys
+ *                storage funding signature, and the flow is now running
+ *                server-side verification + lifecycle reservation before
+ *                navigating to `/create/hold`.
+ *
+ * PHASE-ONLY CHANGE: "awaiting-verification" is a PRESENTATION state. It is
+ * set strictly AFTER the funding signature is obtained and strictly BEFORE
+ * `verifyStoragePaymentWithRetry → reserveLifecycle → sessionStorage →
+ * navigate("/create/hold")` — that sequence is untouched. It only controls
+ * which surface the creator sees; it is never authority.
+ */
+type SealPhase = "idle" | "preparing" | "awaiting-verification";
 
 /* ================= STALE QUOTE HARDENING (PATCH-2L) ================= */
 
@@ -119,6 +136,77 @@ export function shouldClearStorageReviewOnVerifyFailure(
   reason: string
 ): boolean {
   return reason === "STORAGE_QUOTE_EXPIRED";
+}
+
+/* ============ POST-STORAGE-PAYMENT WAITING SURFACE (presentation) ============ */
+
+/**
+ * Pure presentation contract for the post-storage-payment waiting surface.
+ *
+ * `showCapsulePreparing` is true EXACTLY while the create flow is in the
+ * "awaiting-verification" phase — i.e. the creator has returned from
+ * Phantom with the Irys funding signature and the flow is running the
+ * unchanged `verify → reserve → sessionStorage → navigate` sequence.
+ *
+ * This predicate carries NO authority: it can never declare success, and
+ * every failure path resets the phase to "idle" (surfacing the existing
+ * error UI). Exported for the regression test — kept in this file by
+ * design (same pattern as walletFlowEvent).
+ */
+export function showCapsulePreparing(sealPhase: SealPhase): boolean {
+  return sealPhase === "awaiting-verification";
+}
+
+/**
+ * The waiting surface itself. Split out as an exported, Radix-free
+ * component so its user-facing copy contract is testable in the node
+ * environment (this repo's jsdom cannot load on the current runtime).
+ *
+ * Copy requirements (post-storage-payment spec):
+ *  - payment confirmed;
+ *  - capsule is being prepared;
+ *  - do not pay again / do not close the window unnecessarily.
+ */
+export function CapsulePreparingSurface() {
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-background/95 backdrop-blur-sm animate-in fade-in"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="text-center space-y-6 px-6 max-w-md">
+        <div className="mx-auto w-16 h-16 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
+          <Lock className="text-emerald-500" size={28} />
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium tracking-widest text-emerald-500 uppercase">
+            Payment confirmed
+          </p>
+          <h1 className="text-3xl font-display tracking-wide">
+            Capsule is being prepared
+          </h1>
+        </div>
+
+        <div className="space-y-3">
+          <p className="text-muted-foreground text-base leading-relaxed">
+            We're verifying your payment and preparing your capsule —
+            this usually takes a moment.
+          </p>
+          <p className="text-muted-foreground/70 text-sm leading-relaxed">
+            Please don't pay again or close this window until it finishes.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-center gap-2 text-emerald-500">
+          <Loader2 className="animate-spin" size={16} />
+          <span className="text-xs tracking-wide text-muted-foreground/70">
+            Working…
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ================= PATCH-2K-B GATE ERROR UX ================= */
@@ -712,7 +800,14 @@ export default function CapsuleBuilder() {
   }
 
   const remainingChars = MAX_DESCRIPTION - (description?.length ?? 0);
-  const isPreparing = sealPhase === "preparing";
+  // "preparing" covers quote-fetch/preparation; "awaiting-verification"
+  // covers the post-Phantom server verify + reserve window. BOTH are busy
+  // (editor hidden, controls disabled) — the creator must see ONE continuous
+  // waiting surface across the storage payment. `isPreparing` stays true for
+  // both so every existing disable/hide consumer keeps its current meaning.
+  const isPreparing =
+    sealPhase === "preparing" || sealPhase === "awaiting-verification";
+  const isAwaitingVerification = sealPhase === "awaiting-verification";
   const isBusy = isPreparing;
 
   /* ================= INLINE GATE ACTIONS (PATCH-2K-B) ================= */
@@ -1185,6 +1280,23 @@ export default function CapsuleBuilder() {
         fundingSignature,
       };
 
+      // ── EARLIEST SAFE WAITING SURFACE (post-Phantom, pre-verify) ──
+      // The creator has just returned from Phantom and the Irys funding
+      // signature is captured above. The ONLY work remaining is server-side
+      // (verify → reserve → sessionStorage → navigate), which can take a
+      // while. Flip to the waiting surface HERE so the stale Review/Create
+      // UI is replaced immediately, and the creator sees
+      // "Capsule is being prepared" before verification even starts.
+      //
+      // This is a PRESENTATION transition only: it runs AFTER the funding
+      // signature (the wallet return point) and BEFORE the unchanged
+      // verify → reserve → sessionStorage → navigate sequence below. It is
+      // NOT authority and cannot declare success. It is set here (not at
+      // the top of the handler) on purpose: the wallet prompt itself must
+      // never be replaced by a waiting screen — until Phantom returns, the
+      // creator is still interacting with the wallet.
+      setSealPhase("awaiting-verification");
+
       // VERIFY-ONLY retry: re-runs /api/storage/verify-payment for the SAME
       // payment while the outcome is TRANSACTION_PENDING. Never funds, never
       // signs, never uploads.
@@ -1484,6 +1596,16 @@ export default function CapsuleBuilder() {
         </div>
       </main>
 
+      {/* ── POST-STORAGE-PAYMENT WAITING SURFACE ──
+          Shown from the moment Phantom returns with the Irys funding
+          signature until the flow either (a) navigates to `/create/hold`
+          on success, or (b) falls back to the existing error surface on
+          verify/reserve failure (sealError, set alongside sealPhase
+          "idle"). It deliberately REPLACES the stale Review/Create UI so
+          the creator never stares at a frozen screen. Presentation only —
+          it never declares success and never gates the flow. */}
+      {showCapsulePreparing(sealPhase) && <CapsulePreparingSurface />}
+
       {!isBusy && (
         <>
           <CapsuleInput
@@ -1519,9 +1641,13 @@ export default function CapsuleBuilder() {
           dialog stays mounted while the storage payment runs. Open only
           after a successful canonical Irys quote (storageReview !== null);
           close (X/Escape/overlay/Cancel) only hides the dialog — the
-          review state and prepared identity are preserved. */}
+          review state and prepared identity are preserved.
+          While the post-Phantom waiting surface is up (awaiting-verification)
+          the dialog is HIDDEN: the creator must see the waiting state, not
+          the stale review, until the flow resolves. storageReview itself is
+          NEVER cleared here. */}
       <FinalCapsuleReviewModal
-        open={storageReview !== null && isReviewOpen}
+        open={storageReview !== null && isReviewOpen && !isAwaitingVerification}
         storageReview={storageReview}
         description={typeof description === "string" ? description : null}
         unlockAt={typeof unlockAt === "number" ? unlockAt : null}
