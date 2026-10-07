@@ -497,7 +497,7 @@ export default function CapsuleView({ state, className }: Props) {
                   aria-label="Capsule sealed"
                   animate={{ opacity: [0.6, 0.9, 0.6] }}
                   transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-                  className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-500"
+                  className="flex items-center gap-1.5 text-red-600 dark:text-red-500"
                 >
                   <ShieldIcon
                     size={13}
