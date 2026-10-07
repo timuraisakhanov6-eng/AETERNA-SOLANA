@@ -896,7 +896,7 @@ export default function CapsuleView({ state, className }: Props) {
                 This document contains a private access link including the secret fragment.
                 <br />
                 <strong className="text-red-800">
-                  Anyone who obtains this link can permanently open the capsule.
+                  Anyone who obtains this link can open the capsule once the unlock time is reached.
                 </strong>
                 <br />
                 Store securely. Do not photograph. Do not share.
