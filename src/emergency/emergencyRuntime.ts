@@ -44,6 +44,25 @@ export type EmergencyRuntimeInit = {
   status: HTMLElement;
 };
 
+/**
+ * Explicit outcome of ONE emergency-runtime run — the only success
+ * signal the bootstrap may rely on.
+ *
+ *   • "opened" — the capsule was decrypted and its items rendered into
+ *     `root`; the bootstrap may switch to the OPENED surface.
+ *   • "sealed" — nothing was opened: invalid/missing capability,
+ *     unavailable capsule, trusted-time failure, creator-authority
+ *     wait, or "not yet open". The bootstrap must stay on SEALED so the
+ *     status message remains visible.
+ *
+ * The previous `Promise<void>` contract was ambiguous: every early
+ * `return` looked identical to a successful open, so the bootstrap
+ * switched to the (empty) OPENED surface on failure. The outcome is
+ * decided at the exact branch that renders (or refuses to render) the
+ * capsule, so it can never be confused with the DOM shape.
+ */
+export type EmergencyRuntimeOutcome = "opened" | "sealed";
+
 let runtimeDisposed = false;
 let waiting = false;
 let heartbeatPollHandle: ReturnType<typeof setInterval> | null = null;
@@ -58,7 +77,7 @@ export function disposeEmergencyRuntime(): void {
 export async function initEmergencyRuntime({
   root,
   status,
-}: EmergencyRuntimeInit): Promise<void> {
+}: EmergencyRuntimeInit): Promise<EmergencyRuntimeOutcome> {
   if (runtimeDisposed) {
     throw new Error("Emergency runtime has been disposed.");
   }
@@ -83,20 +102,28 @@ export async function initEmergencyRuntime({
     import("@/lib/capsule/openCapsule"),
   ]);
 
-  const parsed = parseCap(location.href);
+  /**
+   * The capability parser consumes the URL FRAGMENT (`#HEX64`,
+   * `#HEX64&c=HEX64`, `#c=HEX64`) — exactly as the primary runtime
+   * does (`CapsulePage` → `parseCapsuleCapability(location.hash)`).
+   * Passing the whole `location.href` made the parser return `null`
+   * for EVERY input (the href never starts with `#`), so this guard
+   * fired unconditionally and the emergency path never opened.
+   */
+  const parsed = parseCap(location.hash);
 
   if (!parsed?.recipientSecret && !parsed?.creatorAuthorityFragment) {
     status.textContent = "Invalid capsule link.";
-    return;
+    return "sealed";
   }
 
   let manifest: ManifestV1;
   try {
-    const capsuleId = getCapsuleIdFromPath();
+    const capsuleId = resolveCapsuleId();
     manifest = await loadManifestSource(capsuleId);
   } catch {
     status.textContent = "Capsule unavailable.";
-    return;
+    return "sealed";
   }
 
   const publicationReadout = await getChunkPointerReadout(manifest.capsuleId);
@@ -120,7 +147,7 @@ export async function initEmergencyRuntime({
     nowUtc = trusted.nowUtc;
   } catch {
     status.textContent = "Trusted time unavailable.";
-    return;
+    return "sealed";
   }
 
   const heartbeatInterval = manifest.heartbeatInterval ?? 0;
@@ -149,12 +176,12 @@ export async function initEmergencyRuntime({
 
   if (!parsed.recipientSecret) {
     status.textContent = "Opening requires recipient secret.";
-    return;
+    return "sealed";
   }
 
   if (nowUtc < effectiveOpenAt || manifest.sealedAt > nowUtc) {
     status.textContent = "Capsule is not yet open.";
-    return;
+    return "sealed";
   }
 
   status.textContent = "Opening capsule…";
@@ -185,7 +212,7 @@ export async function initEmergencyRuntime({
      */
     if (!publication && hasChunks) {
       status.textContent = "Capsule publication unavailable.";
-      return;
+      return "sealed";
     }
 
     const resolvedChunks = publication
@@ -197,8 +224,10 @@ export async function initEmergencyRuntime({
 
     renderEmergencyVault(root, vault, status, resolvedChunks);
     status.textContent = "Capsule opened.";
+    return "opened";
   } catch {
     status.textContent = "Capsule unavailable.";
+    return "sealed";
   }
 }
 
@@ -239,6 +268,39 @@ function getCapsuleIdFromPath(): string {
   const segment = index >= 0 ? trimmed.slice(index + 1) : trimmed;
 
   return segment || trimmed || "";
+}
+
+/**
+ * Canonical emergency handoff — the capsuleId travels in the QUERY
+ * STRING, the capability in the HASH:
+ *
+ *   /emergency.html?capsuleId=<capsuleId>#<capability>
+ *
+ * The EMERGENCY WATCHDOG in `index.html` is the producer (it runs on
+ * `/capsule/<capsuleId>` and redirects here, preserving the hash
+ * verbatim). Reading the path instead is why the emergency path could
+ * never resolve a real capsule at the canonical URL.
+ */
+function getCapsuleIdFromQuery(): string {
+  if (
+    typeof location === "undefined" ||
+    typeof location.search !== "string"
+  ) {
+    return "";
+  }
+
+  const value = new URLSearchParams(location.search).get("capsuleId");
+
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * Query first (canonical), path segment second (fallback for a direct
+ * `/capsule/<capsuleId>` style URL). Both are plain strings; validation
+ * stays with `loadManifest`.
+ */
+function resolveCapsuleId(): string {
+  return getCapsuleIdFromQuery() || getCapsuleIdFromPath();
 }
 
 function wireConfirmPresence(args: {

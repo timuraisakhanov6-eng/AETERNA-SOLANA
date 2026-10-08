@@ -14,6 +14,9 @@ import { vi } from "vitest";
 const hoisted = vi.hoisted(() => ({
   getChunkPointerReadout: vi.fn(),
   resolveContainerChunks: vi.fn(),
+  loadManifest: vi.fn(),
+  parseCapability: vi.fn(),
+  getTrustedTime: vi.fn(),
   currentItems: [] as unknown[],
 }));
 
@@ -26,20 +29,15 @@ vi.mock("@/lib/capsule/open/resolveContainerChunks", () => ({
 }));
 
 vi.mock("@/lib/capsule/parseCapsuleCapability", () => ({
-  parseCapsuleCapability: () => ({ recipientSecret: "s".repeat(64) }),
+  parseCapsuleCapability: hoisted.parseCapability,
 }));
 
 vi.mock("@/lib/capsule/loadManifest", () => ({
-  loadManifest: async () => ({
-    capsuleId: "a".repeat(64),
-    openAt: 0,
-    sealedAt: 0,
-    heartbeatInterval: 0,
-  }),
+  loadManifest: hoisted.loadManifest,
 }));
 
 vi.mock("@/shared/time/getTrustedTime", () => ({
-  getTrustedTime: async () => ({ nowUtc: Number.MAX_SAFE_INTEGER }),
+  getTrustedTime: hoisted.getTrustedTime,
 }));
 
 vi.mock("@/shared/heartbeat/resolveEffectiveOpenAt", () => ({
@@ -68,14 +66,48 @@ vi.mock("@/lib/capsule/openCapsule", () => ({
 export async function runEmergencyCase(args: {
   publication: unknown;
   items: unknown[];
-}): Promise<{ status: string }> {
+  /** Sets `location` (path + search + hash) before the run. */
+  url?: string;
+  /** "recipient" (default) yields a secret; "none" yields an invalid link. */
+  capability?: "recipient" | "none";
+  /** Manifest openAt (ms). Default 0 (already open). */
+  openAt?: number;
+  /** Trusted time nowUtc (ms). Default MAX_SAFE_INTEGER (open). */
+  nowUtc?: number;
+}): Promise<{ status: string; outcome: string; manifestCapsuleId: string }> {
+  if (typeof window !== "undefined") {
+    window.history.replaceState({}, "", args.url ?? "/emergency");
+  }
+
   hoisted.currentItems = args.items;
+
   hoisted.getChunkPointerReadout.mockReset();
   hoisted.resolveContainerChunks.mockReset();
+  hoisted.loadManifest.mockReset();
+  hoisted.parseCapability.mockReset();
+  hoisted.getTrustedTime.mockReset();
+
   hoisted.getChunkPointerReadout.mockResolvedValue({
     container: args.publication,
   });
   hoisted.resolveContainerChunks.mockResolvedValue([]);
+
+  hoisted.loadManifest.mockResolvedValue({
+    capsuleId: "a".repeat(64),
+    openAt: args.openAt ?? 0,
+    sealedAt: 0,
+    heartbeatInterval: 0,
+  });
+
+  hoisted.parseCapability.mockImplementation(() =>
+    args.capability === "none"
+      ? null
+      : { recipientSecret: "s".repeat(64) }
+  );
+
+  hoisted.getTrustedTime.mockResolvedValue({
+    nowUtc: args.nowUtc ?? Number.MAX_SAFE_INTEGER,
+  });
 
   const { initEmergencyRuntime } = await import(
     "@/emergency/emergencyRuntime"
@@ -84,7 +116,10 @@ export async function runEmergencyCase(args: {
   const root = document.createElement("div");
   const status = document.createElement("div");
 
-  await initEmergencyRuntime({ root, status });
+  const outcome = await initEmergencyRuntime({ root, status });
 
-  return { status: status.textContent ?? "" };
+  const manifestCapsuleId =
+    (hoisted.loadManifest.mock.calls[0]?.[0] as string | undefined) ?? "";
+
+  return { status: status.textContent ?? "", outcome, manifestCapsuleId };
 }

@@ -589,8 +589,13 @@ footer{
   async function initEmergencyRuntime(args) {
     showState(stateOpening);
     try {
-      await originalInitEmergencyRuntime(args);
-      showState(stateOpened);
+      // The runtime returns an EXPLICIT outcome. "opened" means the
+      // capsule was decrypted and its items rendered; "sealed" means
+      // nothing was opened (invalid link, unavailable, not-yet-open,
+      // creator-authority wait). A plain (non-throwing) return is NOT
+      // success — only the explicit "opened" outcome switches surfaces.
+      const outcome = await originalInitEmergencyRuntime(args);
+      showState(outcome === "opened" ? stateOpened : stateSealed);
     } catch {
       showState(stateSealed);
     }

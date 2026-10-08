@@ -165,6 +165,7 @@ describe("initEmergencyRuntime — emergency path (E)", () => {
       items: [{ type: "text", text: "hi" }],
     });
     expect(out.status).toBe("Capsule opened.");
+    expect(out.outcome).toBe("opened");
   });
 
   it("no publication + chunk-bearing items → fail closed", async () => {
@@ -179,5 +180,43 @@ describe("initEmergencyRuntime — emergency path (E)", () => {
       ],
     });
     expect(out.status).toBe("Capsule publication unavailable.");
+    expect(out.outcome).toBe("sealed");
+  });
+
+  it("canonical emergency URL: capsuleId is read from the ?capsuleId= query param", async () => {
+    const { runEmergencyCase } = await import("./textOnly.open.emergencyHarness");
+    const EMERGENCY_CAPSULE_ID = "b".repeat(64);
+    const out = await runEmergencyCase({
+      publication: null,
+      items: [{ type: "text", text: "hi" }],
+      // Canonical handoff produced by the index.html watchdog:
+      // /emergency.html?capsuleId=<id>#<capability>  (308 → /emergency?...)
+      url: `/emergency?capsuleId=${EMERGENCY_CAPSULE_ID}#${"s".repeat(64)}`,
+    });
+    expect(out.manifestCapsuleId).toBe(EMERGENCY_CAPSULE_ID);
+    expect(out.outcome).toBe("opened");
+  });
+
+  it("missing/invalid capability → sealed", async () => {
+    const { runEmergencyCase } = await import("./textOnly.open.emergencyHarness");
+    const out = await runEmergencyCase({
+      publication: null,
+      items: [{ type: "text", text: "hi" }],
+      capability: "none",
+    });
+    expect(out.status).toBe("Invalid capsule link.");
+    expect(out.outcome).toBe("sealed");
+  });
+
+  it("capsule not yet open → sealed", async () => {
+    const { runEmergencyCase } = await import("./textOnly.open.emergencyHarness");
+    const out = await runEmergencyCase({
+      publication: null,
+      items: [{ type: "text", text: "hi" }],
+      openAt: 2_000_000_000_000,
+      nowUtc: 1_000_000_000_000,
+    });
+    expect(out.status).toBe("Capsule is not yet open.");
+    expect(out.outcome).toBe("sealed");
   });
 });
