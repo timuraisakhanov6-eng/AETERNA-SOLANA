@@ -113,6 +113,27 @@ No post-expiration extension may exist.
 
 ---
 
+## 3.4 Scope of Temporal Invariants (Model 01)
+
+§3.2 is an IMPLEMENTATION invariant. It binds every canonical decrypt pipeline
+(primary runtime and Emergency Runtime): an unmodified client MUST NOT decrypt
+before `effectiveOpenAt`.
+
+§3.2 is NOT a cryptographic guarantee. Model 01 does NOT implement a
+cryptographic time-lock. `openAt` is an immutable KDF input (Ciphertext
+Authority), not a current-time-dependent secret; the time boundary is enforced
+by the canonical client's opening-policy check against Trusted Time.
+
+Consequently, a malicious client that possesses the recipient capability and
+controls its own JavaScript can bypass the client-side guard and decrypt before
+`effectiveOpenAt`. This does NOT invalidate §3.2 — the invariant binds the
+canonical implementation, not a hostile client.
+
+See `SECURITY.md` §16 for the Model 01 time-boundary statement and the future
+(not launched) Model 02 target.
+
+---
+
 # 4. MANIFEST INVARIANTS
 
 ## 4.1 Manifest Identity Binding

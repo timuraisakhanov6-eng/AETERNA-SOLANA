@@ -23,7 +23,7 @@ What is AETERNA
 AETERNA is a digital time capsule.
 Its purpose is to preserve information unchanged until a pre-selected moment.
 Once sealed, the contents cannot be altered.
-No one can open the capsule early.
+Opening before the sealed time is enforced by the canonical client: it refuses to decrypt until the trusted-time / effectiveOpenAt guard passes. Model 01 does NOT provide a cryptographic time-lock, so a malicious recipient that controls its own client code and already possesses the recipientSecret can bypass the client-side guard and derive the key / decrypt early (see SECURITY.md §16).
 No one can replace the files.
 No one can tamper with the contents.
 Not even AETERNA itself knows what's inside a capsule, because everything is encrypted directly in the user's browser.

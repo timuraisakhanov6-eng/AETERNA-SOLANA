@@ -272,6 +272,12 @@ The following conditions remain forbidden:
 
 Hardening MUST NOT weaken these guarantees.
 
+`decrypt-before-unlock` is an implementation condition (see `SECURITY.md` §16):
+the canonical runtime MUST NOT decrypt before `effectiveOpenAt`. Model 01 does
+NOT implement a cryptographic time-lock, so a malicious client that holds the
+recipient capability and controls its own JavaScript can bypass the client-side
+guard. That does not make the condition acceptable in canonical code.
+
 ---
 
 # 18. SECURITY RATIONALE

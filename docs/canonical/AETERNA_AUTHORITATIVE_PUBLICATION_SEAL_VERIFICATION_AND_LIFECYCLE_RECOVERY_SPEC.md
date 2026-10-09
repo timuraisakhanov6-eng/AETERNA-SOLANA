@@ -82,6 +82,50 @@ Registry as an active publication mechanism. The container publication claim —
 NOT the containerTxId, the payment transaction id, the wallet, or storage
 evidence — is what authorizes the seal.
 
+### 3.0.1 Container V1 binary layout (canonical)
+
+The container is a single deterministic byte stream:
+
+```
+[ 64-byte fixed header ][ chunk 0 ][ chunk 1 ] ... [ chunk N-1 ]
+```
+
+Header — fixed 64 bytes, big-endian / network order:
+
+| offset | size | field | value |
+|---|---|---|---|
+| 0 | 4 | magic | ASCII `AETC` (`0x41 0x45 0x54 0x43`) |
+| 4 | 1 | version | `uint8` = `1` |
+| 5 | 2 | headerSize | `uint16` = `64` |
+| 7 | 4 | chunkCount | `uint32` |
+| 11 | 53 | reserved | zero-filled |
+
+- The header is self-described: `headerSize` is written into the header so a
+  future revision can grow it without ambiguity.
+- `reserved` MUST be all zero. There is deliberately NO variable-length index
+  and NO cryptographic field in the header.
+- Chunks begin at byte offset `64` and appear in the canonical global order.
+- A reader MUST identify the container by `magic` and verify `version` and
+  `headerSize` before trusting any other header field; any mismatch fails
+  closed.
+- Each chunk's physical length equals its source ciphertext size. A plaintext
+  chunk is at most `MAX_CHUNK_SIZE = 10 * 1024 * 1024` (10 MiB); the encrypted
+  chunk adds AES-GCM IV (12 bytes) + tag (16 bytes) overhead.
+- Offsets are derived deterministically from the header and the ordered entry
+  sizes — no index is stored in the container.
+
+Layout digest (binds the layout to the publication record):
+
+```
+descriptor  = "AETC-LAYOUT v1\n" + "chunks:<N>\n"
+            + "<i>:<chunkId>:<size>\n" ...   (one line per entry, canonical order)
+layoutDigest = SHA-256(descriptor)           // lowercase hex
+```
+
+The reader recomputes the digest over the ordered `(chunkId, size)` list and
+compares it to the published `layoutDigest`; a digest mismatch — or any
+chunk-identity mismatch against the published `chunkIds` — fails closed.
+
 ### 3.1 Client-reported publication vs authoritative evidence
 
 Client-reported publication:

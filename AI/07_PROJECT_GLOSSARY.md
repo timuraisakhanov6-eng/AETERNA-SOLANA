@@ -461,6 +461,32 @@ It may only postpone the effective opening time.
 
 ---
 
+## openAt
+
+openAt is the immutable capsule opening timestamp sealed into the Manifest.
+
+It is a binding PBKDF2 vault-key derivation input (Ciphertext Authority) and
+never changes after it is established.
+
+It is NOT a cryptographic time-lock: it is a fixed value, not a
+current-time-dependent secret, and it does not by itself prevent decryption
+before the opening time. Early opening is refused by the canonical client's
+trusted-time / effectiveOpenAt guard (see SECURITY.md §16).
+
+---
+
+## effectiveOpenAt
+
+effectiveOpenAt is the authoritative runtime opening boundary.
+
+It is derived at runtime from the immutable sealed openAt, Trusted Time, and
+Heartbeat (Confirm Presence) records.
+
+It may only move forward — it never moves backwards, and it never changes the
+sealed openAt.
+
+---
+
 ## Trusted Time
 
 Trusted Time determines opening eligibility only.

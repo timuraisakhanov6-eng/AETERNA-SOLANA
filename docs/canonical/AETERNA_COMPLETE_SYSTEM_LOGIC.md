@@ -6,7 +6,7 @@ Supersedes: v4.3 FINAL LOCK STABLE.
 What is AETERNA?
 AETERNA is not a messenger.
 AETERNA is a cryptographic time capsule.
-The creator builds the capsule. The contents are encrypted locally. No one can open the capsule until the opening conditions are met. Even the AETERNA server cannot read the contents.
+The creator builds the capsule. The contents are encrypted locally. The canonical client refuses to open the capsule until the opening conditions are met (Trusted Time against effectiveOpenAt). This is a client-enforced opening policy, not a cryptographic time-lock: a malicious client that controls its own code and already holds the recipient capability can bypass it (see SECURITY.md §16). Even the AETERNA server cannot read the contents.
 
 
 Core Entities
@@ -295,6 +295,7 @@ The sealed openAt value is established before PREPARED, alongside the other Ciph
 Changing sealed openAt after it is established is forbidden under all circumstances, including Heartbeat. The canonical Heartbeat Renewal Rules update effectiveOpenAt within Open Authority only and never touch sealed openAt or vault-key derivation.
 Sealed openAt is written to the Manifest after payment, but it is not created or modified at that point. The Manifest records the already-established value — it is not the source of openAt.
 Two related but distinct values exist: sealed openAt (a Ciphertext Authority / key-derivation input) and effectiveOpenAt (an Open Authority computation). Only effectiveOpenAt is mutable via Heartbeat; sealed openAt never changes.
+Model 01 time boundary: sealed openAt is a key-derivation input, NOT a cryptographic time-lock. Decryption timing is enforced by the canonical client's opening-policy check (Trusted Time against effectiveOpenAt), not by a cryptographic release mechanism. A malicious client that holds the recipient capability and controls its own JavaScript can bypass that client-side check and decrypt before effectiveOpenAt. See SECURITY.md §16.
 After the PreparedCapsule object is created, the following become immutable:
 
 chunkMetadata core fields (chunkId, mediaId, index, size)
@@ -632,7 +633,9 @@ Heartbeat governance rests on: purpose, the Heartbeat Window, the Renewal Rules,
 
 Emergency Runtime
 An authority-preserving fallback runtime.
-emergency.html CapsuleView is a full-featured fallback. It is a static offline rendering surface that operates without contacting the AETERNA server for resolution or key material.
+emergency.html CapsuleView is a full-featured fallback. It does NOT obtain key material or plaintext from the AETERNA server. It DOES resolve the capsule Manifest from the server (GET /api/capsule/:id); the capability remains in the URL fragment and is never sent with the Manifest request. The emergency path preserves the same temporal (Trusted Time / effectiveOpenAt) and fail-closed boundaries as the primary runtime, and is NOT cryptographically time-locked (see SECURITY.md §16).
+
+Canonical emergency URL: /emergency.html?capsuleId=<capsuleId>#<capability>. The primary runtime ships an Emergency Watchdog that, on a /capsule/<capsuleId> page that fails to initialize, redirects to that URL after an 8-second timeout; the watchdog is disarmed by the aeterna:ready event emitted by a successfully initialized primary runtime. The emergency runtime reads the capsuleId from the ?capsuleId= query parameter (with a path-segment fallback) and the capability from location.hash, and returns a typed outcome of "opened" or "sealed" — a plain non-throwing return without a successful open resolves to SEALED, never OPENED.
 It preserves:
 
 recipient authority
