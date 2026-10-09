@@ -21,6 +21,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import React, { type ReactNode } from "react";
 
 const {
@@ -135,7 +136,11 @@ function installLocalStorage() {
 
 function renderWallet() {
   const wrapper = ({ children }: { children: ReactNode }) =>
-    React.createElement(AETERNAWalletProvider, null, children);
+    React.createElement(
+      MemoryRouter,
+      { initialEntries: ["/create"] },
+      React.createElement(AETERNAWalletProvider, null, children)
+    );
 
   return renderHook(() => useAeternaWallet(), { wrapper });
 }

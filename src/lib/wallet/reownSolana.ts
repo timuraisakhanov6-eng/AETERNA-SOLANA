@@ -69,6 +69,12 @@ function createAeternaAppKit(): AppKit {
     features: {
       email: false,
       socials: false,
+      // Defence-in-depth telemetry policy: disable AppKit analytics entirely.
+      // NOTE: this does NOT suppress the mandatory INITIALIZE / CONNECT_SUCCESS
+      // / SOCIAL_LOGIN_SUCCESS events; keeping the capability fragment off
+      // those events is handled by deferring eager construction on
+      // capability-bearing routes (see `appKitInitPolicy`).
+      analytics: false,
     },
     enableReconnect: false,
   });

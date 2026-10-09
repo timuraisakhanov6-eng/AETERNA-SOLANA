@@ -90,4 +90,19 @@ describe("Model 01 Phantom-only AppKit configuration", () => {
     // Provider-neutral behaviour preserved: reconnect stays disabled.
     expect(options?.["enableReconnect"]).toBe(false);
   });
+
+  it("disables AppKit analytics while keeping email/socials off (defence-in-depth)", () => {
+    getReownAppKitInstance();
+
+    const features = captured.options?.["features"] as
+      | Record<string, unknown>
+      | undefined;
+
+    expect(features).toBeDefined();
+    // Defence-in-depth telemetry policy: analytics disabled.
+    expect(features?.["analytics"]).toBe(false);
+    // Wallet flow unchanged: email and socials remain disabled.
+    expect(features?.["email"]).toBe(false);
+    expect(features?.["socials"]).toBe(false);
+  });
 });

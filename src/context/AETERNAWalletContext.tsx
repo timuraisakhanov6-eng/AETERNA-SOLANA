@@ -11,6 +11,7 @@
  */
 
 import React, { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   useDisconnect,
   useAppKitProvider,
@@ -23,6 +24,7 @@ import {
   ensureReownAppKitInstance,
   getReownAppKitInstance,
 } from '@/lib/wallet/reownSolana';
+import { shouldDeferAppKitInitialization } from '@/lib/wallet/appKitInitPolicy';
 import { connectPhantomHeadless } from '@/lib/wallet/phantomProvider';
 import {
   clearExplicitDisconnectMarker,
@@ -292,6 +294,27 @@ const initializingWallet: AeternaWallet = {
 };
 
 export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
+  const location = useLocation();
+
+  /**
+   * SECURITY DECISION (recomputed each render):
+   *
+   * AppKit emits a MANDATORY `INITIALIZE` telemetry event on construction
+   * whose payload embeds `window.location.href`. On a capsule-open route the
+   * URL fragment is the capability, so eager construction would leak it.
+   *
+   * When deferral applies we render the state-only provider and DO NOT mount
+   * `AETERNAWalletProviderInner`, because that inner component consumes
+   * AppKit hooks (`useWalletInfo`) which THROW when AppKit has not been
+   * created. Capsule runtime pages never consume those wallet actions, so
+   * the state-only value is sufficient there. AppKit is still created lazily
+   * on the allowed connect flow (`ensureReownAppKitInstance`).
+   */
+  const deferred = shouldDeferAppKitInitialization(
+    location.pathname,
+    location.hash
+  );
+
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -299,16 +322,24 @@ export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
       setReady(true);
       return;
     }
+    // SECURITY: skip the eager AppKit construction that would emit the
+    // mandatory INITIALIZE telemetry with the capability fragment.
+    if (shouldDeferAppKitInitialization(location.pathname, location.hash)) {
+      setReady(true);
+      return;
+    }
     getReownAppKitInstance();
     setReady(true);
-  }, []);
+  }, [location.pathname, location.hash]);
 
   const initializingValue = useMemo<AETERNAWalletContextValue>(
     () => ({ state: initialState, wallet: initializingWallet }),
     []
   );
 
-  if (!ready) {
+  // Deferred or not-yet-ready: provide a safe state-only context and DO NOT
+  // mount the AppKit-consuming inner provider.
+  if (deferred || !ready) {
     return <AETERNAWalletContext.Provider value={initializingValue}>{children}</AETERNAWalletContext.Provider>;
   }
 
