@@ -422,3 +422,342 @@ describe("range read deadline — media layer", () => {
     vi.useRealTimers();
   });
 });
+
+/**
+ * Structural requirement of the MediaSource fix.
+ *
+ * A MediaSource only opens once its object URL is attached to a media
+ * element, so the element MUST already be mounted while the item is
+ * still loading. Deferring it until after the load resolves is exactly
+ * the circular dependency that made every progressive attempt burn the
+ * full open timeout and fall back to a whole-file Blob.
+ */
+describe("A/V element is mounted BEFORE the load resolves", () => {
+  it("renders the <video> element while still Loading…", async () => {
+    // The load never settles on its own.
+    vi.mocked(openRuntime.openVideo).mockImplementation(
+      () => new Promise(() => {}),
+    );
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    // Still loading…
+    expect(screen.getByText(/Loading video\.webm/i)).toBeTruthy();
+    // …yet the element the MediaSource will attach to already exists,
+    // and it is the ONLY player (never duplicated).
+    const players = document.querySelectorAll("video");
+    expect(players.length).toBe(1);
+  });
+
+  it("keeps the SAME element across loading → loaded (never two players)", async () => {
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(okSession() as never);
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    const before = document.querySelector("video");
+    expect(before).not.toBeNull();
+
+    await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+
+    const after = document.querySelector("video");
+    expect(after).toBe(before);
+    expect((after as HTMLVideoElement).src).toContain("blob");
+  });
+
+  it("an <audio> item is mounted early too", async () => {
+    vi.mocked(openRuntime.openAudio).mockImplementation(
+      () => new Promise(() => {}),
+    );
+
+    render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            {
+              type: "media",
+              mediaType: "audio",
+              filename: "clip.webm",
+              mimeType: "audio/webm",
+              size: 1000,
+              chunks: [],
+            },
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    expect(screen.getByText(/Loading clip\.webm/i)).toBeTruthy();
+    expect(document.querySelectorAll("audio").length).toBe(1);
+  });
+});
+
+/**
+ * A/V `src` ownership — Chromium re-write regression.
+ *
+ * Models the exact Chromium rule that broke the first attach-before-await
+ * attempt: assigning the SAME MediaSource object URL a second time
+ * re-runs the media element load algorithm, which CLOSES the MediaSource
+ * (`readyState` → "closed", duration → NaN) and does NOT fire another
+ * `sourceopen`.
+ *
+ * The instrumented `HTMLMediaElement.prototype.src` enforces that rule,
+ * so any regression to "let React render `src`" fails here.
+ */
+
+type MsInstrumented = HTMLMediaElement & { __src?: string };
+
+class MsFakeSourceBuffer extends EventTarget {
+  appendBuffer(_b?: Uint8Array): void {
+    queueMicrotask(() => this.dispatchEvent(new Event("updateend")));
+  }
+  abort(): void {}
+}
+
+class MsFakeMediaSource extends EventTarget {
+  static isTypeSupported(m: string): boolean {
+    return msSupports(m);
+  }
+  readyState: "closed" | "open" | "ended" = "closed";
+  opens = 0;
+  resets = 0;
+  addSourceBuffer(): MsFakeSourceBuffer {
+    return new MsFakeSourceBuffer();
+  }
+  endOfStream(): void {
+    this.readyState = "ended";
+  }
+}
+
+let msSupports: (m: string) => boolean = () => true;
+let msSourcesByUrl: Map<string, MsFakeMediaSource>;
+let msRevoked: string[];
+let msSrcWrites: string[];
+let msUrlSeq = 0;
+
+let msOriginalSrcDescriptor: PropertyDescriptor | undefined;
+let msOriginalRemoveAttribute: typeof Element.prototype.removeAttribute;
+let msOriginalSetAttribute: typeof Element.prototype.setAttribute;
+
+function msInstallInstrumentation(): void {
+  const proto = HTMLMediaElement.prototype;
+
+  msOriginalSrcDescriptor = Object.getOwnPropertyDescriptor(proto, "src");
+
+  Object.defineProperty(proto, "src", {
+    configurable: true,
+    get(this: MsInstrumented) {
+      return this.__src ?? "";
+    },
+    set(this: MsInstrumented, value: string) {
+      const url = String(value);
+      msSrcWrites.push(url);
+      this.__src = url;
+
+      const ms = msSourcesByUrl.get(url);
+      if (!ms) return;
+
+      if (ms.readyState !== "closed") {
+        // Chromium: re-assigning an already-attached URL RESETS the
+        // MediaSource — back to "closed", and it never re-opens.
+        ms.readyState = "closed";
+        ms.resets++;
+        return;
+      }
+
+      ms.readyState = "open";
+      ms.opens++;
+      queueMicrotask(() => ms.dispatchEvent(new Event("sourceopen")));
+    },
+  });
+
+  msOriginalRemoveAttribute = Element.prototype.removeAttribute;
+  Object.defineProperty(proto, "removeAttribute", {
+    configurable: true,
+    value(this: MsInstrumented, name: string) {
+      if (String(name).toLowerCase() === "src") this.__src = "";
+      return msOriginalRemoveAttribute.call(this, name);
+    },
+  });
+
+  // React writes attributes via setAttribute — route it through the
+  // instrumented property so the same Chromium rule applies.
+  msOriginalSetAttribute = Element.prototype.setAttribute;
+  Object.defineProperty(proto, "setAttribute", {
+    configurable: true,
+    value(this: MsInstrumented, name: string, value: string) {
+      if (String(name).toLowerCase() === "src") {
+        (this as HTMLMediaElement).src = String(value);
+        return;
+      }
+      return msOriginalSetAttribute.call(this, name, value);
+    },
+  });
+}
+
+function msRestoreInstrumentation(): void {
+  const proto = HTMLMediaElement.prototype;
+  if (msOriginalSrcDescriptor) {
+    Object.defineProperty(proto, "src", msOriginalSrcDescriptor);
+  }
+  Object.defineProperty(proto, "removeAttribute", {
+    configurable: true,
+    value: msOriginalRemoveAttribute,
+  });
+  Object.defineProperty(proto, "setAttribute", {
+    configurable: true,
+    value: msOriginalSetAttribute,
+  });
+}
+
+const msMediaSourceWrites = () =>
+  msSrcWrites.filter((u) => u.startsWith("blob:mediasource-"));
+const msObjectWrites = () => msSrcWrites.filter((u) => u.startsWith("blob:object-"));
+
+describe("A/V src ownership — identical URL is never re-written", () => {
+  beforeEach(() => {
+    msSourcesByUrl = new Map();
+    msRevoked = [];
+    msSrcWrites = [];
+    msUrlSeq = 0;
+    msSupports = () => true;
+
+    msInstallInstrumentation();
+
+    vi.stubGlobal("MediaSource", MsFakeMediaSource);
+    vi.stubGlobal("URL", {
+      createObjectURL: (obj: unknown) => {
+        if (obj instanceof MsFakeMediaSource) {
+          const url = `blob:mediasource-${++msUrlSeq}`;
+          msSourcesByUrl.set(url, obj);
+          return url;
+        }
+        return `blob:object-${++msUrlSeq}`;
+      },
+      revokeObjectURL: (url: string) => {
+        msRevoked.push(url);
+      },
+    });
+  });
+
+  afterEach(() => {
+    msRestoreInstrumentation();
+    (globalThis as unknown as { MediaSource?: unknown }).MediaSource = undefined;
+  });
+
+  it("attaches the MediaSource URL exactly once and never resets it", async () => {
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(okSession() as never);
+
+    render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            videoItem({ mimeType: "video/webm;codecs=vp8,opus", size: 32 }),
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => {
+      const v = document.querySelector("video") as HTMLVideoElement | null;
+      expect(v?.src ?? "").toMatch(/^blob:mediasource-/);
+    });
+
+    // Give React every opportunity to write `src` a second time.
+    await new Promise((r) => setTimeout(r, 40));
+
+    const el = document.querySelector("video") as HTMLVideoElement;
+    const ms = msSourcesByUrl.get(el.src);
+
+    expect(ms).toBeTruthy();
+    expect(msMediaSourceWrites().length).toBe(1);
+    expect(ms!.opens).toBe(1);
+    expect(ms!.resets).toBe(0);
+    expect(ms!.readyState).toBe("ended");
+  });
+
+  it("keeps exactly one player element across loading → loaded", async () => {
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(okSession() as never);
+
+    render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            videoItem({ mimeType: "video/webm;codecs=vp8,opus", size: 32 }),
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    expect(document.querySelectorAll("video").length).toBe(1);
+
+    await waitFor(() =>
+      expect(
+        (document.querySelector("video") as HTMLVideoElement).src,
+      ).toMatch(/^blob:mediasource-/),
+    );
+
+    expect(document.querySelectorAll("video").length).toBe(1);
+  });
+
+  it("the Blob fallback writes its URL once through the same path", async () => {
+    msSupports = () => false;
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(okSession() as never);
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem({ mimeType: "video/webm" })]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => {
+      const v = document.querySelector("video") as HTMLVideoElement | null;
+      expect(v?.src ?? "").toMatch(/^blob:object-/);
+    });
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(msObjectWrites().length).toBe(1);
+    expect(msMediaSourceWrites().length).toBe(0);
+  });
+
+  it("unmount revokes the MediaSource URL it attached", async () => {
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(okSession() as never);
+
+    const { unmount } = render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            videoItem({ mimeType: "video/webm;codecs=vp8,opus", size: 32 }),
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        (document.querySelector("video") as HTMLVideoElement).src,
+      ).toMatch(/^blob:mediasource-/),
+    );
+
+    const attached = (document.querySelector("video") as HTMLVideoElement).src;
+
+    unmount();
+
+    expect(msRevoked).toContain(attached);
+  });
+});

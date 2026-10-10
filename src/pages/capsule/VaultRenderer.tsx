@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"; 
+import { useState, useEffect, useRef, useCallback } from "react"; 
 
 import type {
   Vault,
@@ -266,6 +266,7 @@ export async function sessionToMediaSource(
   mimeType: string,
   size: number,
   signal?: AbortSignal,
+  attachTo?: HTMLMediaElement | null,
 ): Promise<string> {
 
   /**
@@ -283,6 +284,45 @@ export async function sessionToMediaSource(
 
   const mediaSource = new MediaSource();
   const objectUrl = URL.createObjectURL(mediaSource);
+
+  /**
+   * ATTACH BEFORE AWAITING `sourceopen`.
+   *
+   * A MediaSource transitions to "open" — and fires `sourceopen` — only
+   * once its object URL is assigned to a media element. Awaiting the
+   * event first could therefore NEVER succeed: the caller cannot hand
+   * the URL to an element that is rendered only after this function
+   * resolves. That circular dependency made every progressive playback
+   * burn the full open-timeout and fall back to a whole-file Blob.
+   *
+   * `attachTo` is the already-mounted element owned by the caller, so
+   * the handshake runs in the correct order: create → attach → await.
+   */
+  const attachedTo =
+    attachTo === undefined || attachTo === null ? null : attachTo;
+
+  const detachFromMedia = () => {
+    if (!attachedTo) return;
+    try {
+      // Only release the element if it still points at OUR url — a
+      // newer attempt may already own it.
+      if (attachedTo.src === objectUrl) {
+        attachedTo.removeAttribute("src");
+        attachedTo.load();
+      }
+    } catch {
+      // best-effort teardown
+    }
+  };
+
+  if (attachedTo) {
+    try {
+      attachedTo.src = objectUrl;
+    } catch {
+      // A rejected assignment leaves the element un-attached; the
+      // bounded open timeout below still terminates the attempt.
+    }
+  }
 
   const abortError = () =>
     new Error(
@@ -350,6 +390,10 @@ export async function sessionToMediaSource(
       if (signal) {
         signal.removeEventListener("abort", onAbort);
       }
+      // Release the media element BEFORE revoking, so it never holds a
+      // dead object URL (a later attempt — or the Blob fallback — owns
+      // the element's src from here on).
+      detachFromMedia();
       try {
         URL.revokeObjectURL(objectUrl);
       } catch {
@@ -923,6 +967,29 @@ function MediaItemV2Block({
   const mediaSessionRef =
     useRef<MediaSession | null>(null);
 
+  /**
+   * The A/V element that owns the MediaSource.
+   *
+   * It MUST already be mounted when `sessionToMediaSource` runs: a
+   * MediaSource only becomes "open" — and only then fires `sourceopen`
+   * — once its object URL is assigned to a media element. The element
+   * is therefore rendered for the WHOLE lifetime of an A/V item, so
+   * the handshake order is create → attach → await.
+   *
+   * A stable callback ref keeps the same element across the
+   * loading → loaded render (a fresh callback identity would make
+   * React detach/reattach the ref on every render).
+   */
+  const mediaElRef =
+    useRef<HTMLMediaElement | null>(null);
+
+  const setMediaEl = useCallback(
+    (el: HTMLMediaElement | null) => {
+      mediaElRef.current = el;
+    },
+    [],
+  );
+
   /** Idempotent, safe dispose of the current media session. */
   const safeDisposeSession = () => {
     const session = mediaSessionRef.current;
@@ -1113,6 +1180,7 @@ function MediaItemV2Block({
               session,
               media,
               controller.signal,
+              mediaElRef.current,
             );
 
             break;
@@ -1146,6 +1214,7 @@ function MediaItemV2Block({
               session,
               media,
               controller.signal,
+              mediaElRef.current,
             );
 
             break;
@@ -1279,6 +1348,101 @@ function MediaItemV2Block({
     containerChunks,
   ]);
 
+  /**
+   * SINGLE imperative owner of the A/V element's `src`.
+   *
+   * React must not render `src` for this element. The MediaSource path
+   * attaches its object URL itself, before awaiting `sourceopen`, and a
+   * second — even identical — assignment re-runs the media element load
+   * algorithm, which CLOSES the MediaSource. Measured in Chromium:
+   * `duration` 1.04 s → NaN, `readyState` "ended" → "closed", and no
+   * new `sourceopen`, leaving the player permanently empty.
+   *
+   * So:
+   *  • a URL is written ONLY when the element does not already carry it;
+   *  • a URL the component owns is released when it has none left.
+   * This keeps the Blob fallback working too: its URL is written once,
+   * through this same path.
+   */
+  useEffect(() => {
+    const el = mediaElRef.current;
+    if (!el) return;
+
+    if (!objectUrl) {
+      // The component owns no URL: release the one it set earlier.
+      if (el.src.startsWith("blob:")) {
+        el.removeAttribute("src");
+        el.load();
+      }
+      return;
+    }
+
+    // Already attached — by the MediaSource handshake, or by an earlier
+    // render. Re-writing the identical URL would reset the element.
+    if (el.src === objectUrl) return;
+
+    el.src = objectUrl;
+  }, [objectUrl]);
+
+
+  /**
+   * A/V items mount their media element for the WHOLE lifetime of the
+   * item — including while loading.
+   *
+   * This is what makes progressive playback possible at all: a
+   * MediaSource only opens once its object URL is attached to an
+   * element that already exists, so the element must NOT be deferred
+   * until after the load resolves. It stays the SINGLE player — never
+   * duplicated.
+   *
+   * `src` is deliberately NOT a React prop: the URL is owned
+   * imperatively (see the `src` effect above) so the MediaSource
+   * attachment is never re-written.
+   */
+  if (item.mediaType === "video" || item.mediaType === "audio") {
+    const filename = sanitizeFilename(item.filename);
+
+    return (
+      <div className="space-y-2">
+        {item.mediaType === "video" ? (
+          <video
+            ref={setMediaEl}
+            controls
+            className="w-full rounded-xl"
+          />
+        ) : (
+          <audio
+            ref={setMediaEl}
+            controls
+            className="w-full"
+          />
+        )}
+
+        {loading && <LoadingBlock filename={filename} />}
+
+        {!loading && (error || !objectUrl) && (
+          <ErrorBlock
+            filename={filename}
+            mimeType={item.mimeType}
+            mediaType={item.mediaType}
+            size={item.size}
+            notice={notice ?? undefined}
+          />
+        )}
+
+        {objectUrl && (
+          <a
+            href={objectUrl}
+            download={filename}
+            className="underline text-sm"
+          >
+            Download file
+          </a>
+        )}
+      </div>
+    );
+  }
+
 
   if (loading)
     return (
@@ -1319,6 +1483,13 @@ function MediaItemV2Block({
  * a BOUNDED whole-file Blob ONLY when the failure is a genuine
  * MSE/container-capability problem.
  *
+ * `attachTo` is the caller's already-mounted media element. It is
+ * REQUIRED for progressive playback to work at all: a MediaSource only
+ * opens once its object URL is attached, so the handshake must run as
+ * create → attach → await `sourceopen`. Passing null simply means the
+ * MSE attempt is expected to time out (used by tests that exercise the
+ * capability probe only).
+ *
  * Terminal outcomes:
  * - streamable → a MediaSource object URL (or throws on real failure);
  * - not streamable (MSE/MIME incompatibility) + within limit → a
@@ -1331,6 +1502,7 @@ export async function openStreamableOrFallback(
   session: MediaSession,
   media: OpenableMediaItem,
   signal: AbortSignal,
+  attachTo?: HTMLMediaElement | null,
 ): Promise<string> {
 
   try {
@@ -1339,6 +1511,7 @@ export async function openStreamableOrFallback(
       media.mimeType,
       media.size,
       signal,
+      attachTo,
     );
   } catch (err) {
 

@@ -586,7 +586,14 @@ function renderEmergencyVault(
    EMERGENCY MEDIA ADAPTERS
    ========================================================= */
 
-function buildEmergencyMediaElement(args: {
+/**
+ * Progressive (video/audio) emergency surface.
+ *
+ * Exported so the URL-ownership contract can be exercised directly:
+ * the active stream's object URL must never be revoked when the stream
+ * reports ready, while genuinely previous URLs still are.
+ */
+export function buildEmergencyMediaElement(args: {
   root: HTMLElement;
   status: HTMLElement;
   item: Partial<MediaItemV2>;
@@ -621,13 +628,30 @@ function buildEmergencyMediaElement(args: {
   args.root.appendChild(media);
   args.root.appendChild(fallback);
 
+  /**
+   * The object URL this element currently OWNS.
+   *
+   * Tracked explicitly so cleanup can never mistake the URL of the
+   * ACTIVE stream for a previous resource. The progressive stream
+   * attaches its own URL to `media` BEFORE awaiting `sourceopen`
+   * (attach-before-await), so by the time the stream reports ready
+   * `media.src` already IS the live URL — revoking `media.src` there
+   * would destroy the very stream that just succeeded.
+   */
+  let ownedUrl: string | null = null;
+
   const attachObjectUrl = (objectUrl: string) => {
-    if (media.src && media.src.startsWith("blob:")) {
-      URL.revokeObjectURL(media.src);
+    // Never re-write a URL the element already carries: a second —
+    // even identical — assignment re-runs the media load algorithm and
+    // closes the MediaSource.
+    if (media.src === objectUrl) return;
+
+    if (ownedUrl !== null && ownedUrl !== objectUrl) {
+      URL.revokeObjectURL(ownedUrl);
     }
 
+    ownedUrl = objectUrl;
     media.src = objectUrl;
-    media.load();
   };
 
   let currentAbort: (() => void) | null = null;
@@ -638,8 +662,11 @@ function buildEmergencyMediaElement(args: {
       currentAbort = null;
     }
 
-    if (media.src && media.src.startsWith("blob:")) {
-      URL.revokeObjectURL(media.src);
+    // Release ONLY a URL this element owns — never whatever
+    // `media.src` happens to hold, which may be the active stream.
+    if (ownedUrl !== null) {
+      URL.revokeObjectURL(ownedUrl);
+      ownedUrl = null;
     }
 
     media.removeAttribute("src");
@@ -660,7 +687,20 @@ function buildEmergencyMediaElement(args: {
     resolvedChunks: args.resolvedChunks,
     mimeType: args.mimeType,
     size: args.size,
+    // The element is already in the DOM, so the MediaSource can attach
+    // and actually reach "open" before the handshake is awaited.
+    mediaElement: media,
     onStreamReady: (objectUrl) => {
+      // The progressive stream already attached its own URL to this
+      // element before awaiting `sourceopen`. Adopt it as-is: detaching
+      // it (or re-assigning the identical URL) would close the
+      // MediaSource that just opened.
+      if (media.src === objectUrl) {
+        ownedUrl = objectUrl;
+        fallback.style.display = "none";
+        return;
+      }
+
       disposePrevious();
       attachObjectUrl(objectUrl);
     },
@@ -804,6 +844,11 @@ function buildEmergencyMediaSession(args: {
   size: number;
   onStreamReady: (objectUrl: string) => void;
   getAbortController: () => AbortController;
+  /**
+   * The media element this session drives. It must already be mounted:
+   * a MediaSource only opens once its object URL is attached to it.
+   */
+  mediaElement?: HTMLMediaElement | null | undefined;
 }): void {
   const session = createEmergencyMediaSession({
     item: args.item,
@@ -815,9 +860,46 @@ function buildEmergencyMediaSession(args: {
     onStreamReady: args.onStreamReady,
     status: args.status,
     abortController: args.getAbortController(),
+    mediaElement: args.mediaElement,
   });
 
+  /**
+   * Detach watchdog + teardown.
+   *
+   * The callback below reacts to exactly ONE event: `args.root` being
+   * removed from the document. That mutation is recorded on the
+   * element's PARENT (`childList`), never on `root` itself — so the
+   * observer must watch the parent, not `root`.
+   *
+   * The previous `observe(args.root, { subtree: false })` was doubly
+   * wrong: it watched the wrong node AND passed no
+   * childList/attributes/characterData flag, which
+   * `MutationObserver.observe` rejects with a TypeError in every
+   * spec-compliant engine (verified in a clean Chromium). The throw
+   * escaped `renderEmergencyVault`, was caught by `initEmergencyRuntime`
+   * and surfaced as "Capsule unavailable." for any capsule containing
+   * an audio/video item.
+   */
+  let rootObserver: MutationObserver | null = null;
+  let cleanedUp = false;
+
   const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+
+    // Detach the observer FIRST so a cleanup triggered by it cannot
+    // re-enter, then drop the window listener.
+    if (rootObserver) {
+      try {
+        rootObserver.disconnect();
+      } catch {
+        // best-effort
+      }
+      rootObserver = null;
+    }
+
+    window.removeEventListener("beforeunload", cleanup);
+
     try {
       session.dispose();
     } catch {
@@ -825,14 +907,19 @@ function buildEmergencyMediaSession(args: {
     }
   };
 
-  const rootObserver = new MutationObserver(() => {
-    if (!args.root.isConnected) {
-      cleanup();
-      rootObserver.disconnect();
-    }
-  });
+  const observedParent = args.root.parentNode;
 
-  rootObserver.observe(args.root, { subtree: false });
+  if (observedParent) {
+    rootObserver = new MutationObserver(() => {
+      if (!args.root.isConnected) {
+        cleanup();
+      }
+    });
+
+    // `childList` on the parent is the minimum that can detect `root`
+    // being removed; no `subtree`/`attributes` breadth is needed.
+    rootObserver.observe(observedParent, { childList: true });
+  }
 
   window.addEventListener("beforeunload", cleanup, { once: true });
 }
@@ -851,6 +938,8 @@ function createEmergencyMediaSession(args: {
   onStreamReady: (objectUrl: string) => void;
   status: HTMLElement;
   abortController: AbortController;
+  /** Already-mounted element the MediaSource attaches to. */
+  mediaElement?: HTMLMediaElement | null | undefined;
 }): MediaSession {
   const itemChunkIds = new Set(
     args.chunks.map((chunk) => chunk.chunkId)
@@ -975,6 +1064,9 @@ function createEmergencyMediaSession(args: {
         onFailureKind: (kind) => {
           failureKind = kind;
         },
+        // Attach BEFORE the sourceopen handshake — the element already
+        // exists, so the MediaSource can actually reach "open".
+        attachTo: args.mediaElement,
       });
 
       if (objectUrl) {

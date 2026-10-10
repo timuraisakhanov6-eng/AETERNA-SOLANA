@@ -120,6 +120,17 @@ export async function emergencyMediaSourceStream(args: {
    * success or on a plain abort.
    */
   onFailureKind?: (kind: EmergencyMediaFailureKind) => void;
+  /**
+   * The caller's ALREADY-MOUNTED media element.
+   *
+   * A MediaSource only becomes "open" — and only then fires
+   * `sourceopen` — once its object URL is assigned to a media element.
+   * Without an element to attach to, the open handshake below could
+   * never succeed and every attempt would burn the full timeout before
+   * reporting a failure. Supplying it keeps the order correct:
+   * create → attach → await `sourceopen`.
+   */
+  attachTo?: HTMLMediaElement | null | undefined;
 }): Promise<string | null> {
   const streamableMime =
     resolveStreamableMimeType(args.mimeType);
@@ -145,6 +156,36 @@ export async function emergencyMediaSourceStream(args: {
 
   const mediaSource = new MediaSource();
   const objectUrl = URL.createObjectURL(mediaSource);
+
+  /**
+   * Attach BEFORE awaiting `sourceopen` — see `attachTo` above.
+   */
+  const attachedTo =
+    args.attachTo === undefined || args.attachTo === null
+      ? null
+      : args.attachTo;
+
+  const detachFromMedia = (): void => {
+    if (!attachedTo) return;
+    try {
+      // Only release the element if it still points at OUR url.
+      if (attachedTo.src === objectUrl) {
+        attachedTo.removeAttribute("src");
+        attachedTo.load();
+      }
+    } catch {
+      // best-effort teardown
+    }
+  };
+
+  if (attachedTo) {
+    try {
+      attachedTo.src = objectUrl;
+    } catch {
+      // A rejected assignment leaves the element un-attached; the
+      // bounded open timeout below still terminates the attempt.
+    }
+  }
 
   let ok = false;
   let sourceBuffer: SourceBuffer | null = null;
@@ -207,6 +248,9 @@ export async function emergencyMediaSourceStream(args: {
         abortHandler = null;
       }
       if (!ok) {
+        // Release the element BEFORE revoking, so it never holds a dead
+        // object URL (the caller's fallback owns `src` from here on).
+        detachFromMedia();
         try {
           URL.revokeObjectURL(objectUrl);
         } catch {
