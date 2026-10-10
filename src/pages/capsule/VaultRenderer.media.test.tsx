@@ -338,3 +338,87 @@ describe("#5: image preview size policy on the UI surface", () => {
     expect(screen.getByText(/Failed to load preview/i)).toBeTruthy();
   });
 });
+
+/**
+ * Range-download deadline regression (container chunk read).
+ *
+ * The Production defect: a valid 10 MiB container chunk read was
+ * aborted by the old 8 s whole-object budget. These tests pin the
+ * media-layer consequences — a slow-but-healthy read must still open,
+ * and a failed read must always reach a terminal state.
+ */
+describe("range read deadline — media layer", () => {
+  it("#8: a slow-but-valid read (>8 s) still opens the mixed text + video flow", async () => {
+    vi.useFakeTimers();
+
+    const session = {
+      read: () =>
+        new Promise<Uint8Array<ArrayBuffer>>((resolve) => {
+          // 12 s: past the OLD 8 s budget, well inside the 30 s
+          // media-read deadline.
+          setTimeout(
+            () => resolve(new Uint8Array(8) as Uint8Array<ArrayBuffer>),
+            12_000,
+          );
+        }),
+      dispose: vi.fn(),
+    };
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(session as never);
+
+    render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            { type: "text", text: "Hello capsule" },
+            videoItem(),
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    // Text renders independently; media is still loading.
+    expect(screen.getByText("Hello capsule")).toBeTruthy();
+    expect(screen.getByText(/Loading video\.webm/i)).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(12_500);
+    });
+
+    // The slow read completed and produced a playable element.
+    expect(screen.queryByText(/Loading/i)).toBeNull();
+    const vid = document.querySelector("video");
+    expect(vid).not.toBeNull();
+    expect((vid as HTMLVideoElement).src).toContain("blob");
+
+    vi.useRealTimers();
+  });
+
+  it("#9: a never-settling range read reaches a terminal error, never a pending state", async () => {
+    vi.useFakeTimers();
+
+    const session = {
+      read: () => new Promise<Uint8Array<ArrayBuffer>>(() => {}),
+      dispose: vi.fn(),
+    };
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(session as never);
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    expect(screen.getByText(/Loading/i)).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+
+    expect(screen.queryByText(/Loading/i)).toBeNull();
+    expect(screen.getByText(/Failed to load preview/i)).toBeTruthy();
+
+    vi.useRealTimers();
+  });
+});
