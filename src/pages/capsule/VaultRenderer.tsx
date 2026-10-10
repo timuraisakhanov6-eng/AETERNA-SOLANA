@@ -22,6 +22,50 @@ import type {
   OpenableMediaItem,
 } from "@/lib/capsule/open/openTypes";
 
+import {
+  resolveStreamableMimeType,
+  MediaNotStreamableError,
+  isMediaNotStreamableError,
+} from "@/lib/capsule/open/mediaCompatibility";
+
+import {
+  assertInlinePreviewSize,
+  isMediaPreviewTooLargeError,
+  inlinePreviewTooLargeMessage,
+} from "@/lib/capsule/open/mediaPreviewPolicy";
+
+import {
+  awaitEvent,
+  withTimeout,
+} from "@/lib/capsule/open/boundedAwait";
+
+/**
+ * Upper bound for a single bounded media handshake (sourceopen /
+ * updateend / whole-file fallback read). Chosen generously so it only
+ * fires on a genuinely wedged MediaSource pipeline, never on a
+ * slow-but-working device, while still converting "forever" into a
+ * terminal error the UI can render.
+ */
+const MEDIA_SOURCE_OPEN_TIMEOUT_MS = 20_000;
+const MEDIA_APPEND_TIMEOUT_MS = 20_000;
+const MEDIA_READ_TIMEOUT_MS = 30_000;
+
+/**
+ * Maximum whole-file fallback size for a NON-streamable media item.
+ *
+ * A bare `video/webm` (or any type MSE cannot demux) is otherwise
+ * unreachable on the primary path. Rather than leave the UI in an
+ * infinite Loading state, the primary path may fall back to a
+ * single Blob — but ONLY for files at or below this bound, so a
+ * large unsupported file never gets materialised into one buffer.
+ * Above the bound the caller shows a terminal error instead.
+ *
+ * This preserves the bounded-memory architecture: ByteRuntime stays
+ * lazy, the LRU cache bounds are unchanged, and only small items
+ * (which are already held transiently) are ever assembled whole.
+ */
+const MAX_MEDIA_FALLBACK_BYTES = 25 * 1024 * 1024;
+
 export async function sessionToObjectUrl(
   session: MediaSession,
   size: number,
@@ -30,7 +74,17 @@ export async function sessionToObjectUrl(
 
   try {
 
-    const bytes = await session.read(0, size);
+    // Size gate FIRST: this helper materialises the whole file in
+    // memory, so an oversized item is refused before any read.
+    assertInlinePreviewSize(size, "Image");
+
+    // Bounded read: a stalled read must reach a terminal error
+    // instead of hanging the caller.
+    const bytes = await withTimeout(
+      session.read(0, size),
+      MEDIA_READ_TIMEOUT_MS,
+      "media object url read",
+    );
 
     const blob = new Blob(
       [bytes],
@@ -112,10 +166,16 @@ export async function sessionToDownloadStream(
                 size,
               );
 
+            // Bounded chunk read: a stalled read must terminate the
+            // download rather than hang it.
             const bytes =
-              await session.read(
-                offset,
-                end,
+              await withTimeout(
+                session.read(
+                  offset,
+                  end,
+                ),
+                MEDIA_READ_TIMEOUT_MS,
+                "media download chunk read",
               );
 
             await writable.write(bytes);
@@ -164,8 +224,13 @@ export async function sessionToDownloadStream(
       );
     }
 
+    // Bounded read for the small-file fallback.
     const bytes =
-      await session.read(0, size);
+      await withTimeout(
+        session.read(0, size),
+        MEDIA_READ_TIMEOUT_MS,
+        "media download fallback read",
+      );
 
     const blob =
       new Blob(
@@ -203,150 +268,336 @@ export async function sessionToMediaSource(
   signal?: AbortSignal,
 ): Promise<string> {
 
-  if (
-    typeof MediaSource === "undefined" ||
-    !MediaSource.isTypeSupported(mimeType)
-  ) {
-    throw new Error(
-      `[AETERNA] Progressive playback unavailable for ${mimeType}`,
-    );
+  /**
+   * Resolve the concrete MSE mime type. Legacy bare `video/webm` (and
+   * bare `video/mp4`) are expanded through a bounded capability probe,
+   * because MediaSource rejects the bare container form even though
+   * MediaRecorder accepts it. See mediaCompatibility.ts.
+   */
+  const streamableMime =
+    resolveStreamableMimeType(mimeType);
+
+  if (streamableMime === null) {
+    throw new MediaNotStreamableError(mimeType);
   }
 
   const mediaSource = new MediaSource();
   const objectUrl = URL.createObjectURL(mediaSource);
 
+  const abortError = () =>
+    new Error(
+      "[AETERNA] MediaSource stream cancelled.",
+    );
+
+  /**
+   * MSE-layer failure — the container/codec layer could not be driven
+   * (addSourceBuffer rejected the type, the sourceopen/updateend
+   * handshake stalled, or the SourceBuffer errored).
+   *
+   * Classified as MediaNotStreamableError so the caller MAY recover
+   * through the bounded whole-file fallback. A READ failure is never
+   * wrapped this way — it propagates unchanged, so it can never be
+   * silently retried as a full-file download.
+   */
+  const mseError = (reason: string) =>
+    new MediaNotStreamableError(mimeType, reason);
+
+  /**
+   * Single settlement gate. The MediaSource handshake has several
+   * asynchronous edges (sourceopen, each updateend, abort, dispose);
+   * this guarantees the returned promise settles EXACTLY once with a
+   * terminal outcome, so the caller can never be left waiting.
+   */
   await new Promise<void>((resolve, reject) => {
 
-    if (signal?.aborted) {
-      URL.revokeObjectURL(objectUrl);
-      reject(
-        new Error(
-          "[AETERNA] MediaSource stream cancelled.",
-        ),
-      );
-      return;
+    let settled = false;
+    let sourceBuffer: SourceBuffer | null = null;
+    let sourceBufferErrorHandler: (() => void) | null = null;
+
+    /**
+     * The manual SourceBuffer `error` listener must be removed on
+     * EVERY outcome — success, error, timeout, abort — so a settled
+     * attempt does not retain the listener (and its closure over
+     * `objectUrl`) for the lifetime of the SourceBuffer.
+     */
+    const detachSourceBufferError = () => {
+      if (!sourceBuffer || !sourceBufferErrorHandler) return;
+      try {
+        sourceBuffer.removeEventListener(
+          "error",
+          sourceBufferErrorHandler,
+        );
+      } catch {
+        // best-effort
+      }
+      sourceBufferErrorHandler = null;
+    };
+
+    const finishOk = () => {
+      if (settled) return;
+      settled = true;
+      detachSourceBufferError();
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      resolve();
+    };
+
+    const finishErr = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      detachSourceBufferError();
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      try {
+        URL.revokeObjectURL(objectUrl);
+      } catch {
+        // best-effort; the caller may already have released it
+      }
+      reject(err);
+    };
+
+    const onAbort = () => {
+      finishErr(abortError());
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        finishErr(abortError());
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
     }
 
-    mediaSource.addEventListener(
+    // Bound the sourceopen handshake: if it never fires, fail closed
+    // rather than awaiting forever.
+    awaitEvent(
+      mediaSource,
       "sourceopen",
+      MEDIA_SOURCE_OPEN_TIMEOUT_MS,
+      "MediaSource sourceopen",
+    ).then(
       async () => {
-        try {
 
-          const sourceBuffer =
+        if (settled) return;
+
+        if (signal?.aborted) {
+          finishErr(abortError());
+          return;
+        }
+
+        let sb: SourceBuffer;
+
+        try {
+          sb =
             mediaSource.addSourceBuffer(
-              mimeType,
+              streamableMime,
+            );
+        } catch (err) {
+          // MSE layer — MediaSource rejected the type.
+          finishErr(
+            mseError(
+              err instanceof Error
+                ? err.message
+                : "MediaSource addSourceBuffer failed.",
+            ),
+          );
+          return;
+        }
+
+        sourceBuffer = sb;
+
+        let offset = 0;
+        const chunkSize = 256 * 1024;
+
+        const appendNext = async (): Promise<void> => {
+
+          if (settled || signal?.aborted) {
+            return;
+          }
+
+          if (offset >= size) {
+            if (mediaSource.readyState === "open") {
+              try {
+                mediaSource.endOfStream();
+              } catch {
+                // endOfStream can throw if already ended;
+                // retain current state.
+              }
+            }
+            finishOk();
+            return;
+          }
+
+          const end =
+            Math.min(
+              offset + chunkSize,
+              size,
             );
 
-          let offset = 0;
-          const chunkSize = 256 * 1024;
+          let bytes: Uint8Array<ArrayBuffer>;
 
-          const appendNext = async () => {
+          try {
 
-            if (
-              signal?.aborted ||
-              offset >= size
-            ) {
-              if (
-                offset >= size &&
-                mediaSource.readyState === "open"
-              ) {
-                try {
-                  mediaSource.endOfStream();
-                } catch {
-                  // endOfStream can throw if already ended;
-                  // retain current state.
-                }
-              }
-              return;
-            }
-
-            const end =
-              Math.min(
-                offset + chunkSize,
-                size,
-              );
-
-            let bytes: Uint8Array;
-
-            try {
-
-              bytes =
-                await session.read(
+            // CONFIRMED DEFECT FIX (regression test #1): a chunk read
+            // that never settles must not hang the whole stream and
+            // leave the UI on "Loading" forever. Bound it so a stalled
+            // fetch/decrypt rejects and the promise settles to a
+            // terminal error.
+            bytes =
+              await withTimeout(
+                session.read(
                   offset,
                   end,
-                );
-
-            } catch (err) {
-
-              console.error(
-                "[AETERNA] MediaSource read failed",
-                err,
+                ),
+                MEDIA_READ_TIMEOUT_MS,
+                "media chunk read",
               );
 
-              return;
+          } catch (err) {
 
-            }
+            finishErr(err);
+            return;
 
-            if (signal?.aborted) {
-              return;
-            }
+          }
 
-            try {
+          if (settled || signal?.aborted) {
+            return;
+          }
 
-              sourceBuffer.appendBuffer(
-                bytes,
-              );
+          try {
 
-            } catch (err) {
+            sb.appendBuffer(
+              bytes,
+            );
 
-              console.error(
-                "[AETERNA] MediaSource append failed",
-                err,
-              );
+          } catch (err) {
 
-            }
+            // MSE layer — a container/codec rejection.
+            finishErr(
+              mseError(
+                err instanceof Error
+                  ? err.message
+                  : "MediaSource appendBuffer failed.",
+              ),
+            );
+            return;
 
-            offset = end;
+          }
 
-          };
+          offset = end;
 
-          sourceBuffer.addEventListener(
-            "updateend",
-            appendNext,
+          // The next append is driven by updateend. Bound that wait so
+          // a stalled SourceBuffer cannot hang the stream forever.
+          try {
+            await awaitEvent(
+              sb,
+              "updateend",
+              MEDIA_APPEND_TIMEOUT_MS,
+              "MediaSource updateend",
+            );
+          } catch {
+            // MSE layer — the pipeline stalled.
+            finishErr(
+              mseError("MediaSource updateend timed out."),
+            );
+            return;
+          }
+
+          void appendNext();
+
+        };
+
+        sourceBufferErrorHandler = () => {
+          // MSE layer — SourceBuffer error event. The listener is
+          // detached by finishErr().
+          finishErr(
+            mseError("MediaSource SourceBuffer error."),
           );
+        };
 
-          sourceBuffer.addEventListener(
-            "error",
-            () => {
-              try {
-                if (
-                  mediaSource.readyState ===
-                  "open"
-                ) {
-                  mediaSource.endOfStream();
-                }
-              } catch {
-                // SourceBuffer error should not crash playback.
-              }
-            },
-          );
+        sb.addEventListener(
+          "error",
+          sourceBufferErrorHandler,
+        );
 
-          await appendNext();
+        void appendNext();
 
-          resolve();
-
-        } catch (err) {
-
-          reject(err);
-
-        }
       },
-      { once: true },
+      () => {
+        // MSE layer — sourceopen never arrived.
+        finishErr(
+          mseError("MediaSource sourceopen timed out."),
+        );
+      },
     );
 
   });
 
   return objectUrl;
+
+}
+
+/**
+ * Bounded whole-file fallback for a media item that MediaSource cannot
+ * stream (e.g. a legacy bare `video/webm`, or an exotic container).
+ *
+ * The bytes are assembled into ONE Blob only when `size` is within
+ * MAX_MEDIA_FALLBACK_BYTES; above that bound the read is refused so a
+ * large unsupported file is never materialised in memory. The read
+ * itself is bounded by withTimeout so a stalled read cannot hang the
+ * caller — a timeout rejects and the UI shows a terminal error.
+ */
+export async function sessionToBoundedBlobUrl(
+  session: MediaSession,
+  size: number,
+  mimeType: string,
+  signal?: AbortSignal,
+): Promise<string> {
+
+  if (
+    !Number.isSafeInteger(size) ||
+    size <= 0
+  ) {
+    throw new Error(
+      "[AETERNA] Invalid media size for fallback.",
+    );
+  }
+
+  if (size > MAX_MEDIA_FALLBACK_BYTES) {
+    throw new Error(
+      `[AETERNA] Media too large for in-memory fallback (${size} bytes).`,
+    );
+  }
+
+  if (signal?.aborted) {
+    throw new Error(
+      "[AETERNA] Media fallback cancelled.",
+    );
+  }
+
+  // Bounded read. MediaSession exposes no cancellation primitive, so a
+  // late resolution after the timeout is simply discarded — the caller
+  // has already moved to a terminal state and the bytes are unused.
+  const bytes = await withTimeout(
+    session.read(0, size),
+    MEDIA_READ_TIMEOUT_MS,
+    "media fallback read",
+  );
+
+  if (signal?.aborted) {
+    throw new Error(
+      "[AETERNA] Media fallback cancelled.",
+    );
+  }
+
+  const blob = new Blob(
+    [bytes],
+    { type: mimeType || "application/octet-stream" },
+  );
+
+  return URL.createObjectURL(blob);
 
 }
 
@@ -637,8 +888,34 @@ function MediaItemV2Block({
   const [error, setError] =
     useState(false);
 
+  /**
+   * Optional, human-readable reason for a terminal failure. Used for
+   * outcomes the generic "Failed to load preview" cannot explain —
+   * notably an item refused by the inline-preview size policy.
+   */
+  const [notice, setNotice] =
+    useState<string | null>(null);
+
+  /**
+   * The signature of the attempt that currently OWNS the UI.
+   *
+   * When null, no attempt is authoritative and a new one may start —
+   * including a repeat of a signature seen before. A failed or
+   * cancelled attempt resets this to null (below) so a later
+   * same-signature retry is not permanently suppressed.
+   */
   const startedSignatureRef =
     useRef<string | null>(null);
+
+  /**
+   * Attempt generation. Every started attempt takes a fresh, strictly
+   * increasing id. A stale attempt (one whose generation no longer
+   * matches `generationRef.current`) MUST NOT write any state — this
+   * is what prevents an old cancelled/failed load from clobbering a
+   * newer attempt's UI.
+   */
+  const generationRef =
+    useRef(0);
 
   const abortRef =
     useRef<(() => void) | null>(null);
@@ -646,6 +923,17 @@ function MediaItemV2Block({
   const mediaSessionRef =
     useRef<MediaSession | null>(null);
 
+  /** Idempotent, safe dispose of the current media session. */
+  const safeDisposeSession = () => {
+    const session = mediaSessionRef.current;
+    mediaSessionRef.current = null;
+    if (!session) return;
+    try {
+      session.dispose();
+    } catch {
+      // A throwing dispose() must never suppress a terminal state.
+    }
+  };
 
   useEffect(() => {
 
@@ -664,6 +952,13 @@ function MediaItemV2Block({
     startedSignatureRef.current =
       signature;
 
+    const generation =
+      ++generationRef.current;
+
+    // Only the current generation may mutate UI state.
+    const isCurrent = () =>
+      generationRef.current === generation;
+
     // Reset UI state before starting a new load. Without this,
     // a stale objectUrl/loading/error from the previous item
     // remains on screen until the new load settles — including
@@ -671,12 +966,52 @@ function MediaItemV2Block({
     // objectUrl displayed as if it were still current.
     setLoading(true);
     setError(false);
+    setNotice(null);
     setObjectUrl(null);
-
-    let cancelled = false;
 
     let createdUrl: string | null =
       null;
+
+    /**
+     * Terminal-state writers. Each guards on generation so a stale
+     * attempt cannot overwrite a newer attempt's state, and are
+     * idempotent within a generation.
+     */
+    const settleLoaded = (url: string) => {
+      if (!isCurrent()) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // best-effort
+        }
+        return;
+      }
+      createdUrl = url;
+      setObjectUrl(url);
+      setLoading(false);
+    };
+
+    const settleError = (reason?: string) => {
+      // Release any partially-created URL for THIS attempt.
+      if (createdUrl) {
+        try {
+          URL.revokeObjectURL(createdUrl);
+        } catch {
+          // best-effort
+        }
+        createdUrl = null;
+      }
+      // Allow a future same-signature retry (e.g. user retry, or a
+      // re-mount) — the failure is terminal for THIS attempt only.
+      if (startedSignatureRef.current === signature) {
+        startedSignatureRef.current = null;
+      }
+      if (!isCurrent()) return;
+      setError(true);
+      setNotice(reason ?? null);
+      setLoading(false);
+      setObjectUrl(null);
+    };
 
 
     async function load() {
@@ -735,8 +1070,14 @@ function MediaItemV2Block({
 
           case "image": {
 
+            // Bounded open: a stalled image read must reach a terminal
+            // state instead of leaving the UI on "Loading" forever.
             const result =
-              await openImage(request);
+              await withTimeout(
+                openImage(request),
+                MEDIA_READ_TIMEOUT_MS,
+                "image preview",
+              );
 
             url = result.objectUrl;
 
@@ -749,21 +1090,30 @@ function MediaItemV2Block({
             const session =
               await openVideo(request);
 
+            // A newer attempt may already own the UI by now.
+            if (!isCurrent()) {
+              try {
+                session.dispose();
+              } catch {
+                // best-effort
+              }
+              return;
+            }
+
             mediaSessionRef.current =
               session;
 
             const controller =
               new AbortController();
 
-            url = await sessionToMediaSource(
-              session,
-              media.mimeType,
-              media.size,
-              controller.signal,
-            );
-
             abortRef.current = () =>
               controller.abort();
+
+            url = await openStreamableOrFallback(
+              session,
+              media,
+              controller.signal,
+            );
 
             break;
 
@@ -774,21 +1124,29 @@ function MediaItemV2Block({
             const session =
               await openAudio(request);
 
+            if (!isCurrent()) {
+              try {
+                session.dispose();
+              } catch {
+                // best-effort
+              }
+              return;
+            }
+
             mediaSessionRef.current =
               session;
 
             const controller =
               new AbortController();
 
-            url = await sessionToMediaSource(
-              session,
-              media.mimeType,
-              media.size,
-              controller.signal,
-            );
-
             abortRef.current = () =>
               controller.abort();
+
+            url = await openStreamableOrFallback(
+              session,
+              media,
+              controller.signal,
+            );
 
             break;
 
@@ -798,6 +1156,18 @@ function MediaItemV2Block({
 
             const session =
               await downloadFile(request);
+
+            if (!isCurrent()) {
+              try {
+                session.dispose();
+              } catch {
+                // best-effort
+              }
+              return;
+            }
+
+            mediaSessionRef.current =
+              session;
 
             await sessionToDownloadStream(
               session,
@@ -820,27 +1190,16 @@ function MediaItemV2Block({
 
         }
 
-        if (cancelled) {
-
-          if (url)
-            URL.revokeObjectURL(url);
-
-          return;
-
-        }
-
-        createdUrl = url;
-
-        if (createdUrl && !cancelled) {
-
-          setObjectUrl(createdUrl);
-          setLoading(false);
-
-        } else if (!createdUrl && !cancelled) {
-
-          setError(true);
-          setLoading(false);
-
+        /**
+         * Terminal reconciliation. A cancelled/stale attempt writes
+         * nothing; the current attempt settles to loaded or error.
+         * The `file` branch intentionally leaves `url`null (a download
+         * was already triggered) → ErrorBlock-style terminal surface.
+         */
+        if (url) {
+          settleLoaded(url);
+        } else {
+          settleError();
         }
 
       }
@@ -854,19 +1213,19 @@ function MediaItemV2Block({
           );
         }
 
+        safeDisposeSession();
 
-        if (mediaSessionRef.current) {
-          mediaSessionRef.current.dispose();
-          mediaSessionRef.current = null;
-        }
-
-        if (!cancelled) {
-
-          setError(true);
-
-          setLoading(false);
-
-        }
+        // Always reach a terminal state for the CURRENT attempt, even
+        // if dispose() threw above (it is guarded) or the failure was
+        // in a stale attempt (guarded by generation inside settleError).
+        //
+        // An oversized inline preview gets a precise, actionable reason
+        // instead of the generic failure copy.
+        settleError(
+          isMediaPreviewTooLargeError(err)
+            ? inlinePreviewTooLargeMessage(err.size)
+            : undefined,
+        );
 
       }
 
@@ -877,21 +1236,38 @@ function MediaItemV2Block({
 
     return () => {
 
+      /**
+       * Cancellation. We do NOT write UI state here: on unmount the
+       * component is gone, and on a dependency change the NEXT effect
+       * run owns the UI (and will set loading=true itself). Writing
+       * state here is exactly what previously left a permanent
+       * `Loading` when cleanup raced an in-flight load.
+       *
+       * We do release THIS attempt's resources: session, abort,
+       * object URL.
+       */
+      abortRef.current?.();
+      abortRef.current = null;
 
-      cancelled = true;
+      safeDisposeSession();
 
-      if (mediaSessionRef.current) {
-        mediaSessionRef.current.dispose();
-        mediaSessionRef.current = null;
+      if (createdUrl) {
+        try {
+          URL.revokeObjectURL(createdUrl);
+        } catch {
+          // best-effort
+        }
+        createdUrl = null;
       }
 
-
-      if (abortRef.current) {
-        abortRef.current();
+      /**
+       * Clear the signature claim so a subsequent mount/effect with the
+       * SAME signature is allowed to start a fresh attempt. Without
+       * this, a cancelled attempt could permanently suppress a retry.
+       */
+      if (startedSignatureRef.current === signature) {
+        startedSignatureRef.current = null;
       }
-
-      if (createdUrl)
-        URL.revokeObjectURL(createdUrl);
 
     };
 
@@ -921,6 +1297,7 @@ function MediaItemV2Block({
         mimeType={item.mimeType}
         mediaType={item.mediaType}
         size={item.size}
+        notice={notice ?? undefined}
       />
     );
 
@@ -934,6 +1311,60 @@ function MediaItemV2Block({
       )}
     />
   );
+
+}
+
+/**
+ * Opens a video/audio item for progressive playback, falling back to
+ * a BOUNDED whole-file Blob ONLY when the failure is a genuine
+ * MSE/container-capability problem.
+ *
+ * Terminal outcomes:
+ * - streamable → a MediaSource object URL (or throws on real failure);
+ * - not streamable (MSE/MIME incompatibility) + within limit → a
+ *   bounded Blob object URL;
+ * - not streamable + too large → throws (caller shows terminal error);
+ * - any READ/decrypt/auth failure → throws unchanged (never silently
+ *   retried as a whole-file download).
+ */
+export async function openStreamableOrFallback(
+  session: MediaSession,
+  media: OpenableMediaItem,
+  signal: AbortSignal,
+): Promise<string> {
+
+  try {
+    return await sessionToMediaSource(
+      session,
+      media.mimeType,
+      media.size,
+      signal,
+    );
+  } catch (err) {
+
+    /**
+     * The bounded whole-file fallback is a COMPATIBILITY path: it is
+     * permitted ONLY when the failure is an MSE/container-capability
+     * problem (`MediaNotStreamableError`) — i.e. the browser cannot
+     * demux the stored type at all.
+     *
+     * A genuine read / range / decrypt / authentication failure is NOT
+     * eligible. It already failed once, and retrying it as a single
+     * large read would waste bandwidth and could mask corrupt data.
+     * Such failures propagate unchanged to the terminal error path.
+     */
+    if (!isMediaNotStreamableError(err)) {
+      throw err;
+    }
+
+    return await sessionToBoundedBlobUrl(
+      session,
+      media.size,
+      media.mimeType,
+      signal,
+    );
+
+  }
 
 }
 
@@ -1064,11 +1495,13 @@ function ErrorBlock({
   mimeType,
   mediaType,
   size,
+  notice,
 }: {
   filename?: string;
   mimeType?: string;
   mediaType?: string;
   size?: number;
+  notice?: string | undefined;
 }) {
 
   return (
@@ -1076,7 +1509,7 @@ function ErrorBlock({
     <div className="space-y-2 text-sm">
 
       <div className="text-destructive">
-        Failed to load preview
+        {notice ?? "Failed to load preview"}
       </div>
 
       <div>

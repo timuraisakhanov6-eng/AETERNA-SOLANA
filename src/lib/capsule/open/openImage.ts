@@ -7,11 +7,20 @@ import type {
     ByteRuntime,
 } from "../runtime/runtimeTypes";
 
+import {
+    assertInlinePreviewSize,
+} from "./mediaPreviewPolicy";
+
 /**
  * Image Runtime.
  *
  * Responsible only for reconstructing the image
  * through ByteRuntime and creating an Object URL.
+ *
+ * An inline image preview materialises the WHOLE file in memory (one
+ * decrypted buffer + one Blob), so the size gate runs BEFORE the read:
+ * an oversized image is refused instead of being assembled just to be
+ * previewed. ByteRuntime's lazy/chunked reads and LRU are untouched.
  */
 export async function openImage(
     runtime: ByteRuntime,
@@ -19,6 +28,11 @@ export async function openImage(
 ): Promise<OpenImageResult> {
 
     try {
+
+        assertInlinePreviewSize(
+            request.media.size,
+            "Image",
+        );
 
         const bytes =
             await runtime.getBytes(

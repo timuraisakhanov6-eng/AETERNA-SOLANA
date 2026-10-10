@@ -25,6 +25,29 @@ import {
 } from "@/lib/capsule/open/resolveContainerChunks";
 
 import {
+  emergencyMediaSourceStream,
+  readWholeFileBounded,
+} from "@/lib/capsule/open/emergencyMediaSource";
+
+import type {
+  EmergencyMediaFailureKind,
+} from "@/lib/capsule/open/emergencyMediaSource";
+
+import {
+  BoundedAwaitTimeoutError,
+} from "@/lib/capsule/open/boundedAwait";
+
+import {
+  resolveStreamableMimeType,
+} from "@/lib/capsule/open/mediaCompatibility";
+
+import {
+  assertInlinePreviewSize,
+  isMediaPreviewTooLargeError,
+  inlinePreviewTooLargeMessage,
+} from "@/lib/capsule/open/mediaPreviewPolicy";
+
+import {
   createByteRuntime,
 } from "@/lib/capsule/runtime/byteRuntime";
 
@@ -39,11 +62,21 @@ import type {
   VaultV2,
 } from "@/types/vault";
 
+/**
+ * Upper bound for the emergency runtime whole-file media fallback.
+ *
+ * A media item whose type cannot be streamed through MediaSource
+ * (e.g. a legacy bare `video/webm`) is recovered as ONE Blob — but
+ * only when it fits this bound, so a large unsupported file is never
+ * materialised in memory. Above the bound the runtime reports a
+ * terminal failure instead.
+ */
+const EMERGENCY_MEDIA_FALLBACK_MAX_BYTES = 25 * 1024 * 1024;
+
 export type EmergencyRuntimeInit = {
   root: HTMLElement;
   status: HTMLElement;
 };
-
 /**
  * Explicit outcome of ONE emergency-runtime run — the only success
  * signal the bootstrap may rely on.
@@ -901,7 +934,13 @@ function createEmergencyMediaSession(args: {
 
   const runImage = async () => {
     try {
-      const bytes = await session.read(0, args.size);
+      // Size gate FIRST: an inline preview materialises the whole file
+      // in memory, so an oversized image must never be read at all.
+      assertInlinePreviewSize(args.size, "Image");
+
+      // Bounded whole-file read: a stalled read must reach a terminal
+      // state instead of leaving the status line on "Loading".
+      const bytes = await readWholeFileBounded(session, args.size);
       const blob = new Blob([bytes], {
         type: args.mimeType || "application/octet-stream",
       });
@@ -909,9 +948,13 @@ function createEmergencyMediaSession(args: {
       acceptObjectUrl(objectUrl);
     } catch (err) {
       fail(
-        err instanceof Error
-          ? err.message
-          : "Image preview failed.",
+        isMediaPreviewTooLargeError(err)
+          ? inlinePreviewTooLargeMessage(err.size)
+          : err instanceof BoundedAwaitTimeoutError
+            ? "Image preview timed out."
+            : err instanceof Error
+              ? err.message
+              : "Image preview failed.",
       );
     } finally {
       session.dispose();
@@ -919,24 +962,61 @@ function createEmergencyMediaSession(args: {
   };
 
   const runProgressiveMedia = async () => {
-    const objectUrl = emergencyMediaSourceStream({
-      session,
-      mimeType: args.mimeType,
-      size: args.size,
-      signal: args.abortController.signal,
-      onError: () => fail("Progressive playback failed."),
-    });
+    let fellBack = false;
+    let failureKind: EmergencyMediaFailureKind | null = null;
 
-    if (objectUrl) {
-      acceptObjectUrl(objectUrl);
+    try {
+      const objectUrl = await emergencyMediaSourceStream({
+        session,
+        mimeType: args.mimeType,
+        size: args.size,
+        signal: args.abortController.signal,
+        onError: () => fail("Progressive playback failed."),
+        onFailureKind: (kind) => {
+          failureKind = kind;
+        },
+      });
+
+      if (objectUrl) {
+        acceptObjectUrl(objectUrl);
+        return;
+      }
+
+      // Cancelled mid-flight: nothing to recover.
+      if (args.abortController.signal.aborted) {
+        return;
+      }
+
+      // A genuine READ failure must NOT be retried as a whole-file
+      // download: the read already failed once, repeating it as one
+      // large read would waste bandwidth and could mask corrupt data.
+      // It stays a real, terminal error.
+      if (failureKind === "read") {
+        return;
+      }
+
+      // MSE/MIME incompatibility: fall back to a bounded whole-file
+      // Blob so the user still gets a playable element instead of a
+      // permanently stalled status line. runFileFallback owns dispose.
+      fellBack = true;
+      await runFileFallback();
+    } finally {
+      if (!fellBack) {
+        session.dispose();
+      }
     }
-
-    session.dispose();
   };
 
   const runFileFallback = async () => {
     try {
-      const bytes = await session.read(0, args.size);
+      if (args.size > EMERGENCY_MEDIA_FALLBACK_MAX_BYTES) {
+        fail("Media is too large for in-browser recovery.");
+        return;
+      }
+
+      // Bounded whole-file read: a stalled read must not hang the
+      // recovery path.
+      const bytes = await readWholeFileBounded(session, args.size);
       const blob = new Blob([bytes], {
         type: args.mimeType || "application/octet-stream",
       });
@@ -944,9 +1024,11 @@ function createEmergencyMediaSession(args: {
       acceptObjectUrl(objectUrl);
     } catch (err) {
       fail(
-        err instanceof Error
-          ? err.message
-          : "Download recovery failed.",
+        err instanceof BoundedAwaitTimeoutError
+          ? "Media recovery timed out."
+          : err instanceof Error
+            ? err.message
+            : "Download recovery failed.",
       );
     } finally {
       session.dispose();
@@ -962,10 +1044,7 @@ function createEmergencyMediaSession(args: {
     args.item.mediaType === "video" ||
     args.item.mediaType === "audio"
   ) {
-    if (
-      typeof MediaSource !== "undefined" &&
-      MediaSource.isTypeSupported(args.mimeType)
-    ) {
+    if (resolveStreamableMimeType(args.mimeType) !== null) {
       void runProgressiveMedia();
       return session;
     }
@@ -978,142 +1057,6 @@ function createEmergencyMediaSession(args: {
   return session;
 }
 
-/* =========================================================
-   EMERGENCY MEDIA SOURCE STREAM
-   ========================================================= */
-
-function emergencyMediaSourceStream(args: {
-  session: MediaSession;
-  mimeType: string;
-  size: number;
-  signal: AbortSignal;
-  onError: () => void;
-}): string | null {
-  if (
-    typeof MediaSource === "undefined" ||
-    !MediaSource.isTypeSupported(args.mimeType)
-  ) {
-    return null;
-  }
-
-  const mediaSource = new MediaSource();
-  const objectUrl = URL.createObjectURL(mediaSource);
-
-  const settled = { value: null as string | null };
-
-  const done = (outcome: string | null) => {
-    if (settled.value === undefined) {
-      settled.value = outcome;
-    }
-  };
-
-  const cleanup = () => {
-    try {
-      if (
-        settled.value === null &&
-        mediaSource.readyState === "open"
-      ) {
-        mediaSource.endOfStream();
-      }
-    } catch {
-      // preserve current state on terminal errors
-    }
-  };
-
-  try {
-    mediaSource.addEventListener(
-      "sourceopen",
-      async () => {
-        if (args.signal.aborted) {
-          cleanup();
-          done(null);
-          return;
-        }
-
-        try {
-          const sourceBuffer =
-            mediaSource.addSourceBuffer(args.mimeType);
-
-          let offset = 0;
-          const chunkSize = 256 * 1024;
-
-          const appendNext = async () => {
-            if (args.signal.aborted || offset >= args.size) {
-              if (
-                offset >= args.size &&
-                mediaSource.readyState === "open"
-              ) {
-                try {
-                  mediaSource.endOfStream();
-                } catch {
-                  // already closed / closing
-                }
-              }
-              return;
-            }
-
-            const end = Math.min(
-              offset + chunkSize,
-              args.size,
-            );
-
-            let bytes: Uint8Array<ArrayBuffer>;
-
-            try {
-              bytes = await args.session.read(offset, end);
-            } catch {
-              cleanup();
-              args.onError();
-              done(null);
-              return;
-            }
-
-            if (args.signal.aborted) {
-              return;
-            }
-
-            try {
-              sourceBuffer.appendBuffer(bytes);
-            } catch {
-              cleanup();
-              args.onError();
-              done(null);
-              return;
-            }
-
-            offset = end;
-          };
-
-          sourceBuffer.addEventListener(
-            "updateend",
-            appendNext,
-          );
-
-          sourceBuffer.addEventListener(
-            "error",
-            () => {
-              cleanup();
-              args.onError();
-              done(null);
-            },
-          );
-
-          await appendNext();
-          done(objectUrl);
-        } catch {
-          args.onError();
-          done(null);
-        }
-      },
-      { once: true },
-    );
-  } catch {
-    args.onError();
-    done(null);
-  }
-
-  return settled.value ?? null;
-}
 
 /* =========================================================
    RENDER HELPERS
