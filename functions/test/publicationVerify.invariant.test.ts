@@ -1,4 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { resolve, dirname } from "node:path";
 import {
   createFakeKV,
   createFakeRequest,
@@ -40,6 +43,41 @@ function buildContext(env: PublicationVerifyEnv, body: unknown) {
  * routed: a regression back to it must surface as a mismatch/failure.
  */
 const IRYS_NODE_BASE = "https://uploader.irys.xyz/";
+
+/* ================= GATEWAY LIST INVARIANTS =================
+ *
+ * `fetchPublishedCiphertext()` in `publication/verify.ts` iterates a static
+ * `GATEWAYS` array, tried in order until one returns 200 (or a 404 that
+ * short-circuits to an empty body). The list is a real correctness surface:
+ * every entry that stays in it can consume the 8 s per-attempt budget and,
+ * on a non-200/404 response, can feed a bogus body into the SHA-256 check.
+ *
+ * Two entries were provably dead in the 2026-10-11 audit and removed:
+ *   - `https://permaweb.eu/`   — TLS-dead, no HTTP response ever;
+ *   - `https://arweave.live/`  — 301 to an expired-domains parking page.
+ *
+ * This guard parses the array literal from the real source so a regression
+ * (re-adding a dead host, dropping a live one, or reordering) fails here
+ * rather than silently shipping.
+ * =========================================================== */
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const verifySource = readFileSync(
+  resolve(__dirname, "..", "api", "publication", "verify.ts"),
+  "utf8"
+);
+
+function parseGatewayList(source: string): string[] {
+  const match = source.match(/const\s+GATEWAYS\s*=\s*\[([\s\S]*?)\]/);
+  if (!match) throw new Error("GATEWAYS array literal not found in verify.ts");
+  return Array.from(match[1].matchAll(/"([^"]+)"/g)).map((m) => m[1]);
+}
+
+/** Live read-path gateways that MUST remain, in this order. */
+const LIVE_GATEWAYS = ["https://gateway.irys.xyz/", "https://arweave.net/"];
+
+/** Provably dead legacy gateways that MUST NOT reappear. */
+const DEAD_GATEWAYS = ["https://permaweb.eu/", "https://arweave.live/"];
 
 type NodeRoute = { status: number; body?: Record<string, unknown>; reject?: Error };
 
@@ -834,5 +872,32 @@ describe("Publication verification boundary", () => {
 
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe("PUBLICATION_ID_MISMATCH");
+  });
+
+  /* ================= GATEWAY LIST ================= */
+
+  it("GATEWAYS contains exactly the live read-path gateways, in order", () => {
+    expect(parseGatewayList(verifySource)).toEqual(LIVE_GATEWAYS);
+  });
+
+  it("GATEWAYS contains no provably dead legacy gateway", () => {
+    const gateways = parseGatewayList(verifySource);
+    for (const dead of DEAD_GATEWAYS) {
+      expect(gateways).not.toContain(dead);
+    }
+    // Guard against the raw source still naming the dead hosts anywhere.
+    expect(verifySource).not.toContain("permaweb.eu");
+    expect(verifySource).not.toContain("arweave.live");
+  });
+
+  it("keeps SHA-256 verification and fail-closed semantics in the source", () => {
+    // The verifier must still hash retrieved bytes with SHA-256 ...
+    expect(verifySource).toContain('crypto.subtle.digest("SHA-256"');
+    // ... and a gateway that produced an empty body must never be accepted
+    // as valid ciphertext (fail-closed), i.e. the 404 path returns empty
+    // bytes rather than fabricating content.
+    expect(verifySource).toContain("return new Uint8Array(0)");
+    // All gateways failing must raise `gateway-fetch-failed` (never VERIFIED).
+    expect(verifySource).toContain("gateway-fetch-failed");
   });
 });

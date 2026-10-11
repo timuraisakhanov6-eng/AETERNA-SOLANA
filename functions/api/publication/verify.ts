@@ -96,8 +96,6 @@ function parsePublicationInput(value: unknown): string | null {
 const GATEWAYS = [
   "https://gateway.irys.xyz/",
   "https://arweave.net/",
-  "https://permaweb.eu/",
-  "https://arweave.live/",
 ];
 
 async function fetchPublishedCiphertext(txId: string): Promise<Uint8Array> {

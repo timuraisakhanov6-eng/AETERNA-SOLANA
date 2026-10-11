@@ -15,6 +15,11 @@
  *     `*.mainnet-1.datasprite-cdn.com` and CSP validates redirect targets;
  *   - exactly ONE wildcard host-source exists, scoped to that proven host;
  *   - no over-broad source (`*`, `https:`, `https://*.datasprite-cdn.com`);
+ *   - the provably dead legacy gateways (`permaweb.eu`, `arweave.live`) are
+ *     NOT permitted anywhere in the policy — they are TLS-dead / parked
+ *     respectively, so a `connect-src` allowance for them is a dead grant
+ *     that must never reappear;
+ *   - the live read-path origins (`arweave.net`, `gateway.irys.xyz`) remain;
  *   - the rest of the policy (including Solana / Phantom / API origins) is
  *     unchanged.
  */
@@ -43,6 +48,24 @@ const IRYS_NODE_ORIGIN = "https://uploader.irys.xyz";
  */
 const DATASPRITE_REDIRECT_WILDCARD =
   "https://*.mainnet-1.datasprite-cdn.com";
+
+/**
+ * Provably dead legacy gateway origins (2026-10-11 audit, measured):
+ *   - `permaweb.eu` — TLS handshake never completes, no HTTP response ever;
+ *   - `arweave.live` — 301-redirects to an expired-domains parking page.
+ * Both are unreachable as content sources, so allowing them in
+ * `connect-src` grants nothing. They must not reappear in the policy.
+ */
+const DEAD_LEGACY_HOSTS = [
+  "https://permaweb.eu",
+  "https://arweave.live",
+] as const;
+
+/** Origins the live read path actually depends on; must stay permitted. */
+const LIVE_READ_ORIGINS = [
+  "https://arweave.net",
+  "https://gateway.irys.xyz",
+] as const;
 
 function directive(name: string): string {
   const match = headers.match(new RegExp(`${name} ([^;]+);`));
@@ -92,6 +115,33 @@ describe("public/_headers — production CSP", () => {
     // The narrower mainnet-1 pattern is sufficient; broader CDN scopes are not.
     expect(connect).not.toContain("https://*.datasprite-cdn.com");
     expect(connect).not.toContain("https://datasprite-cdn.com");
+  });
+
+  it("does NOT permit the dead legacy gateways in connect-src", () => {
+    // Parsed host-source tokens of the real connect-src directive — a
+    // substring check alone would be satisfied by e.g. a future
+    // `https://permaweb.eu.example.com`, which is not the invariant.
+    const tokens = directive("connect-src").split(/\s+/);
+
+    for (const dead of DEAD_LEGACY_HOSTS) {
+      expect(tokens).not.toContain(dead);
+      // No wildcard resurrects them either (`https://*.permaweb.eu`).
+      expect(tokens).not.toContain(dead.replace("https://", "https://*."));
+    }
+  });
+
+  it("does not reference the dead legacy gateways anywhere in _headers", () => {
+    for (const dead of DEAD_LEGACY_HOSTS) {
+      const host = dead.replace("https://", "");
+      expect(headers).not.toContain(host);
+    }
+  });
+
+  it("keeps the live read-path origins permitted", () => {
+    const tokens = directive("connect-src").split(/\s+/);
+    for (const live of LIVE_READ_ORIGINS) {
+      expect(tokens).toContain(live);
+    }
   });
 
   it("keeps the rest of the policy — directives and Solana / Phantom / API origins", () => {
