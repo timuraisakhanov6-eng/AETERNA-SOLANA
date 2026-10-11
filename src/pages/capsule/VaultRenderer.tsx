@@ -30,9 +30,14 @@ import {
 
 import {
   assertInlinePreviewSize,
-  isMediaPreviewTooLargeError,
-  inlinePreviewTooLargeMessage,
+  MediaPreviewConstructionError,
 } from "@/lib/capsule/open/mediaPreviewPolicy";
+
+import {
+  classifyMediaFailure,
+  type MediaOpenDiagnosticContext,
+  type MediaFailureDiagnosis,
+} from "@/lib/capsule/open/mediaFailureDiagnostics";
 
 import {
   awaitEvent,
@@ -279,7 +284,10 @@ export async function sessionToMediaSource(
     resolveStreamableMimeType(mimeType);
 
   if (streamableMime === null) {
-    throw new MediaNotStreamableError(mimeType);
+    // Capability rejection: the browser has no MediaSource candidate
+    // for the stored type. Tagged with the typed `capability` stage so
+    // the terminal classifier can report it without message parsing.
+    throw new MediaNotStreamableError(mimeType, undefined, "capability");
   }
 
   const mediaSource = new MediaSource();
@@ -340,7 +348,7 @@ export async function sessionToMediaSource(
    * silently retried as a full-file download.
    */
   const mseError = (reason: string) =>
-    new MediaNotStreamableError(mimeType, reason);
+    new MediaNotStreamableError(mimeType, reason, "mse-setup");
 
   /**
    * Single settlement gate. The MediaSource handshake has several
@@ -636,12 +644,23 @@ export async function sessionToBoundedBlobUrl(
     );
   }
 
-  const blob = new Blob(
-    [bytes],
-    { type: mimeType || "application/octet-stream" },
-  );
-
-  return URL.createObjectURL(blob);
+  /**
+   * The read has SUCCEEDED by this point. Building the Blob / object
+   * URL is a distinct, typed boundary: a failure here is a
+   * construction failure, never a read/network failure. The original
+   * platform error is retained only as `cause` for local debugging
+   * and is never rendered.
+   */
+  let blob: Blob;
+  try {
+    blob = new Blob(
+      [bytes],
+      { type: mimeType || "application/octet-stream" },
+    );
+    return URL.createObjectURL(blob);
+  } catch (err) {
+    throw new MediaPreviewConstructionError(err);
+  }
 
 }
 
@@ -941,6 +960,17 @@ function MediaItemV2Block({
     useState<string | null>(null);
 
   /**
+   * Fixed, safe label naming WHY the bounded Blob fallback was entered,
+   * set ONLY when a fallback was attempted AND failed (i.e. the
+   * diagnosis carries a known trigger). Rendered as a distinct line so
+   * the visible error card pinpoints both the final failure stage and
+   * the fallback reason. Never a raw exception message, MIME string,
+   * identifier or URL; dropped whenever there is no fallback.
+   */
+  const [fallbackTriggerNotice, setFallbackTriggerNotice] =
+    useState<string | null>(null);
+
+  /**
    * The signature of the attempt that currently OWNS the UI.
    *
    * When null, no attempt is authoritative and a new one may start —
@@ -1034,10 +1064,25 @@ function MediaItemV2Block({
     setLoading(true);
     setError(false);
     setNotice(null);
+    setFallbackTriggerNotice(null);
     setObjectUrl(null);
 
     let createdUrl: string | null =
       null;
+
+    /**
+     * In-memory-only diagnostic context for THIS attempt.
+     *
+     * `openStreamableOrFallback` records here WHY it entered the
+     * bounded Blob fallback, so a fallback failure can report the
+     * trigger alongside the final cause. `mediaType` lets the
+     * classifier avoid mislabelling an image/file failure as an MSE
+     * failure. Never persisted, never transmitted; it dies with this
+     * effect invocation.
+     */
+    const diagnostics: MediaOpenDiagnosticContext = {
+      mediaType: item.mediaType,
+    };
 
     /**
      * Terminal-state writers. Each guards on generation so a stale
@@ -1058,7 +1103,10 @@ function MediaItemV2Block({
       setLoading(false);
     };
 
-    const settleError = (reason?: string) => {
+    const settleError = (
+      reason?: string,
+      fallbackTrigger?: string,
+    ) => {
       // Release any partially-created URL for THIS attempt.
       if (createdUrl) {
         try {
@@ -1076,6 +1124,9 @@ function MediaItemV2Block({
       if (!isCurrent()) return;
       setError(true);
       setNotice(reason ?? null);
+      // Present only when the failure happened INSIDE the fallback and
+      // the trigger is genuinely known; otherwise it stays absent.
+      setFallbackTriggerNotice(fallbackTrigger ?? null);
       setLoading(false);
       setObjectUrl(null);
     };
@@ -1181,6 +1232,7 @@ function MediaItemV2Block({
               media,
               controller.signal,
               mediaElRef.current,
+              diagnostics,
             );
 
             break;
@@ -1215,6 +1267,7 @@ function MediaItemV2Block({
               media,
               controller.signal,
               mediaElRef.current,
+              diagnostics,
             );
 
             break;
@@ -1288,12 +1341,21 @@ function MediaItemV2Block({
         // if dispose() threw above (it is guarded) or the failure was
         // in a stale attempt (guarded by generation inside settleError).
         //
-        // An oversized inline preview gets a precise, actionable reason
-        // instead of the generic failure copy.
+        // Every terminal media failure is classified into a stable,
+        // non-sensitive diagnostic code so a screenshot can be narrowed
+        // to a stage. The classifier never renders raw exception text,
+        // MIME strings, identifiers or URL fragments, and the
+        // oversized-preview case keeps its exact pre-existing message.
+        //
+        // When the failure happened INSIDE the bounded Blob fallback the
+        // diagnosis also carries a fixed, safe label naming WHY the
+        // fallback was entered; it is forwarded so the card shows the
+        // trigger (null/undefined when no fallback was attempted).
+        const diagnosis: MediaFailureDiagnosis =
+          classifyMediaFailure(err, diagnostics);
         settleError(
-          isMediaPreviewTooLargeError(err)
-            ? inlinePreviewTooLargeMessage(err.size)
-            : undefined,
+          diagnosis.message,
+          diagnosis.fallbackTriggerLabel,
         );
 
       }
@@ -1427,6 +1489,7 @@ function MediaItemV2Block({
             mediaType={item.mediaType}
             size={item.size}
             notice={notice ?? undefined}
+            fallbackTrigger={fallbackTriggerNotice ?? undefined}
           />
         )}
 
@@ -1462,6 +1525,7 @@ function MediaItemV2Block({
         mediaType={item.mediaType}
         size={item.size}
         notice={notice ?? undefined}
+        fallbackTrigger={fallbackTriggerNotice ?? undefined}
       />
     );
 
@@ -1497,12 +1561,19 @@ function MediaItemV2Block({
  * - not streamable + too large → throws (caller shows terminal error);
  * - any READ/decrypt/auth failure → throws unchanged (never silently
  *   retried as a whole-file download).
+ *
+ * `diagnostics` is an OPTIONAL, in-memory-only out-parameter. When
+ * supplied, this function records WHY the bounded Blob fallback was
+ * entered (capability vs. MSE setup) so the caller's terminal
+ * classifier can report the trigger as additional context. It never
+ * alters playback behaviour and is never persisted or transmitted.
  */
 export async function openStreamableOrFallback(
   session: MediaSession,
   media: OpenableMediaItem,
   signal: AbortSignal,
   attachTo?: HTMLMediaElement | null,
+  diagnostics?: MediaOpenDiagnosticContext,
 ): Promise<string> {
 
   try {
@@ -1528,6 +1599,17 @@ export async function openStreamableOrFallback(
      */
     if (!isMediaNotStreamableError(err)) {
       throw err;
+    }
+
+    /**
+     * Record why we are about to enter the fallback — a typed value
+     * derived from the error's own `stage`, never parsed from text.
+     * Mutating the caller-owned context is the whole point of the
+     * out-parameter: it survives into a later fallback failure.
+     */
+    if (diagnostics) {
+      diagnostics.fallbackTrigger =
+        err.stage === "capability" ? "capability" : "mse-setup";
     }
 
     return await sessionToBoundedBlobUrl(
@@ -1669,12 +1751,19 @@ function ErrorBlock({
   mediaType,
   size,
   notice,
+  fallbackTrigger,
 }: {
   filename?: string;
   mimeType?: string;
   mediaType?: string;
   size?: number;
   notice?: string | undefined;
+  /**
+   * Fixed, safe label naming why the bounded Blob fallback was entered.
+   * Supplied by the caller ONLY when a fallback was attempted and the
+   * failure happened inside it — never composed here.
+   */
+  fallbackTrigger?: string | undefined;
 }) {
 
   return (
@@ -1684,6 +1773,12 @@ function ErrorBlock({
       <div className="text-destructive">
         {notice ?? "Failed to load preview"}
       </div>
+
+      {fallbackTrigger && (
+        <div className="text-destructive">
+          {fallbackTrigger}
+        </div>
+      )}
 
       <div>
         <strong>Filename:</strong>{" "}

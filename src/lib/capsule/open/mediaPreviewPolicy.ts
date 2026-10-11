@@ -58,6 +58,33 @@ export function isMediaPreviewTooLargeError(
 }
 
 /**
+ * Raised when a preview's OBJECT URL cannot be constructed AFTER its
+ * bytes were read successfully — i.e. `new Blob(...)` or
+ * `URL.createObjectURL(...)` threw.
+ *
+ * This is deliberately a distinct, typed boundary: the read already
+ * succeeded, so this is NOT a read failure and MUST NOT be reported as
+ * a network error. It carries no media bytes and no message from the
+ * underlying platform error (which is preserved only as `cause` for
+ * local debugging — it is never rendered).
+ */
+export class MediaPreviewConstructionError extends Error {
+  constructor(cause?: unknown) {
+    super("[AETERNA] Media preview construction failed.");
+    this.name = "MediaPreviewConstructionError";
+    if (cause !== undefined) {
+      (this as { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
+export function isMediaPreviewConstructionError(
+  error: unknown,
+): error is MediaPreviewConstructionError {
+  return error instanceof MediaPreviewConstructionError;
+}
+
+/**
  * Fail-closed size gate.
  *
  * MUST be called BEFORE any full-file read, so an oversized item is

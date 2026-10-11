@@ -48,6 +48,7 @@ export default defineConfig({
       "src/components/capsule/ErrorNoticeOverflow.test.tsx",
       "src/pages/capsule/VaultRenderer.media.test.tsx",
       "src/pages/capsule/CapsuleController.openState.test.tsx",
+      "src/lib/capsule/open/iosFallbackIntegration.test.ts",
       "functions/**/*.test.ts",
     ],
     // The default "forks" pool crashed with a worker-exit error in

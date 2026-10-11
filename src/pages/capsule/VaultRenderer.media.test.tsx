@@ -31,7 +31,7 @@ import VaultRenderer, {
   sessionToDownloadStream,
 } from "@/pages/capsule/VaultRenderer";
 import * as openRuntime from "@/lib/capsule/open/openRuntime";
-import { MediaPreviewTooLargeError } from "@/lib/capsule/open/mediaPreviewPolicy";
+import { MediaPreviewTooLargeError, MediaPreviewConstructionError } from "@/lib/capsule/open/mediaPreviewPolicy";
 
 function makeVault(mediaItems: unknown[]): unknown {
   return {
@@ -129,7 +129,10 @@ describe("MediaItemV2Block lifecycle", () => {
     );
 
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
-    expect(screen.getByText(/Failed to load preview/i)).toBeTruthy();
+    // jsdom has no MediaSource, so this bare WebM first hits the
+    // capability gate and enters the bounded Blob fallback; the read
+    // then fails, so the final stage is a fallback read failure.
+    expect(screen.getByText(/PREVIEW_READ_FAILED/)).toBeTruthy();
   });
 
   it("#2/#3: a cancelled in-flight attempt does not block a later attempt", async () => {
@@ -198,8 +201,9 @@ describe("MediaItemV2Block lifecycle", () => {
     resolveLate(new Uint8Array(8) as Uint8Array<ArrayBuffer>);
     await new Promise((r) => setTimeout(r, 30));
 
-    // The newer attempt's video is still shown; no error leaked from attempt 1.
-    expect(screen.queryByText(/Failed to load preview/i)).toBeNull();
+    // The newer attempt's video is still shown; no error leaked from
+    // attempt 1 — so no diagnostic card is rendered at all.
+    expect(screen.queryByText(/Media preview unavailable/i)).toBeNull();
     const vid = document.querySelector("video");
     expect(vid).not.toBeNull();
     expect((vid as HTMLVideoElement).src).toContain("blob");
@@ -218,9 +222,9 @@ describe("MediaItemV2Block lifecycle", () => {
       <VaultRenderer vault={makeVault([videoItem()]) as never} cryptoKey={fakeKey} />,
     );
 
-    // Attempt 1 fails terminally...
+    // Attempt 1 fails terminally: capability gate -> fallback -> read fails.
     await waitFor(() =>
-      expect(screen.getByText(/Failed to load preview/i)).toBeTruthy(),
+      expect(screen.getByText(/PREVIEW_READ_FAILED/)).toBeTruthy(),
     );
 
     // ...and must NOT permanently suppress a same-signature retry: a
@@ -303,7 +307,7 @@ describe("#5: image preview size policy on the UI surface", () => {
     expect(document.querySelector("img")).toBeNull();
   });
 
-  it("an image read failure shows the generic terminal error", async () => {
+  it("an image read failure is classified as a stream-read failure", async () => {
     vi.mocked(openRuntime.openImage).mockRejectedValue(
       new Error("decrypt failed"),
     );
@@ -314,7 +318,29 @@ describe("#5: image preview size policy on the UI surface", () => {
       />,
     );
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
-    expect(screen.getByText(/Failed to load preview/i)).toBeTruthy();
+    // An image read FAILURE (not a timeout) is a stream-read failure —
+    // never mislabelled as an MSE/network error.
+    expect(screen.getByText(/STREAM_READ_FAILED/)).toBeTruthy();
+  });
+
+  it("an image construction failure is PREVIEW_OBJECT_URL_FAILED, not a read failure", async () => {
+    // The image path builds its Blob inside openImage.ts; a construction
+    // failure there must reach the terminal surface as a construction
+    // failure, never as STREAM_READ_FAILED.
+    vi.mocked(openRuntime.openImage).mockRejectedValue(
+      new MediaPreviewConstructionError(new Error("createObjectURL exploded")),
+    );
+    render(
+      <VaultRenderer
+        vault={makeVault([imageItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+    expect(screen.getByText(/PREVIEW_OBJECT_URL_FAILED/)).toBeTruthy();
+    expect(screen.queryByText(/STREAM_READ_FAILED/)).toBeNull();
+    // Never leak the platform error text.
+    expect(screen.queryByText(/createObjectURL exploded/)).toBeNull();
   });
 
   it("a stalled image open does not leave the UI in Loading", async () => {
@@ -335,7 +361,10 @@ describe("#5: image preview size policy on the UI surface", () => {
     });
 
     expect(screen.queryByText(/Loading/i)).toBeNull();
-    expect(screen.getByText(/Failed to load preview/i)).toBeTruthy();
+    // A stalled image read is a read TIMEOUT — distinct from a read
+    // failure and never mislabelled as MSE.
+    expect(screen.getByText(/STREAM_READ_TIMEOUT/)).toBeTruthy();
+    expect(screen.queryByText(/MSE_SETUP_FAILED/)).toBeNull();
   });
 });
 
@@ -417,9 +446,446 @@ describe("range read deadline — media layer", () => {
     });
 
     expect(screen.queryByText(/Loading/i)).toBeNull();
-    expect(screen.getByText(/Failed to load preview/i)).toBeTruthy();
+    // The capability gate is entered (no MediaSource in jsdom), then the
+    // fallback's bounded read never settles -> a fallback read timeout.
+    expect(screen.getByText(/PREVIEW_READ_TIMEOUT/)).toBeTruthy();
 
     vi.useRealTimers();
+  });
+});
+
+/**
+ * Phase E2 — diagnostic classification on the RENDERED surface.
+ *
+ * The point of the diagnostics is that an iPhone screenshot can be
+ * narrowed to a stage, so these assert the actual on-screen text.
+ * They must never leak raw exception text or internal markers.
+ */
+describe("MediaItemV2Block — diagnostic codes on the rendered surface", () => {
+  it("a capability rejection followed by a SUCCESSFUL fallback still shows media", async () => {
+    // No MediaSource in jsdom -> the bare WebM is not streamable, so the
+    // capability gate rejects and the bounded Blob fallback runs. The
+    // read resolves, so the preview must still appear normally.
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(okSession() as never);
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem({ mimeType: "video/webm" })]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+
+    const vid = document.querySelector("video") as HTMLVideoElement | null;
+    expect(vid).not.toBeNull();
+    expect(vid!.src).toContain("blob");
+    // A successful open renders NO diagnostic card at all.
+    expect(screen.queryByText(/Media preview unavailable/i)).toBeNull();
+  });
+
+  it("a Blob/object-URL construction failure is not reported as a read/network error", async () => {
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(okSession() as never);
+    // The read succeeds, but URL.createObjectURL throws.
+    vi.stubGlobal("URL", {
+      createObjectURL: () => {
+        throw new Error("createObjectURL exploded");
+      },
+      revokeObjectURL: () => {},
+    });
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem({ mimeType: "video/webm" })]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+    expect(screen.getByText(/PREVIEW_OBJECT_URL_FAILED/)).toBeTruthy();
+    expect(screen.queryByText(/PREVIEW_READ_FAILED/)).toBeNull();
+    expect(screen.queryByText(/STREAM_READ_FAILED/)).toBeNull();
+    // Never leak the platform error text.
+    expect(screen.queryByText(/createObjectURL exploded/)).toBeNull();
+  });
+
+  it("a rendered diagnostic never leaks raw text, [AETERNA], or URL fragments", async () => {
+    const session = {
+      read: () =>
+        Promise.reject(
+          new Error(
+            "[AETERNA] Storage failure at https://gateway.irys.xyz/AbC123#frag=secret",
+          ),
+        ),
+      dispose: vi.fn(),
+    };
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(session as never);
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+
+    const card = screen.getByText(/Media preview unavailable/i).closest("div");
+    const text = card?.textContent ?? "";
+    expect(text).not.toMatch(/\[AETERNA\]/);
+    expect(text).not.toMatch(/https?:\/\//);
+    expect(text).not.toMatch(/AbC123|frag=secret/);
+    expect(text).not.toMatch(/at https:/);
+  });
+});
+
+/**
+ * MSE read timeout vs MSE handshake timeout.
+ *
+ * A codec-qualified type IS supported and the handshake COMPLETES, so
+ * the progressive path reaches `session.read(...)`. When that read
+ * never settles, the failure is a STREAM-READ timeout — it must NOT be
+ * labelled `MSE_SETUP_FAILED` merely because the media type is video.
+ */
+describe("MSE read timeout is a stream-read timeout, never MSE setup", () => {
+  let openSources: MsFakeMediaSource[];
+
+  class OpeningMediaSource extends EventTarget {
+    static isTypeSupported(): boolean {
+      return true; // streamable — the handshake proceeds
+    }
+    readyState: "closed" | "open" | "ended" = "closed";
+    addSourceBuffer(): MsFakeSourceBuffer {
+      return new MsFakeSourceBuffer();
+    }
+    endOfStream(): void {
+      this.readyState = "ended";
+    }
+  }
+
+  let originalSrcDescriptor: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    openSources = [];
+    vi.stubGlobal("MediaSource", OpeningMediaSource);
+
+    // Instrument the element's `src` setter so assigning a MediaSource
+    // object URL OPENS the source and fires `sourceopen` (mirroring the
+    // real browser handshake used by the production attach-before-await).
+    const proto = HTMLMediaElement.prototype;
+    originalSrcDescriptor = Object.getOwnPropertyDescriptor(proto, "src");
+    Object.defineProperty(proto, "src", {
+      configurable: true,
+      get() {
+        return "";
+      },
+      set(this: HTMLMediaElement, value: string) {
+        const url = String(value);
+        if (url.startsWith("blob:ms-")) {
+          const idx = Number(url.slice("blob:ms-".length));
+          const ms = openSources[idx];
+          if (ms && ms.readyState === "closed") {
+            ms.readyState = "open";
+            queueMicrotask(() => ms.dispatchEvent(new Event("sourceopen")));
+          }
+        }
+        Object.defineProperty(this, "__src", {
+          configurable: true,
+          writable: true,
+          value: url,
+        });
+      },
+    });
+
+    vi.stubGlobal("URL", {
+      createObjectURL: (obj: unknown) => {
+        if (obj instanceof OpeningMediaSource) {
+          openSources.push(obj as unknown as MsFakeMediaSource);
+          return `blob:ms-${openSources.length - 1}`;
+        }
+        return `blob:obj-${openSources.length}`;
+      },
+      revokeObjectURL: () => {},
+    });
+  });
+
+  afterEach(() => {
+    const proto = HTMLMediaElement.prototype;
+    if (originalSrcDescriptor) {
+      Object.defineProperty(proto, "src", originalSrcDescriptor);
+    }
+    vi.useRealTimers();
+  });
+
+  it("a never-settling session.read on the MSE path reports STREAM_READ_TIMEOUT", async () => {
+    // Handshake completes; the chunk read never settles.
+    const session = {
+      read: () => new Promise<Uint8Array<ArrayBuffer>>(() => {}),
+      dispose: vi.fn(),
+    };
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(session as never);
+
+    render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            videoItem({ mimeType: "video/webm;codecs=vp8,opus", size: 32 }),
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    // Past the 30 s chunk-read deadline.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+
+    expect(screen.queryByText(/Loading/i)).toBeNull();
+    expect(screen.getByText(/STREAM_READ_TIMEOUT/)).toBeTruthy();
+    // The misclassification this phase fixes: a read timeout must NOT be
+    // reported as an MSE setup failure.
+    expect(screen.queryByText(/MSE_SETUP_FAILED/)).toBeNull();
+    expect(screen.queryByText(/MEDIA_UNSUPPORTED/)).toBeNull();
+  });
+});
+
+/**
+ * MSE setup failure vs capability rejection — distinct diagnostics.
+ *
+ * A codec-qualified type IS supported by MSE here, but the handshake
+ * never completes, so the MSE layer fails at SETUP (`mse-setup`). The
+ * bounded fallback is then entered for that reason; a failing fallback
+ * read must be reported as a PREVIEW read failure (with the known
+ * trigger), never as MEDIA_UNSUPPORTED.
+ */
+describe("MSE setup failure is distinguishable from a capability rejection", () => {
+  class StallingMediaSource extends EventTarget {
+    static isTypeSupported(): boolean {
+      return true; // the type IS supported — setup still fails
+    }
+    readyState: "closed" | "open" | "ended" = "closed";
+    addSourceBuffer(): EventTarget {
+      // Never emits updateend — but we stall before that at sourceopen.
+      return new EventTarget();
+    }
+    endOfStream(): void {}
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("MediaSource", StallingMediaSource);
+    // The MediaSource object URL is created, but sourceopen never fires
+    // (nothing transitions readyState to "open").
+    vi.stubGlobal("URL", {
+      createObjectURL: () => "blob:stalling-mediasource",
+      revokeObjectURL: () => {},
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reports a fallback read failure (not MEDIA_UNSUPPORTED) after an MSE setup stall", async () => {
+    // The fallback read itself also fails.
+    const session = {
+      read: () => Promise.reject(new Error("fallback read failed")),
+      dispose: vi.fn(),
+    };
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(session as never);
+
+    render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            videoItem({ mimeType: "video/webm;codecs=vp8,opus", size: 32 }),
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    // Advance past the 20 s sourceopen timeout so the MSE layer fails at
+    // SETUP, then let the fallback read reject.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_500);
+    });
+
+    expect(screen.queryByText(/Loading/i)).toBeNull();
+    expect(screen.getByText(/PREVIEW_READ_FAILED/)).toBeTruthy();
+    expect(screen.queryByText(/MEDIA_UNSUPPORTED/)).toBeNull();
+    // The MSE setup boundary is what the code must NOT confuse with a
+    // capability answer.
+    expect(screen.queryByText(/MSE_SETUP_FAILED/)).toBeNull();
+  });
+});
+
+/**
+ * Phase E2.4 — the fallback TRIGGER must be VISIBLE on the error card.
+ *
+ * The classifier already knew WHY the bounded Blob fallback was entered,
+ * but the renderer forwarded only the final failure message, so a
+ * screenshot could not distinguish "the device refused the format" from
+ * "MSE setup failed". These tests pin that both facts now appear — and
+ * that the trigger line appears ONLY when a fallback was attempted.
+ */
+describe("Phase E2.4 — the fallback trigger is shown beside the final failure", () => {
+  it("capability rejection + fallback failure shows BOTH the failure and the capability trigger", async () => {
+    // jsdom has no MediaSource → a bare video/webm is refused at the
+    // capability gate (trigger = "capability"), then the bounded Blob
+    // fallback runs and its read fails.
+    const session = {
+      read: () => Promise.reject(new Error("fallback read failed")),
+      dispose: vi.fn(),
+    };
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(session as never);
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+
+    // 1) the final failure stage…
+    expect(screen.getByText(/PREVIEW_READ_FAILED/)).toBeTruthy();
+    // 2) …and the known fallback trigger, as distinct visible copy. The
+    // copy must state the precise, established fact — progressive
+    // streaming was unavailable — NOT that the device cannot play it.
+    expect(
+      screen.getByText(/Fallback reason: progressive streaming unavailable/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/capability check/i)).toBeTruthy();
+    expect(screen.queryByText(/cannot stream the format/i)).toBeNull();
+  });
+
+  it("MSE setup failure + fallback failure shows BOTH the failure and the MSE setup trigger", async () => {
+    // A codec-qualified type IS accepted by MSE here, but sourceopen never
+    // fires → the MSE layer fails at SETUP (trigger = "mse-setup"); the
+    // fallback is then entered for that reason and its read fails.
+    class StallingMediaSource extends EventTarget {
+      static isTypeSupported(): boolean {
+        return true;
+      }
+      readyState: "closed" | "open" | "ended" = "closed";
+      addSourceBuffer(): EventTarget {
+        return new EventTarget();
+      }
+      endOfStream(): void {}
+    }
+    vi.useFakeTimers();
+    vi.stubGlobal("MediaSource", StallingMediaSource);
+    vi.stubGlobal("URL", {
+      createObjectURL: () => "blob:stalling-mediasource",
+      revokeObjectURL: () => {},
+    });
+
+    const session = {
+      read: () => Promise.reject(new Error("fallback read failed")),
+      dispose: vi.fn(),
+    };
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(session as never);
+
+    render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            videoItem({ mimeType: "video/webm;codecs=vp8,opus", size: 32 }),
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    // Past the 20 s sourceopen timeout, then the fallback read rejects.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_500);
+    });
+
+    expect(screen.queryByText(/Loading/i)).toBeNull();
+    // 1) the final failure stage…
+    expect(screen.getByText(/PREVIEW_READ_FAILED/)).toBeTruthy();
+    // 2) …and the MSE setup trigger, distinct from the capability copy.
+    expect(screen.getByText(/Fallback reason/i)).toBeTruthy();
+    expect(screen.getByText(/MSE setup/i)).toBeTruthy();
+  });
+
+  it("a direct stream-read failure BEFORE any fallback shows NO fallback trigger", async () => {
+    // An image read failure never touches the A/V fallback path, so no
+    // trigger is known and none may be displayed.
+    vi.mocked(openRuntime.openImage).mockRejectedValue(
+      new Error("decrypt failed"),
+    );
+
+    render(
+      <VaultRenderer
+        vault={makeVault([imageItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+
+    // The final failure is shown…
+    expect(screen.getByText(/STREAM_READ_FAILED/)).toBeTruthy();
+    // …but there is NO trigger line, because no fallback was attempted.
+    expect(screen.queryByText(/Fallback reason/i)).toBeNull();
+  });
+
+  it("a SUCCESSFUL fallback still shows media and no diagnostic card", async () => {
+    // The capability gate refuses the bare WebM, but the bounded Blob
+    // fallback reads successfully and produces a playable object URL.
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(okSession() as never);
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector("video")).not.toBeNull());
+
+    const vid = document.querySelector("video") as HTMLVideoElement;
+    expect(vid.src).toContain("blob");
+    // No terminal card, and therefore no trigger line either.
+    expect(screen.queryByText(/Media preview unavailable/i)).toBeNull();
+    expect(screen.queryByText(/Fallback reason/i)).toBeNull();
+    expect(screen.queryByText(/PREVIEW_/)).toBeNull();
+  });
+
+  it("diagnostic text never leaks raw exception messages, URLs, fragments or identifiers", async () => {
+    const session = {
+      read: () =>
+        Promise.reject(
+          new Error(
+            "range read failed: https://gateway.irys.xyz/AbC123#secret",
+          ),
+        ),
+      dispose: vi.fn(),
+    };
+    vi.mocked(openRuntime.openVideo).mockResolvedValue(session as never);
+
+    render(
+      <VaultRenderer
+        vault={makeVault([videoItem()]) as never}
+        cryptoKey={fakeKey}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+
+    // The trigger IS shown…
+    expect(screen.getByText(/Fallback reason/i)).toBeTruthy();
+    // …but no raw exception text, URL, fragment or identifier leaks.
+    expect(screen.queryByText(/gateway\.irys\.xyz/)).toBeNull();
+    expect(screen.queryByText(/AbC123/)).toBeNull();
+    expect(screen.queryByText(/#secret/)).toBeNull();
+    expect(screen.queryByText(/range read failed/)).toBeNull();
   });
 });
 

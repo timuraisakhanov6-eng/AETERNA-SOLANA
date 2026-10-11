@@ -159,10 +159,38 @@ export function isBareWebmOrMp4(mimeType: string | undefined): boolean {
  * Read-layer failures (a rejecting or stalling `session.read`) are
  * deliberately NOT wrapped and propagate unchanged.
  */
+/**
+ * Which MSE-layer boundary raised a `MediaNotStreamableError`.
+ *
+ * - `capability`: `resolveStreamableMimeType` found no MediaSource
+ *   candidate for the stored type — the browser cannot demux/play it.
+ * - `mse-setup`: the type WAS supported, but the MSE pipeline failed
+ *   (`addSourceBuffer` rejected, `sourceopen`/`updateend` stalled, or
+ *   the SourceBuffer errored).
+ *
+ * This is a presentation-only discriminator. It changes no protocol
+ * or playback behaviour; it exists so the SPA can render a stable,
+ * non-sensitive diagnostic code without parsing messages.
+ */
+export type MediaMseFailureStage = "capability" | "mse-setup";
+
 export class MediaNotStreamableError extends Error {
   readonly mimeType: string;
 
-  constructor(mimeType: string, reason?: string) {
+  /**
+   * The typed MSE-layer boundary (see `MediaMseFailureStage`).
+   * Defaults to `mse-setup` when a `reason` is supplied (every
+   * pre-existing reason-supplying call site is a post-gate failure),
+   * and to `capability` otherwise — preserving the original
+   * construction contract exactly.
+   */
+  readonly stage: MediaMseFailureStage;
+
+  constructor(
+    mimeType: string,
+    reason?: string,
+    stage?: MediaMseFailureStage,
+  ) {
     super(
       reason
         ? `[AETERNA] ${reason}`
@@ -170,6 +198,7 @@ export class MediaNotStreamableError extends Error {
     );
     this.name = "MediaNotStreamableError";
     this.mimeType = mimeType;
+    this.stage = stage ?? (reason ? "mse-setup" : "capability");
   }
 }
 

@@ -9,6 +9,7 @@ import type {
 
 import {
     assertInlinePreviewSize,
+    MediaPreviewConstructionError,
 } from "./mediaPreviewPolicy";
 
 /**
@@ -40,20 +41,35 @@ export async function openImage(
                 request.media.size,
             );
 
-        const blob =
-            new Blob(
-                [bytes],
-                {
-                    type: request.media.mimeType,
-                },
-            );
+        /**
+         * The read has SUCCEEDED. Blob / object-URL construction is a
+         * distinct, typed boundary: a failure here is a construction
+         * failure, never a read failure. The original platform error
+         * is retained only as `cause` for local debugging and is never
+         * rendered.
+         */
+        try {
 
-        return {
+            const blob =
+                new Blob(
+                    [bytes],
+                    {
+                        type: request.media.mimeType,
+                    },
+                );
 
-            objectUrl:
-                URL.createObjectURL(blob),
+            return {
 
-        };
+                objectUrl:
+                    URL.createObjectURL(blob),
+
+            };
+
+        } catch (err) {
+
+            throw new MediaPreviewConstructionError(err);
+
+        }
 
     } finally {
 
