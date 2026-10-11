@@ -13,6 +13,14 @@ import { verifyVaultSha256 } from "@/lib/capsule/verifyVaultSha256";
 import { resolveEffectiveOpenAt } from "@/shared/heartbeat/resolveEffectiveOpenAt";
 import { loadHeartbeatRecord } from "@/lib/capsule/loadHeartbeatRecord";
 import { assertStoragePointer } from "@/lib/storage/storageAdapter";
+import type { StoragePointer } from "@/lib/storage/storageAdapter";
+
+import {
+  tagOpenFailure,
+  terminalOpenError,
+  notOpenError,
+  retryableOpenError,
+} from "@/lib/capsule/openFailure";
 
 import {
   CAPSULE_ID_REGEX,
@@ -99,10 +107,74 @@ type OpenCapsuleResult = {
 };
 
 
+/**
+ * Typed boundary failure.
+ *
+ * Previously every rejection on this path was a BARE
+ * `Error("[AETERNA] Capsule is sealed")` carrying no category, so the
+ * caller could not distinguish a retryable infrastructure failure from
+ * a terminal capability/integrity failure without matching messages.
+ *
+ * `sealedError()` now raises a TERMINAL failure: every site that uses it
+ * is a structural / capability / manifest-validation rejection on
+ * INPUTS that will not change between attempts — retrying cannot help.
+ *
+ * The two sites whose semantics differ use the dedicated helpers below:
+ *   • `notOpen()` — trusted time AUTHORITATIVELY says still sealed;
+ *   • `retryable()` — trusted time / storage transport unavailable.
+ */
 function sealedError(): never {
 
-  throw new Error(
-    "[AETERNA] Capsule is sealed"
+  throw terminalOpenError(
+    "INVALID_CAPABILITY"
+  );
+
+}
+
+/** Trusted time confirmed `nowUtc < effectiveOpenAt`. */
+function notOpen(): never {
+
+  throw notOpenError(
+    "nowUtc < effectiveOpenAt"
+  );
+
+}
+
+/** A transient infrastructure failure (trusted time / storage). */
+function retryable(reason: string): never {
+
+  throw retryableOpenError(reason);
+
+}
+
+/** A confirmed integrity violation (size continuation / SHA-256). */
+function integrityError(): never {
+
+  throw terminalOpenError(
+    "INTEGRITY_VIOLATION"
+  );
+
+}
+
+/**
+ * Manifest metadata is malformed — an unusable storage pointer or an
+ * out-of-range heartbeat interval.
+ *
+ * Deliberately NOT `INVALID_CAPABILITY`: the rejection concerns the
+ * capsule's PUBLIC metadata (immutable, identical across attempts), not
+ * the presented capability secret. Terminal — a retry re-reads the same
+ * immutable manifest and can never succeed, so the capability must not
+ * be retained for an endless retry loop.
+ *
+ * A precise inner severity, if the throwing boundary ever carries one,
+ * wins over this classification.
+ */
+function manifestError(err: unknown): never {
+
+  throw tagOpenFailure(
+    err,
+    "terminal",
+    "INVALID_MANIFEST"
   );
 
 }
@@ -544,14 +616,35 @@ export async function openCapsule({
    *
    * MUST occur before key derivation
    * MUST occur before decryptVault
+   *
+   * A trusted-time outage is a TRANSIENT INFRASTRUCTURE failure: it must
+   * be classified retryable so the caller may safely re-attempt without
+   * a page reload. It is NEVER substituted with local time.
    */
 
-  const { nowUtc } =
-    await getTrustedTime();
+  let nowUtc: number;
+
+  try {
+
+    ({ nowUtc } = await getTrustedTime());
+
+  } catch (err) {
+
+    // A precise severity already present wins; otherwise retryable.
+    throw tagOpenFailure(
+      err,
+      "retryable",
+      "TRUSTED_TIME_UNAVAILABLE"
+    );
+
+  }
 
 
   /**
    * trusted time sanity bounds
+   *
+   * A malformed/out-of-range payload from the time endpoint is an
+   * infrastructure failure too — fail closed and retry later.
    */
 
   if (
@@ -564,7 +657,7 @@ export async function openCapsule({
 
   )
 
-    sealedError();
+    retryable("TRUSTED_TIME_INVALID");
 
 
   /**
@@ -597,50 +690,110 @@ export async function openCapsule({
       capsuleId
     );
 
-  const effectiveOpenAt =
-    resolveEffectiveOpenAt({
+  /**
+   * Heartbeat rolling unlock resolver (v1.3)
+   *
+   * `resolveEffectiveOpenAt` rejects a malformed `manifest.openAt` or
+   * `manifest.heartbeatInterval` with a bare `Error`. Those inputs are
+   * IMMUTABLE manifest metadata: a retry re-reads the same value and can
+   * never succeed. Classify the rejection as TERMINAL (invalid
+   * manifest metadata) so the capability is not retained for an endless
+   * retry loop. A precise inner severity, if ever present, wins.
+   */
 
-      manifestOpenAt:
-        manifest.openAt,
+  let effectiveOpenAt: number;
 
-      heartbeatInterval:
-        manifest.heartbeatInterval,
+  try {
 
-      lastConfirmedAt:
-        heartbeat?.lastConfirmedAt ?? undefined,
+    effectiveOpenAt =
+      resolveEffectiveOpenAt({
 
-    });
+        manifestOpenAt:
+          manifest.openAt,
+
+        heartbeatInterval:
+          manifest.heartbeatInterval,
+
+        lastConfirmedAt:
+          heartbeat?.lastConfirmedAt ?? undefined,
+
+      });
+
+  } catch (err) {
+
+    manifestError(err);
+
+  }
 
 
   /**
    * trusted-time unlock boundary
+   *
+   * AUTHORITATIVE not-yet-open condition — the capsule IS sealed.
+   * Distinct from every other rejection: it is not a failure and must
+   * not be retried as one.
    */
 
   if (nowUtc < effectiveOpenAt)
-    sealedError();
+    notOpen();
 
 
   /**
    * storage pointer boundary cast
+   *
+   * `assertStoragePointer` rejects a malformed `manifest.vaultTxId` with
+   * a bare `Error`. That value is IMMUTABLE manifest metadata, so a
+   * retry re-reads the same invalid pointer — classify TERMINAL
+   * (invalid manifest metadata), never retryable. A precise inner
+   * severity, if ever present, wins.
    */
 
   if (!manifest.ext.vaultSha256)
     sealedError();
 
-  const vaultPointer =
-    assertStoragePointer(
-      manifest.vaultTxId
-    );
+  let vaultPointer: StoragePointer;
+
+  try {
+
+    vaultPointer =
+      assertStoragePointer(
+        manifest.vaultTxId
+      );
+
+  } catch (err) {
+
+    manifestError(err);
+
+  }
 
 
   /**
    * download encrypted vault
+   *
+   * A storage/gateway transport failure (timeout, exhaustion, network)
+   * is TRANSIENT: classify it retryable so the caller may safely
+   * re-attempt the FULL pipeline. A precise severity already present
+   * wins.
    */
 
-  const encrypted =
-    await storage.download(
-      vaultPointer
+  let encrypted: Uint8Array<ArrayBuffer>;
+
+  try {
+
+    encrypted =
+      await storage.download(
+        vaultPointer
+      );
+
+  } catch (err) {
+
+    throw tagOpenFailure(
+      err,
+      "retryable",
+      "STORAGE_READ_FAILED"
     );
+
+  }
 
 
   /**
@@ -650,6 +803,10 @@ export async function openCapsule({
    * manifest.encryptedSizeBytes check above. verifyVaultSize()
    * immediately below enforces the precise byte-for-byte match
    * against the manifest value, which is the real size invariant.
+   *
+   * A response that is not a non-empty in-range `Uint8Array` is a
+   * CONFIRMED integrity/shape violation of the stored payload — it
+   * cannot be fixed by retrying the same pointer.
    */
 
   if (
@@ -663,27 +820,56 @@ export async function openCapsule({
 
   )
 
-    sealedError();
+    integrityError();
 
 
   /**
    * encrypted size continuity check
+   *
+   * CONFIRMED integrity violation — terminal.
    */
 
-  verifyVaultSize(
-    encrypted,
-    manifest
-  );
+  try {
+
+    verifyVaultSize(
+      encrypted,
+      manifest
+    );
+
+  } catch (err) {
+
+    throw tagOpenFailure(
+      err,
+      "terminal",
+      "INTEGRITY_VIOLATION"
+    );
+
+  }
 
 
   /**
    * integrity scaffold verification
+   *
+   * SHA-256 mismatch against the manifest is a CONFIRMED integrity
+   * violation — terminal, never retried.
    */
 
-  await verifyVaultSha256(
-    encrypted,
-    manifest.ext.vaultSha256
-  );
+  try {
+
+    await verifyVaultSha256(
+      encrypted,
+      manifest.ext.vaultSha256
+    );
+
+  } catch (err) {
+
+    throw tagOpenFailure(
+      err,
+      "terminal",
+      "INTEGRITY_VIOLATION"
+    );
+
+  }
 
 
   /**
@@ -691,20 +877,38 @@ export async function openCapsule({
    *
    * PBKDF2 domain separation enforced:
    * secret + saltBase + capsuleId + openAt
+   *
+   * Key derivation rejects the capability material itself — a failure
+   * here is an invalid-capability / cryptographic condition, NOT a
+   * transient one.
    */
 
-  const cryptoKey =
-    await generateVaultKey({
+  let cryptoKey: CryptoKey;
 
-      secret,
+  try {
 
-      saltBase: manifest.saltBase,
+    cryptoKey =
+      await generateVaultKey({
 
-      openAt: manifest.openAt,
+        secret,
 
-      capsuleId,
+        saltBase: manifest.saltBase,
 
-    });
+        openAt: manifest.openAt,
+
+        capsuleId,
+
+      });
+
+  } catch (err) {
+
+    throw tagOpenFailure(
+      err,
+      "terminal",
+      "CRYPTO_FAILURE"
+    );
+
+  }
 
 
   /**
@@ -718,6 +922,9 @@ export async function openCapsule({
    * decrypt vault
    *
    * ciphertext wipe guaranteed in finally
+   *
+   * AES-GCM authentication failure is TERMINAL: an incorrect capability
+   * or tampered ciphertext can never be "recovered" by retrying.
    */
 
   let decryptedAny: unknown;
@@ -728,6 +935,14 @@ export async function openCapsule({
         encrypted,
         cryptoKey
       );
+  } catch (err) {
+
+    throw tagOpenFailure(
+      err,
+      "terminal",
+      "CRYPTO_FAILURE"
+    );
+
   } finally {
 
     // FINDING B — guard against a detached/neutered buffer, matching
@@ -746,13 +961,31 @@ export async function openCapsule({
    * Vault schema validation boundary
    *
    * canonical: unknown → validated → VaultV2
+   *
+   * Decryption SUCCEEDED (AES-GCM authenticated) but the plaintext is
+   * not a canonical VaultV2. This is a CONFIRMED structural/crypto
+   * violation — terminal, never retried.
    */
 
-  const vault =
-    asVaultV2(
-      decryptedAny,
-      capsuleId
+  let vault: VaultV2;
+
+  try {
+
+    vault =
+      asVaultV2(
+        decryptedAny,
+        capsuleId
+      );
+
+  } catch (err) {
+
+    throw tagOpenFailure(
+      err,
+      "terminal",
+      "CRYPTO_FAILURE"
     );
+
+  }
 
 
   /**

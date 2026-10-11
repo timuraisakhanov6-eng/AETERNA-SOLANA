@@ -39,7 +39,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { createElement, type FunctionComponent } from "react";
 import { readFileSync } from "node:fs";
@@ -142,6 +142,11 @@ import { loadManifest } from "@/lib/capsule/loadManifest";
 import { loadHeartbeatRecord } from "@/lib/capsule/loadHeartbeatRecord";
 import { openCapsule } from "@/lib/capsule/openCapsule";
 import { getTrustedTime } from "@/shared/time/getTrustedTime";
+import {
+  retryableOpenError,
+  terminalOpenError,
+  notOpenError,
+} from "@/lib/capsule/openFailure";
 
 /* ============================================================
    fixtures
@@ -230,6 +235,25 @@ function renderController(props: { secret?: string } = {}) {
       } as never)
     )
   );
+}
+
+/**
+ * Advance the EXISTING 5 s retry interval by `ticks` fires.
+ *
+ * Used only by the section-6 tests (fake timers). `advanceTimersByTime`
+ * fires the interval synchronously and the following bare `await` lets
+ * the un-faked async tryOpen body settle without a `waitFor` (which
+ * would deadlock: waitFor's polling uses the very timers that are
+ * faked).
+ */
+async function advanceRetryInterval(
+  ticks: number
+): Promise<void> {
+  for (let i = 0; i < ticks; i++) {
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+  }
 }
 
 /** Wait until the pipeline has stopped writing statuses. */
@@ -613,5 +637,415 @@ describe("5. Confirm Presence, heartbeat and trusted-time surfaces are untouched
   it("CapsuleView keeps a dedicated neutral `checking` branch", () => {
     expect(VIEW_SRC).toMatch(/state\.status === "checking"/);
     expect(VIEW_SRC).toMatch(/Opening capsule…/);
+  });
+});
+
+/* ============================================================
+   6. CAPABILITY-RETRY FIX — the secret survives a retryable failure
+   ============================================================
+ *
+ * Root cause pinned here: `tryOpen` clears `secretRef.current` at the
+ * ownership handoff. Before the fix the secret was NEVER restored, so a
+ * single transient infrastructure failure destroyed the only capability
+ * in the tab; every subsequent automatic retry read an empty ref and
+ * could never recover without a full page reload (which re-parses the
+ * capability from the URL fragment).
+ *
+ * These tests use fake timers to drive the EXISTING bounded retry
+ * mechanism (the 5 s interval / focus / visibilitychange). Awaiting
+ * `openCapsule(...)` is a plain microtask — only the interval needs a
+ * timer — so no `waitFor`/`setTimeout` polling is required.
+ */
+
+describe("6. capability-retry — a transient failure recovers WITHOUT a page reload", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Deterministic non-empty capability fragment. This satisfies the
+    // controller's known length-based `!secretLocal` guard so the retry
+    // path is reached, while `openCapsule` stays a mock (no real secret
+    // is ever used for crypto in this suite).
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        href: "http://localhost/capsule/" + CAPSULE_ID + "#" + SECRET,
+        origin: "http://localhost",
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reaches `opened` on a later retry tick (transient read failure → recovery)", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+
+    // Attempt #1: TRANSIENT infrastructure failure.
+    // Attempt #2: success — the recovery WITHOUT a page reload.
+    const open = openCapsule as unknown as ReturnType<typeof vi.fn>;
+    open
+      .mockRejectedValueOnce(new Error("[AETERNA] Range read failed"))
+      .mockResolvedValueOnce({ vault: FAKE_VAULT, cryptoKey: FAKE_CRYPTO_KEY });
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("capsule-opened")).toBeNull();
+
+    // Fire the EXISTING 5 s retry interval. Attempt #2 must find the
+    // RETAINED capability; before the fix `secretRef.current` was "".
+    await advanceRetryInterval(1);
+
+    expect(openCapsule).toHaveBeenCalledTimes(2);
+
+    // The retry passes the SAME capability (and it is never transmitted:
+    // openCapsule is the only consumer, a local mock).
+    const firstCall = open.mock.calls[0]?.[0] as { secret: string };
+    const secondCall = open.mock.calls[1]?.[0] as { secret: string };
+    expect(firstCall.secret).toBe(SECRET);
+    expect(secondCall.secret).toBe(SECRET);
+
+    expect(screen.getByTestId("capsule-opened")).toBeTruthy();
+    expect(sequence()).not.toContain("error");
+  });
+
+  it("a terminal failure WIPES the capability — no retry, no endless PBKDF2", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error("bad secret"), { code: "INVALID_SECRET" })
+    );
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(screen.getByText(/Could not load capsule/i)).toBeTruthy();
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+
+    // Several retry windows pass; the terminated pipeline must NOT
+    // re-run the expensive open.
+    await advanceRetryInterval(5);
+
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+    expect(sequence()).not.toContain("opened");
+  });
+
+  it("repeated retry triggers never create concurrent openCapsule calls", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+
+    // Attempt #1 hangs until released — the in-flight window.
+    const pending = deferred<{ vault: unknown; cryptoKey: CryptoKey }>();
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      pending.promise
+    );
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+
+    // Hammer the retry triggers while attempt #1 is still in flight:
+    // interval ticks + focus + visibilitychange.
+    for (let i = 0; i < 3; i++) {
+      await advanceRetryInterval(1);
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    }
+
+    // Single-flight preserved — still exactly one open.
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      pending.resolve({ vault: FAKE_VAULT, cryptoKey: FAKE_CRYPTO_KEY });
+    });
+
+    expect(screen.getByTestId("capsule-opened")).toBeTruthy();
+    // The success path never re-enters the pipeline.
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+  });
+
+  it("a trusted-time OUTAGE stays fail-closed but permits a later retry", async () => {
+    // Trusted time fails on attempt #1, then recovers. The capability was
+    // never consumed (no openCapsule call happened), so the pipeline must
+    // remain retryable.
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("[AETERNA] Trusted time unavailable"))
+      .mockResolvedValue({ nowUtc: OPEN_AT + 1000 });
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      vault: FAKE_VAULT,
+      cryptoKey: FAKE_CRYPTO_KEY,
+    });
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+
+    // Fail-closed: SEALED, never opened, and no open was attempted
+    // (the capability was never consumed by the time outage).
+    expect(screen.getByLabelText("Capsule sealed")).toBeTruthy();
+    expect(openCapsule).not.toHaveBeenCalled();
+    expect(sequence()).not.toContain("opened");
+
+    // A later retry with a recovered time endpoint opens the capsule.
+    await advanceRetryInterval(1);
+
+    expect(screen.getByTestId("capsule-opened")).toBeTruthy();
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+    expect(sequence()[sequence().length - 1]).toBe("opened");
+  });
+
+  it("a still-closed capsule NEVER transitions to `opened` across retry ticks", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT - 1, // one millisecond early — still sealed
+    });
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(screen.getByLabelText("Capsule sealed")).toBeTruthy();
+
+    await advanceRetryInterval(3);
+
+    expect(openCapsule).not.toHaveBeenCalled();
+    expect(sequence()).not.toContain("opened");
+    expect(screen.queryByTestId("capsule-opened")).toBeNull();
+  });
+
+  it("retains the capability WITHOUT logging or transmitting it", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response("{}"));
+
+    try {
+      (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+        nowUtc: OPEN_AT + 1000,
+      });
+      (openCapsule as unknown as ReturnType<typeof vi.fn>)
+        .mockRejectedValueOnce(
+          Object.assign(new Error("[AETERNA] Range read failed"), {
+            // A hostile payload that must never be surfaced.
+            detail: SECRET,
+          })
+        )
+        .mockResolvedValueOnce({
+          vault: FAKE_VAULT,
+          cryptoKey: FAKE_CRYPTO_KEY,
+        });
+
+      renderController({ secret: SECRET });
+
+      await act(async () => {});
+      await advanceRetryInterval(1);
+
+      expect(screen.getByTestId("capsule-opened")).toBeTruthy();
+
+      // No console call carried the capability.
+      const allArgs = [
+        ...logSpy.mock.calls,
+        ...warnSpy.mock.calls,
+        ...errorSpy.mock.calls,
+      ]
+        .flat()
+        .map((a) => (typeof a === "string" ? a : JSON.stringify(a ?? "")))
+        .join(" ");
+      expect(allArgs).not.toContain(SECRET);
+
+      // Nothing was sent to the network with the capability in the URL.
+      for (const call of fetchSpy.mock.calls) {
+        expect(String(call[0])).not.toContain(SECRET);
+      }
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+/* ============================================================
+   7. TYPED BOUNDARY CLASSIFICATION — the controller obeys the
+      error categories produced by `openCapsule`'s boundaries
+   ============================================================
+ *
+ * Section 6 exercised the retry mechanism with BARE `Error`s (the
+ * fail-closed default → retryable). This section pins the OTHER half of
+ * the contract: when the open boundary raises a TYPED category, the
+ * controller must honour it — terminal failures must NOT be retried,
+ * retryable failures MUST be.
+ *
+ * Every rejection below is a `CapsuleOpenError` produced by
+ * `terminalOpenError` / `retryableOpenError` / `notOpenError` — i.e.
+ * exactly what `openCapsule` now throws at its real boundaries.
+ */
+
+describe("7. typed boundary classification drives the retry decision", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        href: "http://localhost/capsule/" + CAPSULE_ID + "#" + SECRET,
+        origin: "http://localhost",
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a TRANSIENT network failure (retryable) then success reaches `opened`", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+    (openCapsule as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(retryableOpenError("STORAGE_READ_FAILED"))
+      .mockResolvedValueOnce({ vault: FAKE_VAULT, cryptoKey: FAKE_CRYPTO_KEY });
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("capsule-opened")).toBeNull();
+
+    await advanceRetryInterval(1);
+
+    expect(openCapsule).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("capsule-opened")).toBeTruthy();
+    expect(sequence()).not.toContain("error");
+  });
+
+  it("an INVALID capability (terminal) stops the pipeline — no endless retries", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      terminalOpenError("INVALID_CAPABILITY")
+    );
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(screen.getByText(/Could not load capsule/i)).toBeTruthy();
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+
+    await advanceRetryInterval(6);
+
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+    expect(sequence()).not.toContain("opened");
+    expect(sequence()).not.toContain("preview");
+  });
+
+  it("a CRYPTOGRAPHIC failure (terminal) stops the pipeline — no PBKDF2 loop", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      terminalOpenError("CRYPTO_FAILURE")
+    );
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(screen.getByText(/Could not load capsule/i)).toBeTruthy();
+
+    await advanceRetryInterval(6);
+
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+    expect(sequence()).not.toContain("opened");
+  });
+
+  it("an INTEGRITY violation (terminal) never opens and never retries", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      terminalOpenError("INTEGRITY_VIOLATION")
+    );
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(screen.getByText(/Could not load capsule/i)).toBeTruthy();
+
+    await advanceRetryInterval(6);
+
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+    expect(sequence()).not.toContain("opened");
+    expect(screen.queryByTestId("capsule-opened")).toBeNull();
+  });
+
+  it("a NOT-OPEN result (trusted time) stays SEALED and never opens — even across retries", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+    // The boundary itself reports not-open (as `openCapsule` does when
+    // nowUtc < effectiveOpenAt) while the controller's own pre-check
+    // lets the call through.
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      notOpenError("nowUtc < effectiveOpenAt")
+    );
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    // not-open is neither terminal (no error view) nor a success.
+    expect(screen.queryByTestId("capsule-opened")).toBeNull();
+
+    await advanceRetryInterval(3);
+
+    expect(sequence()).not.toContain("opened");
+    expect(screen.queryByTestId("capsule-opened")).toBeNull();
+  });
+
+  it("trusted-time UNAVAILABLE (retryable) is fail-closed but retryable to success", async () => {
+    // The controller's own getTrustedTime is mocked here; the point is
+    // that a retryable classification never terminates the pipeline.
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(retryableOpenError("TRUSTED_TIME_UNAVAILABLE"))
+      .mockResolvedValue({ nowUtc: OPEN_AT + 1000 });
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      vault: FAKE_VAULT,
+      cryptoKey: FAKE_CRYPTO_KEY,
+    });
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(screen.getByLabelText("Capsule sealed")).toBeTruthy();
+    expect(openCapsule).not.toHaveBeenCalled();
+
+    await advanceRetryInterval(1);
+
+    expect(screen.getByTestId("capsule-opened")).toBeTruthy();
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+  });
+
+  it("a still-closed capsule (controller pre-check) never opens across retries", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT - 1,
+    });
+
+    renderController({ secret: SECRET });
+
+    await act(async () => {});
+    expect(screen.getByLabelText("Capsule sealed")).toBeTruthy();
+
+    await advanceRetryInterval(4);
+
+    expect(openCapsule).not.toHaveBeenCalled();
+    expect(sequence()).not.toContain("opened");
   });
 });

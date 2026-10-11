@@ -14,6 +14,7 @@ import CapsuleView from "./CapsuleView";
 
 import { loadManifest } from "@/lib/capsule/loadManifest";
 import { openCapsule } from "@/lib/capsule/openCapsule";
+import { classifyOpenFailure } from "@/lib/capsule/openFailure";
 import { loadHeartbeatRecord } from "@/lib/capsule/loadHeartbeatRecord";
 import { resolveEffectiveOpenAt } from "@/shared/heartbeat/resolveEffectiveOpenAt";
 import { getTrustedTime } from "@/shared/time/getTrustedTime";
@@ -122,7 +123,15 @@ export default function CapsuleController({
   // terminatedRef: orchestration authority flag.
   // True whenever the open pipeline must stop permanently:
   //   (a) successful open   — capsule delivered, no further work needed
-  //   (b) INVALID_SECRET    — fatal auth failure, retrying is pointless
+  //   (b) TERMINAL failure   — invalid capability, crypto/auth failure,
+  //                            or a confirmed integrity violation.
+  //                            Retrying is pointless AND expensive
+  //                            (PBKDF2 + AES-GCM), so the pipeline stops.
+  //
+  // RETRYABLE infrastructure failures (trusted-time endpoint down,
+  // network/gateway timeout, transient storage read) DO NOT terminate:
+  // they keep the capability and let the existing bounded retry
+  // mechanism attempt the FULL pipeline again. See `tryOpen`.
   //
   // Distinct from cancelledRef (component unmount / capsuleId change)
   // and from openedRef (success-only semantic).
@@ -553,6 +562,14 @@ export default function CapsuleController({
 
         }
 
+        // CAPABILITY-RETRY FIX — ownership handoff.
+        //
+        // `tookSecretOwnership` is an INTENT flag: "this attempt consumed
+        // (or terminalised) the capability, so the `finally` block must
+        // wipe `secretRef.current`". A RETRYABLE failure resets it to
+        // false in the catch block, RETAINING the capability for the
+        // existing retry mechanism. A terminal failure keeps it true so
+        // the capability is wiped and never reused.
         tookSecretOwnership = true;
         secretRef.current = "";
 
@@ -614,24 +631,44 @@ export default function CapsuleController({
 
       catch (err: unknown) {
 
-        if (
-          err &&
-          typeof err === "object" &&
-          (err as { code?: string }).code ===
-            "INVALID_SECRET"
-        ) {
+        // FINDING 1 — a stale open failure must not destroy the new
+        // runtime's secret ref, terminate its pipeline, or clear
+        // its intervals.
+        if (isStale()) {
+          return;
+        }
 
-          // FINDING 1 — a stale open failure must not destroy the new
-          // runtime's secret ref, terminate its pipeline, or clear
-          // its intervals.
-          if (isStale()) {
-            return;
-          }
+        // ────────────────────────────────────────────────────────
+        // CAPABILITY-RETRY FIX — classify BEFORE deciding ownership.
+        //
+        // `secretRef.current` was CLEARED at the ownership handoff
+        // above (line ~574). For a RETRYABLE infrastructure failure
+        // that handoff must be REVERSED: the capability is RESTORED so
+        // the existing bounded retry mechanism (5 s interval / focus /
+        // visibilitychange) can re-attempt the FULL pipeline. Without
+        // the restore the next attempt reads an empty ref and can never
+        // recover without a page reload — the intermittent "SEALED and
+        // stuck" defect.
+        //
+        // For a TERMINAL failure (invalid capability / crypto /
+        // integrity) the capability stays WIPED and is never retried.
+        //
+        // Classification reads fixed, NON-SECRET signals only (see
+        // `classifyOpenFailure`) and defaults to "retryable", which is
+        // fail-closed for capability handling but NOT for
+        // authorization: the retry re-runs the FULL pipeline, so a
+        // closed capsule stays closed and an invalid capability stays
+        // invalid.
+        // ────────────────────────────────────────────────────────
+        const failureClass =
+          classifyOpenFailure(err);
+
+        if (failureClass === "terminal") {
 
           tookSecretOwnership = true;
           secretRef.current = "";
 
-          // Fatal auth failure: set terminatedRef ONLY.
+          // Terminal failure: set terminatedRef ONLY.
           // openedRef remains false — the capsule was NOT successfully opened.
           // terminatedRef → "orchestration pipeline is permanently closed"
           terminatedRef.current = true;
@@ -654,7 +691,7 @@ export default function CapsuleController({
 
           }
 
-          // FINDING 1 — same re-check applied to the fatal-auth-failure
+          // FINDING 1 — same re-check applied to the terminal-failure
           // path: this setState also follows clearInterval calls and
           // ref writes after the awaited openCapsule() call.
           if (isStale()) {
@@ -679,7 +716,32 @@ export default function CapsuleController({
         // "checking" state forever on such an error — an infinite
         // loader with no fail-closed outcome. The canonical
         // fail-closed display is SEALED.
+        //
+        // CAPABILITY-RETRY FIX: the capability is RESTORED to
+        // `secretRef.current` so the existing bounded retry mechanism
+        // can re-attempt opening WITHOUT a page reload.
+        //
+        // `tookSecretOwnership` is cleared so the `finally` block does
+        // NOT wipe the just-restored value. The restore itself is
+        // guarded on the CURRENT generation still owning this attempt:
+        // a stale/unmounted runtime must not receive a capability.
         else {
+
+          tookSecretOwnership = false;
+
+          // Restore ONLY if no newer generation has taken over the ref
+          // (see the contract of `isStale`). `secretLocal` is the exact
+          // value this attempt consumed; it is never logged or sent
+          // anywhere, only returned to the in-tab ref.
+          if (
+            !isStale() &&
+            !terminatedRef.current &&
+            !openedRef.current &&
+            !secretRef.current &&
+            secretLocal
+          ) {
+            secretRef.current = secretLocal;
+          }
 
           commitSealed(manifest);
 
