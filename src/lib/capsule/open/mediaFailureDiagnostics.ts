@@ -39,8 +39,8 @@ import {
 } from "./mediaPreviewPolicy";
 import {
   isStorageRangeError,
-} from "@/lib/storage/storageRangeFailure";
-import {
+  type StorageRangeRejectionReason,
+} from "@/lib/storage/storageRangeFailure";import {
   isChunkLoadError,
   isByteRuntimeReconstructionError,
 } from "@/lib/capsule/runtime/chunkLoadFailure";
@@ -87,8 +87,36 @@ export type MediaDiagnosticCode =
    * running: a non-206 status, an unreadable/mismatched Content-Range,
    * or a short/long body — i.e. gateways could not provide the
    * expected window.
+   *
+   * Retained as the MIXED / unclassifiable rejection code: used when
+   * the exhausted attempts observed more than one distinct reason (or
+   * none that a single specific code below can name), so no single
+   * cause is overstated.
    */
   | "PREVIEW_RANGE_FAILED"
+  /**
+   * Every rejected attempt answered with a status OTHER than 206. This
+   * is a REACHABLE gateway that refused to serve the window as Partial
+   * Content (so an HTML body served with a non-206 status is reported
+   * here, NOT as `PREVIEW_RANGE_HTML_RESPONSE` — the HTML guard runs
+   * only at HTTP 206).
+   */
+  | "PREVIEW_RANGE_STATUS_REJECTED"
+  /**
+   * Every rejected attempt returned a 206 whose `content-type` was
+   * `text/html` — an error / portal page served in place of the bytes.
+   */
+  | "PREVIEW_RANGE_HTML_RESPONSE"
+  /**
+   * Every rejected attempt returned a READABLE but malformed or
+   * mismatched `Content-Range`. A missing/unreadable header is NOT this
+   * cause — a `null` header is explicitly accepted upstream.
+   */
+  | "PREVIEW_RANGE_CONTENT_RANGE_MISMATCH"
+  /** Every rejected attempt returned a 206 body SHORTER than requested. */
+  | "PREVIEW_RANGE_BODY_SHORT"
+  /** Every rejected attempt returned a 206 body LONGER than requested. */
+  | "PREVIEW_RANGE_BODY_LONG"
   /**
    * A per-range storage request could not COMPLETE at the transport
    * layer (network/TLS/CORS rejection from `fetch`) while the fallback
@@ -226,6 +254,16 @@ const MESSAGES: Record<MediaDiagnosticCode, string> = {
     "Media preview read timed out at storage (PREVIEW_RANGE_TIMEOUT).",
   PREVIEW_RANGE_FAILED:
     "Storage could not provide the requested media range (PREVIEW_RANGE_FAILED).",
+  PREVIEW_RANGE_STATUS_REJECTED:
+    "Storage answered the media range with an unexpected status (PREVIEW_RANGE_STATUS_REJECTED).",
+  PREVIEW_RANGE_HTML_RESPONSE:
+    "Storage returned an error page instead of media data (PREVIEW_RANGE_HTML_RESPONSE).",
+  PREVIEW_RANGE_CONTENT_RANGE_MISMATCH:
+    "Storage returned media data for the wrong range (PREVIEW_RANGE_CONTENT_RANGE_MISMATCH).",
+  PREVIEW_RANGE_BODY_SHORT:
+    "Storage returned less media data than requested (PREVIEW_RANGE_BODY_SHORT).",
+  PREVIEW_RANGE_BODY_LONG:
+    "Storage returned more media data than requested (PREVIEW_RANGE_BODY_LONG).",
   PREVIEW_RANGE_NETWORK:
     "The media range request could not complete (PREVIEW_RANGE_NETWORK).",
   PREVIEW_CHUNK_LENGTH_MISMATCH:
@@ -255,6 +293,42 @@ function result(
         fallbackTrigger,
         fallbackTriggerLabel: FALLBACK_TRIGGER_LABELS[fallbackTrigger],
       };
+}
+
+/**
+ * Maps the SAFE, non-sensitive set of observed range-rejection reasons
+ * to a single diagnostic code.
+ *
+ *   • EXACTLY ONE distinct reason  → its own specific code, so a
+ *     physical-device screenshot names the actual failure boundary.
+ *   • MIXED (≥2 distinct reasons)  → the generic `PREVIEW_RANGE_FAILED`
+ *     catch-all. No single cause is overstated when the gateways
+ *     disagreed; the full safe set stays on the (non-rendered) error's
+ *     `reasons` field for any future structured use.
+ *   • EMPTY (unclassifiable)       → the generic catch-all.
+ *
+ * Pure and total: no message is ever parsed.
+ */
+function rejectionReasonToCode(
+  reasons: readonly StorageRangeRejectionReason[],
+): MediaDiagnosticCode {
+  if (reasons.length !== 1) {
+    return "PREVIEW_RANGE_FAILED";
+  }
+  switch (reasons[0]) {
+    case "status-not-206":
+      return "PREVIEW_RANGE_STATUS_REJECTED";
+    case "html-response":
+      return "PREVIEW_RANGE_HTML_RESPONSE";
+    case "content-range-mismatch":
+      return "PREVIEW_RANGE_CONTENT_RANGE_MISMATCH";
+    case "body-short":
+      return "PREVIEW_RANGE_BODY_SHORT";
+    case "body-long":
+      return "PREVIEW_RANGE_BODY_LONG";
+    default:
+      return "PREVIEW_RANGE_FAILED";
+  }
 }
 
 /**
@@ -335,7 +409,7 @@ export function classifyMediaFailure(
     if (err.code === "range-network") {
       return result("PREVIEW_RANGE_NETWORK", trigger);
     }
-    return result("PREVIEW_RANGE_FAILED", trigger);
+    return result(rejectionReasonToCode(err.reasons), trigger);
   }
 
   /**

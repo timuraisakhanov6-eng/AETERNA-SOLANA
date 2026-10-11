@@ -26,6 +26,7 @@ import {
 } from "@/lib/storage/container/containerPublication";
 import {
   StorageRangeError,
+  type StorageRangeRejectionReason,
 } from "./storageRangeFailure";
 
 /**
@@ -588,6 +589,17 @@ export const executorStorage: ExecutorReadStorageAdapter = {
      */
     let sawNetworkFailure = false;
 
+    /**
+     * The set of rejection reasons observed across ALL gateway attempts
+     * (each `continue` branch below records exactly one). Diagnostic
+     * only: it never influences control flow, gateway order, retries or
+     * the deadline. Preserved as a SET so a mixed-reason exhaustion
+     * reports every reason actually seen, not just the last one. Never
+     * carries a URL, pointer, byte or any other sensitive value.
+     */
+    const rejectionReasons =
+      new Set<StorageRangeRejectionReason>();
+
     try {
       for (const gateway of GATEWAYS) {
         // A spent budget must not start another attempt.
@@ -605,10 +617,16 @@ export const executorStorage: ExecutorReadStorageAdapter = {
           });
 
           // A range read is only satisfied by Partial Content.
-          if (res.status !== 206) continue;
+          if (res.status !== 206) {
+            rejectionReasons.add("status-not-206");
+            continue;
+          }
 
           const contentType = res.headers.get("content-type") ?? "";
-          if (contentType.includes("text/html")) continue;
+          if (contentType.includes("text/html")) {
+            rejectionReasons.add("html-response");
+            continue;
+          }
 
           // A READABLE Content-Range is authoritative: it must be
           // well-formed and describe exactly the requested window.
@@ -622,6 +640,7 @@ export const executorStorage: ExecutorReadStorageAdapter = {
               window
             )
           ) {
+            rejectionReasons.add("content-range-mismatch");
             continue;
           }
 
@@ -629,7 +648,14 @@ export const executorStorage: ExecutorReadStorageAdapter = {
 
           // Exact-length contract: a short or long body is a
           // gateway/protocol failure, never a partial success.
-          if (buffer.byteLength !== window.length) continue;
+          if (buffer.byteLength !== window.length) {
+            rejectionReasons.add(
+              buffer.byteLength < window.length
+                ? "body-short"
+                : "body-long"
+            );
+            continue;
+          }
 
           return new Uint8Array(buffer);
         } catch (cause) {
@@ -662,7 +688,9 @@ export const executorStorage: ExecutorReadStorageAdapter = {
       throw new StorageRangeError("range-network");
     }
 
-    throw new StorageRangeError("range-rejected");
+    // Every reachable gateway REJECTED the window. Report the full,
+    // normalised, non-sensitive set of reasons that were observed.
+    throw new StorageRangeError("range-rejected", [...rejectionReasons]);
   },
 
   async getManifest(capsuleId: string): Promise<ManifestV1> {
