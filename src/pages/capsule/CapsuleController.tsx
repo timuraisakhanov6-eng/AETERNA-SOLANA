@@ -32,6 +32,7 @@ type Props = {
 
 type InternalState =
   | { status: "loading" }
+  | { status: "checking"; manifest: ManifestV1 }
   | { status: "preview"; manifest: ManifestV1 }
   | {
       status: "opened";
@@ -133,6 +134,16 @@ export default function CapsuleController({
   const terminatedRef =
     useRef<boolean>(false);
 
+  // TRANSIENT-SEALED FIX — committed-status mirror.
+  //
+  // `state` read inside the effect closure is frozen at the render
+  // that created the effect (always "loading"), so it can never serve
+  // as a control-flow guard. statusRef is the authoritative mirror of
+  // the last COMMITTED status and is what the open pipeline consults
+  // before deciding whether a status write is still meaningful.
+  const statusRef =
+    useRef<InternalState["status"]>("loading");
+
   const intervalRef =
     useRef<ReturnType<typeof setInterval> | null>(
       null
@@ -163,6 +174,11 @@ export default function CapsuleController({
     openingRef.current = false;
     terminatedRef.current = false;  // reset on capsuleId / secret change
 
+    // TRANSIENT-SEALED FIX — nothing is committed for this generation
+    // yet. Until init() resolves, the runtime is NOT in a decided
+    // state, so the mirror must not claim one.
+    statusRef.current = "loading";
+
     // FINDING 1 — per-invocation generation identity.
     //
     // Every effect invocation owns a unique generation value. All async
@@ -181,6 +197,52 @@ export default function CapsuleController({
     const isStale = (): boolean =>
       generation !== generationRef.current ||
       cancelledRef.current;
+
+    /**
+     * TRANSIENT-SEALED FIX — the ONLY status write of this effect.
+     *
+     * Two responsibilities:
+     *
+     *  1. staleness gate — identical contract to every other async
+     *     write in this effect (a stale generation must never commit);
+     *  2. keep `statusRef` in lockstep with React state, so a later
+     *     read inside this effect never observes the frozen `state`
+     *     closure value.
+     */
+    const commit = (next: InternalState): void => {
+
+      if (isStale())
+        return;
+
+      statusRef.current =
+        next.status;
+
+      setState(next);
+
+    };
+
+    /**
+     * TRANSIENT-SEALED FIX — the fail-closed SEALED display.
+     *
+     * Every non-success resolution of the open pipeline lands here:
+     * still sealed, no capability in this tab, trusted time
+     * unavailable, read/decode failure. The capsule is never reported
+     * as opened without a proven successful open.
+     *
+     * Before this fix SEALED was the INITIAL state of the pipeline,
+     * which is exactly what produced the false flash on reload. It is
+     * now only ever reached as an authoritative outcome.
+     */
+    const commitSealed = (manifest: ManifestV1): void => {
+
+      if (
+        statusRef.current === "preview" ||
+        statusRef.current === "opened"
+      ) return;
+
+      commit({ status: "preview", manifest });
+
+    };
 
     // [Б] Сбросить дату при смене capsuleId
     setDisplayOpenAt(null);
@@ -285,8 +347,19 @@ export default function CapsuleController({
         if (isStale())
           return;
 
-        setState({
-          status: "preview",
+        // TRANSIENT-SEALED FIX: set "checking" (not "preview") after
+        // manifest + heartbeat are resolved but BEFORE tryOpen has
+        // verified the open-time boundary against trusted time.
+        //
+        // "checking" renders a neutral loading screen — the user must
+        // never see the SEALED card before the authoritative open-state
+        // decision has been made.
+        //
+        // tryOpen will transition to "preview" (SEALED) only after
+        // confirming nowUtc < effectiveOpenAt, or to "opened" after
+        // successful vault decryption.
+        commit({
+          status: "checking",
           manifest: manifestRef.current!,
         });
 
@@ -393,7 +466,7 @@ export default function CapsuleController({
 
         if (!isStale()) {
 
-          setState({
+          commit({
             status: "error",
           });
 
@@ -450,12 +523,29 @@ export default function CapsuleController({
 
         if (nowUtc < effectiveOpenAt) {
 
+          // TRANSIENT-SEALED FIX: the trusted-time guard has
+          // AUTHORITATIVELY confirmed the capsule is still sealed, so
+          // the SEALED card is now truthful and may be shown.
+          //
+          // This is the ONLY place that may display SEALED before an
+          // open attempt. `commitSealed` is a no-op once SEALED is
+          // already committed, so the 5 s interval / focus / visibility
+          // retries cannot produce an extra render.
+          commitSealed(manifest);
+
           openingRef.current = false;
           return;
 
         }
 
         if (!secretLocal) {
+
+          // No capability is present in this tab (recipient link
+          // without its fragment, or the secret was already consumed
+          // by a previous attempt): the capsule cannot be opened and
+          // must stay fail-closed on the SEALED card rather than sit
+          // on a permanent neutral loader.
+          commitSealed(manifest);
 
           openingRef.current = false;
 
@@ -511,7 +601,7 @@ export default function CapsuleController({
            return;
         }
 
-        setState({
+        commit({
 
            status: "opened",
            manifest,
@@ -571,9 +661,27 @@ export default function CapsuleController({
             return;
           }
 
-          setState({
+          commit({
             status: "error",
           });
+
+        }
+
+        // TRANSIENT-SEALED FIX — fail-closed for every OTHER failure
+        // (trusted time unavailable, range/read failure, decode
+        // failure, …).
+        //
+        // The capsule was NOT opened and must never be reported as
+        // opened. Trusted time is never substituted with local time,
+        // and no state is committed without a proven successful open.
+        //
+        // Without this branch the runtime would remain in the neutral
+        // "checking" state forever on such an error — an infinite
+        // loader with no fail-closed outcome. The canonical
+        // fail-closed display is SEALED.
+        else {
+
+          commitSealed(manifest);
 
         }
 
@@ -761,6 +869,7 @@ export default function CapsuleController({
   // loading view instead.
   const stateMatchesRoute =
     (state.status === "preview" ||
+      state.status === "checking" ||
       state.status === "opened") &&
     state.manifest.capsuleId === capsuleId;
 
@@ -1101,6 +1210,24 @@ export default function CapsuleController({
           Invalid capsule identifier.
         </p>
       </div>
+    );
+
+  }
+
+  // TRANSIENT-SEALED FIX: "checking" state — manifest and heartbeat
+  // are loaded, but tryOpen has not yet verified the trusted-time
+  // boundary. Show a neutral loading screen, NOT the SEALED card.
+  if (
+    state.status === "checking" &&
+    stateMatchesRoute
+  ) {
+
+    return (
+      <CapsuleView
+        state={{
+          status: "checking",
+        }}
+      />
     );
 
   }

@@ -47,6 +47,7 @@ export type CapsuleViewState =
 
       onCreate?: () => void;
     }
+  | { status: "checking" }
   | { status: "opening" }
   | {
       status: "opened";
@@ -256,6 +257,19 @@ export default function CapsuleView({ state, className }: Props) {
     return (
       <div className={cn("min-h-screen bg-background text-foreground p-4 md:p-6", className)}>
         {state.content}
+      </div>
+    );
+  }
+
+  /* ===== CHECKING — neutral loading before sealed/open decision ===== */
+
+  if (state.status === "checking") {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground gap-4">
+        <LockIcon size={48} className="text-amber-500 animate-pulse" />
+        <p className="text-sm tracking-wider uppercase text-muted-foreground font-medium">
+          Opening capsule…
+        </p>
       </div>
     );
   }
