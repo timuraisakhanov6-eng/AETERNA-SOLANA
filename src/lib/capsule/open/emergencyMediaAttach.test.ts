@@ -237,6 +237,7 @@ function build(mimeType: string) {
     capsuleId: CAPSULE_ID,
     chunks: [makeChunk()],
     resolvedChunks: [makePublished()],
+    cryptoKey: {} as CryptoKey,
     mediaType: "video",
     mimeType,
     size: SIZE,
@@ -433,5 +434,133 @@ describe("detach watchdog — MutationObserver configuration", () => {
     expect(disconnectSpy).not.toHaveBeenCalled();
 
     disconnectSpy.mockRestore();
+  });
+});
+
+/* =========================================================
+ * cryptoKey passthrough — regression
+ *
+ * The Emergency Runtime used to pass `null as unknown as CryptoKey`
+ * to `createEmergencyMediaSession`, so `decryptChunk` rejected
+ * every read with SEALED_ERROR before `sourceopen` was reached.
+ * These tests verify the real key reaches the session.
+ * ========================================================= */
+describe("cryptoKey passthrough — real key reaches the media session", () => {
+  it("passes the cryptoKey to decryptChunk (not null/undefined)", async () => {
+    build(VP8_OPUS);
+
+    await waitUntil(() =>
+      (document.querySelector("video")?.src ?? "").startsWith("blob:mediasource-")
+    );
+
+    // decryptChunk is called inside the streaming loop AFTER
+    // sourceopen; give the stream a moment to start reading.
+    await new Promise((r) => setTimeout(r, 60));
+
+    // decryptChunk was called with a truthy key — not null.
+    const calls = vi.mocked(decryptChunk).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const keyArg = calls[0]?.[1];
+    expect(keyArg).toBeTruthy();
+    expect(keyArg).not.toBeNull();
+  });
+
+  it("a read failure leaves the unavailable message visible and does not report success", async () => {
+    vi.mocked(decryptChunk).mockRejectedValue(
+      new Error("[AETERNA] Capsule sealed.")
+    );
+
+    const { status } = build(VP8_OPUS);
+
+    await waitUntil(() => status.textContent.length > 0);
+
+    const video = document.querySelector("video") as HTMLVideoElement;
+    // No object URL was assigned.
+    expect((video.src ?? "")).not.toMatch(/^blob:mediasource-/);
+    // Status shows a failure, not "opened".
+    expect(status.textContent).not.toContain("opened");
+  });
+
+  it("hides the 'Preview unavailable' element when the stream succeeds", async () => {
+    const root = document.createElement("div");
+    const status = document.createElement("div");
+    document.body.appendChild(root);
+    document.body.appendChild(status);
+
+    const unavailable = document.createElement("div");
+    unavailable.className = "media-unavail";
+    unavailable.textContent = "Preview unavailable — media recovery coming in next layer";
+    unavailable.style.display = "";
+    document.body.appendChild(unavailable);
+
+    buildEmergencyMediaElement({
+      root,
+      status,
+      item: {
+        mediaType: "video",
+        filename: "v.webm",
+        mimeType: VP8_OPUS,
+        size: SIZE,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as never,
+      capsuleId: CAPSULE_ID,
+      chunks: [makeChunk()],
+      resolvedChunks: [makePublished()],
+      cryptoKey: {} as CryptoKey,
+      mediaType: "video",
+      mimeType: VP8_OPUS,
+      size: SIZE,
+      unavailableEl: unavailable,
+    });
+
+    const video = document.querySelector("video") as HTMLVideoElement;
+    await waitUntil(() => (video.src ?? "").startsWith("blob:mediasource-"));
+
+    // Give the onStreamReady callback a chance.
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(unavailable.style.display).toBe("none");
+  });
+
+  it("keeps the 'Preview unavailable' element visible on a read failure", async () => {
+    vi.mocked(decryptChunk).mockRejectedValue(
+      new Error("[AETERNA] Capsule sealed.")
+    );
+
+    const root = document.createElement("div");
+    const status = document.createElement("div");
+    document.body.appendChild(root);
+    document.body.appendChild(status);
+
+    const unavailable = document.createElement("div");
+    unavailable.className = "media-unavail";
+    unavailable.textContent = "Preview unavailable — media recovery coming in next layer";
+    unavailable.style.display = "";
+    document.body.appendChild(unavailable);
+
+    buildEmergencyMediaElement({
+      root,
+      status,
+      item: {
+        mediaType: "video",
+        filename: "v.webm",
+        mimeType: VP8_OPUS,
+        size: SIZE,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as never,
+      capsuleId: CAPSULE_ID,
+      chunks: [makeChunk()],
+      resolvedChunks: [makePublished()],
+      cryptoKey: {} as CryptoKey,
+      mediaType: "video",
+      mimeType: VP8_OPUS,
+      size: SIZE,
+      unavailableEl: unavailable,
+    });
+
+    await waitUntil(() => status.textContent.length > 0, 2000);
+
+    // Still visible — no success to hide it.
+    expect(unavailable.style.display).not.toBe("none");
   });
 });

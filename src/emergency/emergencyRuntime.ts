@@ -220,7 +220,7 @@ export async function initEmergencyRuntime({
   status.textContent = "Opening capsule…";
 
   try {
-    const { vault } = await openCapsuleSource({
+    const { vault, cryptoKey } = await openCapsuleSource({
       capsuleId: manifest.capsuleId,
       secret: parsed.recipientSecret,
       manifest,
@@ -255,7 +255,7 @@ export async function initEmergencyRuntime({
         )
       : [];
 
-    renderEmergencyVault(root, vault, status, resolvedChunks);
+    renderEmergencyVault(root, vault, status, resolvedChunks, cryptoKey);
     status.textContent = "Capsule opened.";
     return "opened";
   } catch {
@@ -433,6 +433,7 @@ function renderEmergencyVault(
   vault: VaultV2,
   status: HTMLElement,
   resolvedChunks: readonly PublishedChunkMetadata[],
+  cryptoKey: CryptoKey,
 ): void {
   root.innerHTML = "";
 
@@ -552,9 +553,11 @@ function renderEmergencyVault(
         capsuleId: vault.capsule.capsuleId,
         chunks,
         resolvedChunks,
+        cryptoKey,
         mediaType,
         mimeType,
         size,
+        unavailableEl: unavailable,
       });
     } else if (mediaType === "image") {
       buildEmergencyImage({
@@ -564,6 +567,7 @@ function renderEmergencyVault(
         capsuleId: vault.capsule.capsuleId,
         chunks,
         resolvedChunks,
+        cryptoKey,
         mimeType,
         size,
       });
@@ -575,6 +579,7 @@ function renderEmergencyVault(
         capsuleId: vault.capsule.capsuleId,
         chunks,
         resolvedChunks,
+        cryptoKey,
         mimeType,
         size,
       });
@@ -600,9 +605,19 @@ export function buildEmergencyMediaElement(args: {
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
   resolvedChunks: readonly PublishedChunkMetadata[];
+  cryptoKey: CryptoKey;
   mediaType: MediaItemV2["mediaType"];
   mimeType: string;
   size: number;
+  /**
+   * The "Preview unavailable — media recovery coming in next layer"
+   * element created by `renderEmergencyVault`.
+   *
+   * Hidden when a real MediaSource or Blob URL is successfully attached,
+   * so the user never sees the stale "unavailable" banner alongside a
+   * working player.
+   */
+  unavailableEl?: HTMLElement | null;
 }): void {
   const media =
     args.mediaType === "video"
@@ -685,6 +700,7 @@ export function buildEmergencyMediaElement(args: {
     capsuleId: args.capsuleId,
     chunks: args.chunks,
     resolvedChunks: args.resolvedChunks,
+    cryptoKey: args.cryptoKey,
     mimeType: args.mimeType,
     size: args.size,
     // The element is already in the DOM, so the MediaSource can attach
@@ -698,11 +714,17 @@ export function buildEmergencyMediaElement(args: {
       if (media.src === objectUrl) {
         ownedUrl = objectUrl;
         fallback.style.display = "none";
+        if (args.unavailableEl) {
+          args.unavailableEl.style.display = "none";
+        }
         return;
       }
 
       disposePrevious();
       attachObjectUrl(objectUrl);
+      if (args.unavailableEl) {
+        args.unavailableEl.style.display = "none";
+      }
     },
     getAbortController: () => {
       const ac = new AbortController();
@@ -719,6 +741,7 @@ function buildEmergencyImage(args: {
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
   resolvedChunks: readonly PublishedChunkMetadata[];
+  cryptoKey: CryptoKey;
   mimeType: string;
   size: number;
 }): void {
@@ -753,6 +776,7 @@ function buildEmergencyImage(args: {
     capsuleId: args.capsuleId,
     chunks: args.chunks,
     resolvedChunks: args.resolvedChunks,
+    cryptoKey: args.cryptoKey,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: (url) => {
@@ -774,6 +798,7 @@ function buildEmergencyFile(args: {
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
   resolvedChunks: readonly PublishedChunkMetadata[];
+  cryptoKey: CryptoKey;
   mimeType: string;
   size: number;
 }): void {
@@ -812,6 +837,7 @@ function buildEmergencyFile(args: {
     capsuleId: args.capsuleId,
     chunks: args.chunks,
     resolvedChunks: args.resolvedChunks,
+    cryptoKey: args.cryptoKey,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: (url) => {
@@ -840,6 +866,7 @@ function buildEmergencyMediaSession(args: {
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
   resolvedChunks: readonly PublishedChunkMetadata[];
+  cryptoKey: CryptoKey;
   mimeType: string;
   size: number;
   onStreamReady: (objectUrl: string) => void;
@@ -855,6 +882,7 @@ function buildEmergencyMediaSession(args: {
     capsuleId: args.capsuleId,
     chunks: args.chunks,
     resolvedChunks: args.resolvedChunks,
+    cryptoKey: args.cryptoKey,
     mimeType: args.mimeType,
     size: args.size,
     onStreamReady: args.onStreamReady,
@@ -933,6 +961,16 @@ function createEmergencyMediaSession(args: {
   capsuleId: string;
   chunks: readonly ChunkMetadata[];
   resolvedChunks: readonly PublishedChunkMetadata[];
+  /**
+   * The real decryption key returned by `openCapsule`. This MUST be
+   * the actual `CryptoKey` — never `null` or a placeholder.
+   *
+   * Without it, `decryptChunk` rejects every read with `SEALED_ERROR`
+   * before `sourceopen` is ever reached, so no MediaSource stream can
+   * succeed. Threading it through is the difference between a working
+   * emergency A/V surface and a permanently black `<video>`.
+   */
+  cryptoKey: CryptoKey;
   mimeType: string;
   size: number;
   onStreamReady: (objectUrl: string) => void;
@@ -951,7 +989,7 @@ function createEmergencyMediaSession(args: {
 
   const request: OpenMediaRequest = {
     capsuleId: args.capsuleId,
-    cryptoKey: null as unknown as CryptoKey,
+    cryptoKey: args.cryptoKey,
     media: {
       mediaType: args.item.mediaType as MediaItemV2["mediaType"],
       filename: args.item.filename as string,
