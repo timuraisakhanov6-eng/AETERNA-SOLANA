@@ -37,6 +37,13 @@ import {
   isMediaPreviewConstructionError,
   inlinePreviewTooLargeMessage,
 } from "./mediaPreviewPolicy";
+import {
+  isStorageRangeError,
+} from "@/lib/storage/storageRangeFailure";
+import {
+  isChunkLoadError,
+  isByteRuntimeReconstructionError,
+} from "@/lib/capsule/runtime/chunkLoadFailure";
 
 /**
  * Stable, non-sensitive diagnostic codes.
@@ -68,6 +75,40 @@ export type MediaDiagnosticCode =
   | "PREVIEW_READ_TIMEOUT"
   /** The bounded whole-file fallback read failed. */
   | "PREVIEW_READ_FAILED"
+  /**
+   * A per-range STORAGE deadline inside the fallback read fired — the
+   * inner `rangeDownloadDeadlineMs` budget was spent. Distinct from
+   * `PREVIEW_READ_TIMEOUT` (the OUTER whole-file bound) so the two
+   * deadline layers can be told apart.
+   */
+  | "PREVIEW_RANGE_TIMEOUT"
+  /**
+   * A per-range STORAGE read was rejected while the fallback was
+   * running: a non-206 status, an unreadable/mismatched Content-Range,
+   * or a short/long body — i.e. gateways could not provide the
+   * expected window.
+   */
+  | "PREVIEW_RANGE_FAILED"
+  /**
+   * A per-range storage request could not COMPLETE at the transport
+   * layer (network/TLS/CORS rejection from `fetch`) while the fallback
+   * was running. Distinct from `PREVIEW_RANGE_FAILED` (a reachable
+   * gateway that rejected the window) and from user cancellation.
+   */
+  | "PREVIEW_RANGE_NETWORK"
+  /**
+   * The fallback read produced a ciphertext window whose length did
+   * not match the chunk metadata (truncation / layout mismatch).
+   */
+  | "PREVIEW_CHUNK_LENGTH_MISMATCH"
+  /** AES-GCM decryption of a correctly-sized chunk was rejected. */
+  | "PREVIEW_DECRYPT_FAILED"
+  /**
+   * The decrypted chunks could not be assembled/allocated in memory
+   * after a successful read (e.g. a large fallback buffer on a
+   * memory-constrained device).
+   */
+  | "PREVIEW_RECONSTRUCTION_FAILED"
   /** The item is too large for an in-memory preview. */
   | "PREVIEW_TOO_LARGE"
   /** Building the Blob / object URL failed after a successful read. */
@@ -181,6 +222,18 @@ const MESSAGES: Record<MediaDiagnosticCode, string> = {
     "Media preview took too long to load (PREVIEW_READ_TIMEOUT).",
   PREVIEW_READ_FAILED:
     "Media preview could not be read (PREVIEW_READ_FAILED).",
+  PREVIEW_RANGE_TIMEOUT:
+    "Media preview read timed out at storage (PREVIEW_RANGE_TIMEOUT).",
+  PREVIEW_RANGE_FAILED:
+    "Storage could not provide the requested media range (PREVIEW_RANGE_FAILED).",
+  PREVIEW_RANGE_NETWORK:
+    "The media range request could not complete (PREVIEW_RANGE_NETWORK).",
+  PREVIEW_CHUNK_LENGTH_MISMATCH:
+    "Media data length did not match its metadata (PREVIEW_CHUNK_LENGTH_MISMATCH).",
+  PREVIEW_DECRYPT_FAILED:
+    "Media data could not be decrypted (PREVIEW_DECRYPT_FAILED).",
+  PREVIEW_RECONSTRUCTION_FAILED:
+    "Media data could not be assembled in memory (PREVIEW_RECONSTRUCTION_FAILED).",
   PREVIEW_TOO_LARGE:
     "This file is too large for an inline preview (PREVIEW_TOO_LARGE).",
   PREVIEW_OBJECT_URL_FAILED:
@@ -263,6 +316,54 @@ export function classifyMediaFailure(
       return result("PREVIEW_READ_TIMEOUT", trigger);
     }
     return result("STREAM_READ_TIMEOUT");
+  }
+
+  /**
+   * A typed storage range failure — the INNER per-range deadline or a
+   * gateway/window rejection. Distinct from the outer read timeout
+   * above. Only attributed when the failure happened inside the
+   * fallback; otherwise it is a stream-read failure and keeps the
+   * pre-existing generic code so no new code appears off the fallback.
+   */
+  if (isStorageRangeError(err)) {
+    if (trigger === undefined) {
+      return result("STREAM_READ_FAILED");
+    }
+    if (err.code === "range-timeout") {
+      return result("PREVIEW_RANGE_TIMEOUT", trigger);
+    }
+    if (err.code === "range-network") {
+      return result("PREVIEW_RANGE_NETWORK", trigger);
+    }
+    return result("PREVIEW_RANGE_FAILED", trigger);
+  }
+
+  /**
+   * A typed chunk-layer failure: the ciphertext window length did not
+   * match the metadata, or AES-GCM rejected the chunk. Only attributed
+   * as a preview code inside the fallback.
+   */
+  if (isChunkLoadError(err)) {
+    if (trigger === undefined) {
+      return result("STREAM_READ_FAILED");
+    }
+    return result(
+      err.code === "chunk-decrypt-failed"
+        ? "PREVIEW_DECRYPT_FAILED"
+        : "PREVIEW_CHUNK_LENGTH_MISMATCH",
+      trigger,
+    );
+  }
+
+  /**
+   * A typed ByteRuntime reconstruction/allocation failure — the bytes
+   * were already read and decrypted; the in-memory assembly failed.
+   */
+  if (isByteRuntimeReconstructionError(err)) {
+    if (trigger === undefined) {
+      return result("STREAM_READ_FAILED");
+    }
+    return result("PREVIEW_RECONSTRUCTION_FAILED", trigger);
   }
 
   /**

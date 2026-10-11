@@ -14,6 +14,7 @@ import type { PublishedChunkMetadata } from "@/types/vault";
 
 import { storage } from "@/lib/storage/storage";
 import { decryptChunk } from "@/lib/crypto/decryptChunk";
+import { ChunkLoadError } from "./chunkLoadFailure";
 
 /**
  * Canonical detached-buffer guard.
@@ -113,14 +114,16 @@ export async function loadChunk(
      * Exact-length contract: the returned window must be precisely
      * the expected ciphertext length. Anything else fails closed
      * before the bytes reach the decryptor.
+     *
+     * Typed (`chunk-length-mismatch`) so the media diagnostic layer
+     * can distinguish a length/transport mismatch from a decrypt
+     * rejection — the message text is unchanged.
      */
     if (
         !(encrypted instanceof Uint8Array) ||
         encrypted.byteLength !== expectedLength
     ) {
-        throw new Error(
-            "[AETERNA] Chunk download failed",
-        );
+        throw new ChunkLoadError("chunk-length-mismatch");
     }
 
     try {
@@ -131,6 +134,17 @@ export async function loadChunk(
             chunk.index,
             capsuleId,
         );
+
+    } catch {
+
+        /**
+         * AES-GCM rejection (bad tag / key / IV) — typed as
+         * `chunk-decrypt-failed`. A detached/mismatched buffer that
+         * reaches the decryptor is also reported here; both are
+         * "the bytes were present but unusable", which the diagnostic
+         * layer treats identically and safely.
+         */
+        throw new ChunkLoadError("chunk-decrypt-failed");
 
     } finally {
 

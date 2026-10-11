@@ -35,6 +35,9 @@ import type {
 } from "./runtimeTypes";
 import { loadChunk } from "./chunkLoader";
 import {
+    ByteRuntimeReconstructionError,
+} from "./chunkLoadFailure";
+import {
     MAX_CHUNK_SIZE,
     AES_GCM_IV_LENGTH,
     AES_GCM_TAG_LENGTH,
@@ -600,10 +603,27 @@ export function createByteRuntime(
 
                 }
 
-                const output =
-                    new Uint8Array(outputLength);
+                /**
+                 * From here on the failure is a pure IN-MEMORY
+                 * assembly/allocation problem: the bytes were already
+                 * fetched and decrypted, so an allocation or copy
+                 * failure here is NOT a network/decrypt failure.
+                 * Tag it so the media diagnostic layer can report it
+                 * distinctly (e.g. a memory-constrained device that
+                 * cannot materialise a large fallback buffer).
+                 */
+                let output: Uint8Array<ArrayBuffer>;
 
-                copySegments(plan, chunkBytes, output);
+                try {
+
+                    output =
+                        new Uint8Array(outputLength);
+
+                    copySegments(plan, chunkBytes, output);
+
+                } catch {
+                    throw new ByteRuntimeReconstructionError();
+                }
 
                 return output;
 

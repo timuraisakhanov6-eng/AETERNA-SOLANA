@@ -24,6 +24,9 @@ import {
   assertContainerPublicationRecord,
   type ContainerPublicationRecord,
 } from "@/lib/storage/container/containerPublication";
+import {
+  StorageRangeError,
+} from "./storageRangeFailure";
 
 /**
  * AETERNA — Storage read transport (read-only)
@@ -575,6 +578,16 @@ export const executorStorage: ExecutorReadStorageAdapter = {
       rangeDownloadDeadlineMs(window.length)
     );
 
+    /**
+     * Tracks whether ANY gateway attempt failed at the transport layer
+     * (a `fetch` rejection that is NOT the shared-deadline abort), so an
+     * exhausted retry can distinguish "reachable but rejected the
+     * window" from "the request could not complete". This is a
+     * classification aid only — it never changes gateway order,
+     * retries, or the deadline.
+     */
+    let sawNetworkFailure = false;
+
     try {
       for (const gateway of GATEWAYS) {
         // A spent budget must not start another attempt.
@@ -626,6 +639,9 @@ export const executorStorage: ExecutorReadStorageAdapter = {
 
           // The shared deadline fired — no later attempt can succeed.
           if (controller.signal.aborted) break;
+
+          // A transport-level rejection (network/TLS/CORS/parse).
+          sawNetworkFailure = true;
         }
       }
     } finally {
@@ -635,10 +651,18 @@ export const executorStorage: ExecutorReadStorageAdapter = {
     // A deadline abort is a distinct, actionable terminal outcome; any
     // other exhaustion is the canonical range-read failure.
     if (controller.signal.aborted) {
-      failClosed("[AETERNA] Range read timed out");
+      throw new StorageRangeError("range-timeout");
     }
 
-    failClosed("[AETERNA] Range read failed");
+    // No gateway delivered an acceptable window. If at least one
+    // attempt failed at the transport layer AND no gateway produced a
+    // usable 206, the request could not be completed — otherwise every
+    // reachable gateway actively rejected the window.
+    if (sawNetworkFailure) {
+      throw new StorageRangeError("range-network");
+    }
+
+    throw new StorageRangeError("range-rejected");
   },
 
   async getManifest(capsuleId: string): Promise<ManifestV1> {

@@ -19,6 +19,11 @@ import {
 } from "./executorStorage";
 
 import {
+  isStorageRangeError,
+  toFacadeStorageRangeError
+} from "./storageRangeFailure";
+
+import {
   CAPSULE_ID_REGEX,
   SHA256_REGEX
 } from "@/lib/crypto/validators";
@@ -385,6 +390,23 @@ export async function downloadRange(
   }
 
   catch (cause) {
+
+    /**
+     * A typed range failure carries a STABLE, non-sensitive stage
+     * (`range-timeout` | `range-rejected` | `range-network`). Re-wrap
+     * it so the code survives to the media diagnostic layer WHILE the
+     * façade's public message stays its exact pre-existing
+     * `[AETERNA] Storage failure` (unchanged external contract).
+     *
+     * NOTHING new is rendered: `classifyMediaFailure` consumes the
+     * `code` and maps it to its own fixed label.
+     */
+    if (isStorageRangeError(cause)) {
+      if (import.meta.env.DEV) {
+        console.error("[storage] downloadRange failed:", cause.code);
+      }
+      throw toFacadeStorageRangeError(cause);
+    }
 
     if (import.meta.env.DEV) {
       console.error("[storage] downloadRange failed", cause);
