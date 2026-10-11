@@ -600,6 +600,17 @@ export const executorStorage: ExecutorReadStorageAdapter = {
     const rejectionReasons =
       new Set<StorageRangeRejectionReason>();
 
+    /**
+     * The NUMERIC HTTP statuses of responses rejected by the status
+     * gate, across ALL gateway attempts. Diagnostic only: it never
+     * influences control flow, gateway order, retries or the deadline.
+     * Preserved as a SET so a mixed exhaustion reports every distinct
+     * status actually seen, not just the last one. Plain integers only
+     * — never a URL, header, pointer, body or byte.
+     */
+    const rejectionStatuses =
+      new Set<number>();
+
     try {
       for (const gateway of GATEWAYS) {
         // A spent budget must not start another attempt.
@@ -619,6 +630,7 @@ export const executorStorage: ExecutorReadStorageAdapter = {
           // A range read is only satisfied by Partial Content.
           if (res.status !== 206) {
             rejectionReasons.add("status-not-206");
+            rejectionStatuses.add(res.status);
             continue;
           }
 
@@ -689,8 +701,13 @@ export const executorStorage: ExecutorReadStorageAdapter = {
     }
 
     // Every reachable gateway REJECTED the window. Report the full,
-    // normalised, non-sensitive set of reasons that were observed.
-    throw new StorageRangeError("range-rejected", [...rejectionReasons]);
+    // normalised, non-sensitive sets of reasons AND numeric HTTP
+    // statuses that were observed.
+    throw new StorageRangeError(
+      "range-rejected",
+      [...rejectionReasons],
+      [...rejectionStatuses],
+    );
   },
 
   async getManifest(capsuleId: string): Promise<ManifestV1> {

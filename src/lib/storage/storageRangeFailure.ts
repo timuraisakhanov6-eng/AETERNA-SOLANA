@@ -124,6 +124,47 @@ export function normalizeRejectionReasons(
 }
 
 /**
+ * The valid HTTP status window. A response rejected by the status gate
+ * can only carry a real HTTP status, so anything outside this range is
+ * dropped — a diagnostic must never render a fabricated value.
+ */
+const HTTP_STATUS_MIN = 100;
+const HTTP_STATUS_MAX = 599;
+
+/**
+ * Normalises the observed NUMERIC HTTP statuses into a safe, stable
+ * set: unique, ascending, integers inside the HTTP status range only.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * `status-not-206` records THAT the status gate fired, but not WHICH
+ * status answered — so 200, 403, 404, 416 and 5xx were
+ * indistinguishable in a screenshot. The numeric status is the ONLY
+ * added response detail: a plain integer carrying no pointer, URL,
+ * header, body or byte.
+ *
+ * A Set is used so a mixed exhaustion reports EVERY distinct status
+ * actually observed (e.g. `[200, 403]`), never an arbitrary last one.
+ *
+ * Exported so tests can assert the normalisation contract directly.
+ */
+export function normalizeRangeStatuses(
+  statuses: readonly number[],
+): readonly number[] {
+  const seen = new Set<number>();
+  for (const s of statuses) {
+    if (
+      Number.isInteger(s) &&
+      s >= HTTP_STATUS_MIN &&
+      s <= HTTP_STATUS_MAX
+    ) {
+      seen.add(s);
+    }
+  }
+  return [...seen].sort((a, b) => a - b);
+}
+
+/**
  * The ADAPTER's original, pre-existing message per code.
  *
  * These are the exact strings `executorStorage.downloadRange` threw
@@ -153,10 +194,11 @@ export const STORAGE_FAILURE_MESSAGE = "[AETERNA] Storage failure";
  * ADAPTER's original string for that code (unchanged contract); the
  * façade re-wraps the same code with its own canonical message.
  *
- * `reasons` is ADDITIVE and set ONLY for a `range-rejected` failure: it
- * is the normalised, safe set of rejection reasons observed across the
- * exhausted gateway attempts. It is never interpolated into `message`
- * and carries no sensitive value. Every other code leaves it empty.
+ * `reasons` and `statuses` are ADDITIVE and set ONLY for a
+ * `range-rejected` failure: the normalised, safe sets of rejection
+ * reasons and numeric HTTP statuses observed across the exhausted
+ * gateway attempts. Neither is interpolated into `message` and neither
+ * carries a sensitive value. Every other code leaves both empty.
  */
 export class StorageRangeError extends Error {
   readonly code: StorageRangeFailureCode;
@@ -168,15 +210,27 @@ export class StorageRangeError extends Error {
    */
   readonly reasons: readonly StorageRangeRejectionReason[];
 
+  /**
+   * The normalised set of NUMERIC HTTP statuses of responses rejected
+   * by the adapter's status gate, across every gateway attempt. Empty
+   * (frozen) unless `code` is `range-rejected`. Plain integers only —
+   * never a URL, header, pointer, body or byte.
+   */
+  readonly statuses: readonly number[];
+
   constructor(
     code: StorageRangeFailureCode,
     reasons: readonly StorageRangeRejectionReason[] = [],
+    statuses: readonly number[] = [],
   ) {
     super(ADAPTER_MESSAGES[code]);
     this.name = "StorageRangeError";
     this.code = code;
     this.reasons = Object.freeze(
       code === "range-rejected" ? normalizeRejectionReasons(reasons) : [],
+    );
+    this.statuses = Object.freeze(
+      code === "range-rejected" ? normalizeRangeStatuses(statuses) : [],
     );
   }
 }
@@ -187,12 +241,16 @@ export class StorageRangeError extends Error {
  * pre-existing public message. This is how `storage.ts` preserves its
  * exact external contract while still exposing the classification.
  *
- * The `reasons` set is carried across unchanged.
+ * The `reasons` and `statuses` sets are carried across unchanged.
  */
 export function toFacadeStorageRangeError(
   cause: StorageRangeError,
 ): StorageRangeError {
-  const wrapped = new StorageRangeError(cause.code, cause.reasons);
+  const wrapped = new StorageRangeError(
+    cause.code,
+    cause.reasons,
+    cause.statuses,
+  );
   // Override only the message; the code (and class) are preserved.
   Object.defineProperty(wrapped, "message", {
     value: STORAGE_FAILURE_MESSAGE,

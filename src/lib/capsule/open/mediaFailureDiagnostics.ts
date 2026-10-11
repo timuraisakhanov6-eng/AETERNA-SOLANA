@@ -39,8 +39,10 @@ import {
 } from "./mediaPreviewPolicy";
 import {
   isStorageRangeError,
+  normalizeRangeStatuses,
   type StorageRangeRejectionReason,
-} from "@/lib/storage/storageRangeFailure";import {
+} from "@/lib/storage/storageRangeFailure";
+import {
   isChunkLoadError,
   isByteRuntimeReconstructionError,
 } from "@/lib/capsule/runtime/chunkLoadFailure";
@@ -199,6 +201,15 @@ export interface MediaFailureDiagnosis {
    * ever composing a dynamic string.
    */
   readonly fallbackTriggerLabel?: string;
+  /**
+   * The unique, ascending NUMERIC HTTP statuses observed on responses
+   * rejected by the range status gate. Present ONLY for
+   * `PREVIEW_RANGE_STATUS_REJECTED`; every other code leaves it
+   * undefined. Plain integers — never a URL, header, pointer, body or
+   * byte. This is the ONLY response detail added to the diagnostic
+   * surface.
+   */
+  readonly rangeStatuses?: readonly number[];
 }
 
 /**
@@ -236,7 +247,16 @@ export function fallbackTriggerLabel(
     : FALLBACK_TRIGGER_LABELS[trigger];
 }
 
-/** Short, safe, user-facing copy per code. No dynamic interpolation. */
+/**
+ * Short, safe, user-facing copy per code.
+ *
+ * Fixed copy with ONE deliberate, safe exception: the
+ * `PREVIEW_RANGE_STATUS_REJECTED` copy is extended at render time with
+ * the numeric HTTP statuses (integers only) — see
+ * `statusRejectedMessage`. No other code interpolates anything, and no
+ * pointer, URL, identifier, header, body or raw exception text is ever
+ * rendered.
+ */
 const MESSAGES: Record<MediaDiagnosticCode, string> = {
   MEDIA_UNSUPPORTED:
     "This device cannot play this media format (MEDIA_UNSUPPORTED).",
@@ -332,6 +352,41 @@ function rejectionReasonToCode(
 }
 
 /**
+ * Builds the rendered copy for `PREVIEW_RANGE_STATUS_REJECTED`.
+ *
+ * The base copy is FIXED; the only interpolated values are the numeric
+ * HTTP statuses (integers, unique, ascending) — the sole added response
+ * detail, so a screenshot can tell 200 from 403 from 416 from 5xx. With
+ * no status recorded the base copy is returned unchanged, so an error
+ * constructed without statuses (e.g. in a test) renders exactly as
+ * before.
+ */
+function statusRejectedMessage(statuses: readonly number[]): string {
+  const base = MESSAGES.PREVIEW_RANGE_STATUS_REJECTED;
+  if (statuses.length === 0) return base;
+  const noun = statuses.length === 1 ? "HTTP status" : "HTTP statuses";
+  return `${base} ${noun}: ${statuses.join(", ")}.`;
+}
+
+/**
+ * Builds the `PREVIEW_RANGE_STATUS_REJECTED` diagnosis, carrying the
+ * normalised numeric statuses both in the rendered copy AND as the
+ * structured `rangeStatuses` field. Never carries anything but the
+ * status integers and the fixed fallback context.
+ */
+function statusRejectedResult(
+  statuses: readonly number[],
+  fallbackTrigger?: MediaFallbackTrigger,
+): MediaFailureDiagnosis {
+  const normalized = normalizeRangeStatuses(statuses);
+  return {
+    ...result("PREVIEW_RANGE_STATUS_REJECTED", fallbackTrigger),
+    message: statusRejectedMessage(normalized),
+    rangeStatuses: normalized,
+  };
+}
+
+/**
  * Classifies a terminal media failure on the SPA path.
  *
  * Ordering matters: the oversized-preview case is checked FIRST so its
@@ -409,7 +464,17 @@ export function classifyMediaFailure(
     if (err.code === "range-network") {
       return result("PREVIEW_RANGE_NETWORK", trigger);
     }
-    return result(rejectionReasonToCode(err.reasons), trigger);
+    const reasonCode = rejectionReasonToCode(err.reasons);
+    /**
+     * The numeric HTTP statuses are rendered ONLY for the
+     * status-rejection code — every other reason keeps its fixed copy
+     * (and no statuses), so the added detail can never appear under a
+     * cause it does not belong to.
+     */
+    if (reasonCode === "PREVIEW_RANGE_STATUS_REJECTED") {
+      return statusRejectedResult(err.statuses, trigger);
+    }
+    return result(reasonCode, trigger);
   }
 
   /**
