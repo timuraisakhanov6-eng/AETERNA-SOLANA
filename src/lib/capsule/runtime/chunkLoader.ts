@@ -86,6 +86,16 @@ export async function loadChunk(
 
     let offset = 0;
 
+    /**
+     * Trusted, digest-verified container totals for the bounded
+     * full-container fallback. They are OPTIONAL: a resolution that does
+     * not carry them (or carries anything but safe integers) simply keeps
+     * the pure Range path. They are NEVER taken from a response — they come
+     * from the verified Stage 2 layout.
+     */
+    let containerHint:
+        { size: number; chunkCount: number } | undefined;
+
     if (container !== undefined) {
         if (
             container.containerTxId !== chunk.pointer ||
@@ -101,14 +111,43 @@ export async function loadChunk(
         }
 
         offset = container.offset;
+
+        const containerSize = container.containerSize;
+        const containerChunkCount = container.containerChunkCount;
+
+        if (
+            typeof containerSize === "number" &&
+            Number.isSafeInteger(containerSize) &&
+            containerSize > 0 &&
+            typeof containerChunkCount === "number" &&
+            Number.isSafeInteger(containerChunkCount) &&
+            containerChunkCount >= 1
+        ) {
+            containerHint = {
+                size: containerSize,
+                chunkCount: containerChunkCount,
+            };
+        }
     }
 
+    /**
+     * The 4th argument is passed ONLY when a trusted container hint exists,
+     * so a legacy (non-container) read keeps the EXACT pre-existing
+     * three-argument call.
+     */
     const encrypted =
-        await storage.downloadRange(
-            chunk.pointer,
-            offset,
-            expectedLength,
-        );
+        containerHint === undefined
+            ? await storage.downloadRange(
+                  chunk.pointer,
+                  offset,
+                  expectedLength,
+              )
+            : await storage.downloadRange(
+                  chunk.pointer,
+                  offset,
+                  expectedLength,
+                  containerHint,
+              );
 
     /**
      * Exact-length contract: the returned window must be precisely

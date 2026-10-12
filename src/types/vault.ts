@@ -462,6 +462,28 @@ export interface ChunkContainerPosition {
   /** Exact physical length — equals `ChunkMetadata.size`. */
   readonly length: number;
 
+  /**
+   * Total container size in bytes: `HEADER_SIZE + Σ chunk length`.
+   *
+   * READ-TIME ONLY — this structure is produced by `resolveContainerChunks`
+   * and is never persisted in the Vault, so adding it does NOT change the
+   * container format or the serialized schema.
+   *
+   * It is derived from the SAME digest-verified layout as `offset`/`length`,
+   * and exists so a bounded full-container read can (a) refuse to fetch
+   * anything larger than its limit BEFORE any network I/O and (b) check the
+   * fetched length for exact equality without re-deriving the layout.
+   */
+  readonly containerSize?: number;
+
+  /**
+   * Number of chunks in the container (`layout.chunkCount`).
+   *
+   * READ-TIME ONLY. Lets a reader compare the fetched container header's
+   * `chunkCount` against the trusted, digest-verified layout.
+   */
+  readonly containerChunkCount?: number;
+
 }
 
 /**

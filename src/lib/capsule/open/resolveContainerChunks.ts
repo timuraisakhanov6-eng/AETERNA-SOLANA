@@ -82,6 +82,15 @@ export async function resolveContainerChunks(
 
   const containerTxId = publication.containerTxId;
 
+  /**
+   * The DIGEST-VERIFIED totals, copied onto every resolved chunk so the
+   * bounded full-container fallback can bound and validate a fetch without
+   * re-deriving the layout. Both come from `layout`, which was just proven
+   * equal to the published layout above — they are NOT caller input.
+   */
+  const containerSize = layout.containerSize;
+  const containerChunkCount = layout.chunkCount;
+
   return Object.freeze(
     layout.entries.map((entry) =>
       Object.freeze({
@@ -97,6 +106,8 @@ export async function resolveContainerChunks(
           globalIndex: entry.globalIndex,
           offset: entry.offset,
           length: entry.length,
+          containerSize,
+          containerChunkCount,
         }),
       }) as PublishedChunkMetadata
     )

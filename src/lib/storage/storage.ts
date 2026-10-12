@@ -15,7 +15,8 @@ import {
 
 import {
   assertRangeWindow,
-  executorStorage
+  executorStorage,
+  type ContainerReadHint
 } from "./executorStorage";
 
 import {
@@ -307,7 +308,16 @@ export async function downloadRange(
 
   offset: number,
 
-  length: number
+  length: number,
+
+  /**
+   * Trusted, digest-verified container totals (read-time only). Supplied
+   * ONLY for Container V1 chunk windows; it enables the bounded
+   * full-container fallback in the adapter when the range path is rejected
+   * by the status gate. Omitted for legacy per-chunk reads, which therefore
+   * keep the unchanged fail-closed behaviour.
+   */
+  containerHint?: ContainerReadHint
 
 ): Promise<Uint8Array<ArrayBuffer>> {
 
@@ -348,7 +358,8 @@ export async function downloadRange(
       await storageAdapter.downloadRange(
         txId,
         window.offset,
-        window.length
+        window.length,
+        containerHint
       );
 
 
