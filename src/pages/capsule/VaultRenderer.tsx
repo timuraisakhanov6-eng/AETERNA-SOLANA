@@ -17,6 +17,8 @@ import {
   downloadFile,
 } from "@/lib/capsule/open/openRuntime";
 
+import { LetterCard } from "./LetterCard";
+
 import type {
   MediaSession,
   OpenableMediaItem,
@@ -1638,10 +1640,16 @@ function TextBlock({
   if (!content)
     return null;
 
+  /**
+   * Letter presentation (F3.3.6).
+   *
+   * The text is rendered unchanged — the card clamps it visually for
+   * the preview and opens the FULL original string in a reader. No
+   * letter title is invented (the vault stores none), and the
+   * decrypted text never leaves the browser.
+   */
   return (
-    <div className="prose prose-neutral max-w-none">
-      <p className="whitespace-pre-wrap break-words">{content}</p>
-    </div>
+    <LetterCard content={content} />
   );
 
 }
