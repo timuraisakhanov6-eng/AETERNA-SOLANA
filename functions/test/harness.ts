@@ -24,10 +24,13 @@ export function createFakeKV(): FakeKV {
     },
     async list(options) {
       const prefix = options.prefix ?? "";
+      // Mirrors Cloudflare KV's list() shape, including the completeness
+      // signal that fail-closed enumeration relies on.
       return {
         keys: [...this.data.keys()]
           .filter((name) => name.startsWith(prefix))
           .map((name) => ({ name })),
+        list_complete: true,
       };
     },
   };
@@ -172,10 +175,40 @@ export function createFakeDurableObjectStorage(): FakeDurableObjectStorage {
  *   points, which is what the runtime guarantees and what makes the
  *   claim's get -> decide -> put sequence atomic.
  */
-export function createFakeCreditCoordinatorBinding() {
+export function createFakeCreditCoordinatorBinding(
+  options: { creatorCredits?: FakeKV } = {}
+) {
   const instances = new Map<string, CreditOperationCoordinator>();
   const storages = new Map<string, FakeDurableObjectStorage>();
   const queues = new Map<string, Promise<unknown>>();
+
+  /** The binding itself (used as the DO's self-binding in tests). */
+  const binding = {
+    idFromName(name: string) {
+      return { id: name };
+    },
+    get(target: { id: string }) {
+      return instanceStub(target.id);
+    },
+  };
+
+  function instanceStub(id: string) {
+    instanceFor(id);
+    return {
+      async fetch(request: Request): Promise<Response> {
+        const tail = queues.get(id) ?? Promise.resolve();
+        const run = tail.then(() => instances.get(id)!.fetch(request));
+        queues.set(
+          id,
+          run.then(
+            () => undefined,
+            () => undefined
+          )
+        );
+        return run;
+      },
+    };
+  }
 
   function instanceFor(id: string): CreditOperationCoordinator {
     let instance = instances.get(id);
@@ -185,13 +218,20 @@ export function createFakeCreditCoordinatorBinding() {
       instance = new CreditOperationCoordinator(
         { storage } as never,
         {
-          CREATOR_CREDITS: {
+          CREATOR_CREDITS: options.creatorCredits ?? {
             get: async () => null,
             put: async () => {},
             delete: async () => {},
+            // Mirrors Cloudflare KV's list() shape, including the
+            // completeness signal the identity backfill gates on.
+            list: async () => ({ keys: [], list_complete: true }),
           },
           PUBLICATION_VERIFICATIONS: { get: async () => null },
           SEAL_VERIFICATIONS: { get: async () => null },
+          // Self-binding so the identity coordinator can read the
+          // per-credit records (op "read") in tests exactly like
+          // production. Wired after the factory object exists.
+          CREDIT_OP_COORDINATOR: binding as never,
         },
       );
       instances.set(id, instance);
@@ -200,27 +240,8 @@ export function createFakeCreditCoordinatorBinding() {
   }
 
   return {
-    idFromName(name: string) {
-      return { id: name };
-    },
-    get(binding: { id: string }) {
-      const id = binding.id;
-      instanceFor(id);
-      return {
-        async fetch(request: Request): Promise<Response> {
-          const tail = queues.get(id) ?? Promise.resolve();
-          const run = tail.then(() => instances.get(id)!.fetch(request));
-          queues.set(
-            id,
-            run.then(
-              () => undefined,
-              () => undefined
-            )
-          );
-          return run;
-        },
-      };
-    },
+    idFromName: binding.idFromName,
+    get: binding.get,
     /** Direct access to per-instance DO storage for assertions. */
     storages,
   };

@@ -216,3 +216,60 @@ describe("PATCH-2K-A create-flow scenarios", () => {
     expect(reduceCreateFlow("paid", "RESET")).toBe("ready");
   });
 });
+
+describe("D1 — CONSUMING never becomes an invitation to pay", () => {
+  it("discovering → needs-recovery on DISCOVERY_CONSUMING", () => {
+    expect(reduceCreateFlow("discovering", "DISCOVERY_CONSUMING")).toBe(
+      "needs-recovery"
+    );
+  });
+
+  it("SCENARIO 3: needs-recovery has NO path to payment", () => {
+    // The payment trigger is rejected from needs-recovery...
+    expect(reduceCreateFlow("needs-recovery", "PAYMENT_STARTED")).toBe(
+      "needs-recovery"
+    );
+    // ...and no other event can move it into needs-payment either.
+    expect(reduceCreateFlow("needs-recovery", "DISCOVERY_NONE")).toBe(
+      "needs-recovery"
+    );
+    expect(reduceCreateFlow("needs-recovery", "PAYMENT_CONFIRMED")).toBe(
+      "needs-recovery"
+    );
+    expect(reduceCreateFlow("needs-recovery", "PAYMENT_ABORTED")).toBe(
+      "needs-recovery"
+    );
+    // It can only leave via an explicit re-check or a successful recovery.
+    expect(reduceCreateFlow("needs-recovery", "CREATE_CLICKED")).toBe(
+      "discovering"
+    );
+    expect(reduceCreateFlow("needs-recovery", "RESET")).toBe("ready");
+  });
+
+  it("DISCOVERY_CONSUMING is accepted only from discovering (no state clobbering)", () => {
+    expect(reduceCreateFlow("ready", "DISCOVERY_CONSUMING")).toBe("ready");
+    expect(reduceCreateFlow("needs-payment", "DISCOVERY_CONSUMING")).toBe(
+      "needs-payment"
+    );
+    expect(reduceCreateFlow("paid", "DISCOVERY_CONSUMING")).toBe("paid");
+  });
+
+  it("payment is still reachable ONLY through DISCOVERY_NONE", () => {
+    // A full walk from every non-none branch must never reach payment.
+    for (const state of ["ready", "discovering", "needs-recovery", "error", "paid"] as const) {
+      expect(reduceCreateFlow(state, "PAYMENT_STARTED")).not.toBe(
+        "payment-in-progress"
+      );
+    }
+    // The canonical path still works.
+    let state = INITIAL_CREATE_FLOW_STATE;
+    state = reduceCreateFlow(state, "CREATE_CLICKED");
+    state = reduceCreateFlow(state, "DISCOVERY_NONE");
+    state = reduceCreateFlow(state, "PAYMENT_STARTED");
+    expect(state).toBe("payment-in-progress");
+  });
+
+  it("a CONSUMING answer never yields paid (no entitlement from a bound right)", () => {
+    expect(reduceCreateFlow("discovering", "DISCOVERY_CONSUMING")).not.toBe("paid");
+  });
+});

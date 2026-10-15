@@ -24,11 +24,15 @@ const store = new Map<string, Entry>();
 
 /**
  * IMPORTANT:
- * Используем any вместо Request
- * чтобы поддерживать Cloudflare IncomingRequestCfProperties typing
+ * Типизируем СТРУКТУРНО, а не как `Request`: так сохраняется поддержка
+ * Cloudflare IncomingRequestCfProperties typing (любой объект с `.headers.get`),
+ * но обращение к свойству остаётся проверяемым — `unknown` делал его
+ * недопустимым под strict-режимом.
  */
 
-export function getClientIp(request: unknown): string {
+export function getClientIp(request: {
+  headers?: { get(name: string): string | null } | null;
+}): string {
 
   const ip =
     request.headers?.get("CF-Connecting-IP");

@@ -5,24 +5,60 @@
  *
  * Canonical fixed-fee service payment quote.
  *
- * Security invariant:
+ * Security invariants:
  * - server-side expectedAmount is authoritative
  * - client-provided expectedAmount is only a display hint
  * - quote is bound to a single payment intent lifecycle
+ * - a new purchase may only start after the identity-scoped Durable
+ *   Object atomically confirmed that NO live right and NO active
+ *   purchase attempt exists for the cryptographically proven creator
+ *   identity (one payment -> one capsule; a lost localStorage hint,
+ *   a second tab or a second device can never authorise a second $1)
  */
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
+import { verifyIdentityProof } from "../../lib/creatorIdentityProof";
 import {
   createBusinessQuote,
   getBusinessQuote,
+  renewBusinessQuote,
+  type BusinessQuoteKVNamespace,
 } from "../../lib/business/businessQuoteStore";
 
 interface ServicePaymentCreateQuoteEnv {
-  BUSINESS_QUOTES: {
+  BUSINESS_QUOTES: BusinessQuoteKVNamespace;
+  CREATOR_IDENTITIES: {
     get(key: string): Promise<string | null>;
-    put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+  };
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(binding: { id: string }): {
+      fetch(request: Request): Promise<Response>;
+    };
+  };
+}
+
+interface PurchaseGuardResult {
+  ok?: boolean;
+  error?: string;
+  paymentIntentId?: string;
+  activeAttempt?: {
+    paymentIntentId: string;
+    quoteId: string;
+    /** Authoritative attempt state: reserved | granting | fulfilled. */
+    state: string;
+    createdAt: number;
+    /**
+     * The transaction signature ALREADY bound to this attempt, if any.
+     * Read-only read-through from the identity coordinator's record —
+     * reported so a client that lost its local pending pointer resumes
+     * VERIFYING this transaction instead of signing a new one.
+     */
+    broadcastSignature?: string | null;
+    /** The verified payment transaction id, when one is recorded. */
+    transactionId?: string | null;
   };
 }
 
@@ -76,8 +112,11 @@ function baseHeaders(origin: string): Record<string, string> {
   };
 }
 
-function fail(origin: string, status = 400, error = "error"): Response {
-  return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders(origin) });
+function fail(origin: string, status = 400, error = "error", extra?: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ ok: false, error, ...(extra ?? {}) }), {
+    status,
+    headers: baseHeaders(origin),
+  });
 }
 
 export async function onRequestOptions(context: EventContext<Record<string, unknown>, string, ServicePaymentCreateQuoteEnv>): Promise<Response> {
@@ -90,7 +129,7 @@ export async function onRequestOptions(context: EventContext<Record<string, unkn
 
 export async function onRequestPost(context: EventContext<Record<string, unknown>, string, ServicePaymentCreateQuoteEnv>): Promise<Response> {
   const { request, env } = context;
-  const bindings = env as ServicePaymentCreateQuoteEnv;
+  const bindings = env as unknown as ServicePaymentCreateQuoteEnv;
   const origin = request.headers.get("origin") ?? "";
 
   if (!isAllowedOrigin(origin)) {
@@ -134,15 +173,207 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
 
+  /* ================= CREATOR IDENTITY (cryptographic) ================= */
+
+  /**
+   * The purchase guard is keyed by the SERVER-DERIVED creator identity:
+   * a fresh challenge/signature proof is verified here exactly like the
+   * credit-status endpoint, and the identity is resolved from
+   * (network, account) server-side. A client-supplied creatorIdentityId
+   * is never read by this endpoint.
+   */
+  const proofResult = await verifyIdentityProof(
+    bindings,
+    {
+      challengeId: typeof body.challengeId === "string" ? body.challengeId : "",
+      network: typeof body.network === "string" ? body.network : "",
+      account: typeof body.account === "string" ? body.account : "",
+      signature: typeof body.signature === "string" ? body.signature : "",
+    },
+    now
+  );
+  if (!proofResult.ok) {
+    return fail(origin, proofResult.status, proofResult.error);
+  }
+  const authenticatedCreatorIdentityId = proofResult.creatorIdentityId;
+
+  /* ================= ATOMIC PURCHASE GUARD ================= */
+
+  const coordinatorBinding = bindings.CREDIT_OP_COORDINATOR;
+  if (!coordinatorBinding) {
+    // Without the identity coordinator a new purchase cannot be proven
+    // safe — fail closed (no quote, no payment intent).
+    console.error("[service-payment/create-quote] CREDIT_COORDINATOR_MISSING");
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+  }
+
+  let guardData: PurchaseGuardResult | null = null;
+  try {
+    const stub = coordinatorBinding.get(
+      coordinatorBinding.idFromName(`identity:${authenticatedCreatorIdentityId}`)
+    );
+    const guardResponse = await stub.fetch(
+      new Request("https://aeterna-credit-coordinator.invalid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          op: "identity-reserve-attempt",
+          creatorIdentityId: authenticatedCreatorIdentityId,
+          quoteId: paymentIntentId,
+          paymentIntentId,
+        }),
+      })
+    );
+    guardData = (await guardResponse.json()) as PurchaseGuardResult | null;
+  } catch (err) {
+    console.error("[service-payment/create-quote] CREDIT_COORDINATOR_ERROR", err);
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+  }
+
+  /**
+   * CONTINUE an unfinished purchase: the identity already has an active
+   * attempt (its own earlier tab/device, or a retry after a lost
+   * paymentIntentId). The SAME attempt is resumed — a second
+   * independent purchase is never created.
+   *
+   * WHAT may be resumed depends on the AUTHORITATIVE attempt state kept
+   * by the identity coordinator — never on the mere absence of a KV
+   * key (KV is eventually consistent and can hide a fresh write):
+   *
+   *   fulfilled             → the credit was already minted. Do NOT
+   *                           re-open a payment window; the caller goes
+   *                           to creation.
+   *   granting              → a verified payment exists and its grant is
+   *                           unfinished. Do NOT re-open a payment
+   *                           window; the caller resumes THAT grant.
+   *   reserved              → no verified payment is recorded for this
+   *                           attempt, so the payment window may be
+   *                           renewed FOR THE SAME INTENT. A previously
+   *                           sent-but-unverified transaction stays
+   *                           creditable (same intent ⇒ at most one
+   *                           verified payment ⇒ at most one credit),
+   *                           and the client additionally refuses to
+   *                           send a second transfer while its own
+   *                           previous outcome is unknown.
+   *
+   * An UNKNOWN attempt state (no attempt record, unreadable state) is
+   * never turned into "reserved": the caller gets a fail-closed answer
+   * and no payment window.
+   */
+  if (guardData?.error === "PAYMENT_ATTEMPT_ACTIVE" && guardData.activeAttempt) {
+    const active = guardData.activeAttempt;
+    const existingQuote = await getBusinessQuote(bindings, active.paymentIntentId).catch(
+      () => null
+    );
+
+    if (active.state === "fulfilled" || active.state === "granting") {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          continued: true,
+          paymentState: active.state === "fulfilled" ? "granted" : "verified_pending_grant",
+          paymentIntentId: active.paymentIntentId,
+          expectedAmount: existingQuote?.expectedAmount ?? SERVICE_FEE_USDC,
+          currency: existingQuote?.currency ?? "USDC",
+          // Deliberately NO fresh window: a payment is already recorded
+          // for this attempt, so there is nothing left to send.
+          expiresAt: existingQuote?.expiresAt ?? active.createdAt,
+        }),
+        { status: 200, headers: baseHeaders(origin) }
+      );
+    }
+
+    if (active.state !== "reserved") {
+      // Unknown/unsupported attempt state: fail closed, no window.
+      return fail(origin, 503, "ENTITLEMENT_STATE_UNKNOWN");
+    }
+
+    let quote = existingQuote;
+    if (!quote) {
+      const created = await createBusinessQuote(bindings, {
+        paymentIntentId: active.paymentIntentId,
+        expectedAmount: SERVICE_FEE_USDC,
+        currency: "USDC" as const,
+        createdAt: now,
+        expiresAt: now + QUOTE_TTL_MS,
+      }).catch(() => null);
+      quote = created ? created.quote : null;
+    } else {
+      // Same intent, renewed window — idempotent (a live quote is
+      // returned untouched, so two tabs converge on one expiry).
+      quote = await renewBusinessQuote(
+        bindings,
+        active.paymentIntentId,
+        now,
+        QUOTE_TTL_MS
+      ).catch(() => quote);
+    }
+
+    if (!quote) {
+      return fail(origin, 500, "QUOTE_RENEWAL_FAILED");
+    }
+
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        continued: true,
+        paymentState: "ready_to_pay",
+        paymentIntentId: quote.paymentIntentId,
+        expectedAmount: quote.expectedAmount,
+        currency: quote.currency,
+        expiresAt: quote.expiresAt,
+        /**
+         * DISCOVERY of an already-bound transaction signature for this
+         * SAME intent (read-only read-through of the identity
+         * coordinator's record). The caller is authenticated by the
+         * cryptographic identity proof above and the attempt is scoped
+         * to that identity, so this can only ever be the caller's own
+         * attempt. A non-null value means: VERIFY THIS transaction, do
+         * NOT sign a new one.
+         */
+        resumeTransactionId:
+          typeof active.broadcastSignature === "string" && active.broadcastSignature
+            ? active.broadcastSignature
+            : null,
+      }),
+      { status: 200, headers: baseHeaders(origin) }
+    );
+  }
+
+  /**
+   * A live right already exists: no new purchase is created at all.
+   * The caller (Home Gate) switches to the right it already owns.
+   */
+  if (guardData?.error === "CREATOR_ALREADY_HAS_LIVE_RIGHT") {
+    return fail(origin, 409, "CREATOR_ALREADY_HAS_LIVE_RIGHT");
+  }
+
+  /**
+   * Unknown / unresolvable state (unresolved old credit, unenumerable
+   * index): an absence can NOT be established — no payment intent.
+   */
+  if (!guardData?.ok) {
+    const error =
+      guardData?.error && guardData.error !== "INVALID_FIELDS"
+        ? guardData.error
+        : "ENTITLEMENT_STATE_UNKNOWN";
+    return fail(origin, 503, error);
+  }
+
+  /* ================= QUOTE ================= */
+
   const existing = await getBusinessQuote(bindings, paymentIntentId);
   if (existing) {
     return new Response(
       JSON.stringify({
         ok: true,
+        paymentState: "ready_to_pay",
         paymentIntentId: existing.paymentIntentId,
         expectedAmount: existing.expectedAmount,
         currency: existing.currency,
         expiresAt: existing.expiresAt,
+        // A freshly reserved intent has no bound transaction yet.
+        resumeTransactionId: null,
       }),
       { status: 200, headers: baseHeaders(origin) }
     );
@@ -166,10 +397,13 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   return new Response(
     JSON.stringify({
       ok: true,
+      paymentState: "ready_to_pay",
       paymentIntentId: quote.paymentIntentId,
       expectedAmount: quote.expectedAmount,
       currency: quote.currency,
       expiresAt: quote.expiresAt,
+      // A brand-new intent has no bound transaction.
+      resumeTransactionId: null,
     }),
     { status: 200, headers: baseHeaders(origin) }
   );

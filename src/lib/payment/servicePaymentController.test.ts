@@ -1,6 +1,10 @@
+// @vitest-environment jsdom
 /**
- * AETERNA — PATCH-2H Phase 1 headless service payment controller tests
- * (node environment, no DOM / no .tsx).
+ * AETERNA — PATCH-2H Phase 1 headless service payment controller tests.
+ *
+ * jsdom (not node): the two-phase payment persists the signed attempt
+ * BEFORE broadcasting and fails closed when that record cannot be
+ * written, so the suite needs a real browser-storage surface.
  *
  * Proves the orchestration extracted from PaymentModal keeps its exact
  * contract: initial idle state, wallet-picker / identity wiring, grant
@@ -11,11 +15,16 @@
  */
 
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import type { Transaction, VersionedTransaction } from "@solana/web3.js";
 
 import {
   createServicePaymentController,
   normalizeGrantCreditStatus,
 } from "@/lib/payment/servicePaymentController";
+import {
+  readPendingPaymentAttempt,
+  clearPendingPaymentAttempt,
+} from "./pendingPaymentAttempt";
 import type {
   ServicePaymentController,
   ServicePaymentControllerDeps,
@@ -23,10 +32,15 @@ import type {
   ServicePaymentReserveResult,
   ServicePaymentWalletApi,
 } from "@/lib/payment/servicePaymentController";
-import { sendSolanaUSDCPayment } from "@/lib/wallet/solanaWallet";
+import { signSolanaUSDCPayment } from "@/lib/wallet/solanaWallet";
 
 vi.mock("@/lib/wallet/solanaWallet", () => ({
-  sendSolanaUSDCPayment: vi.fn(async () => "mock-tx-signature"),
+  signSolanaUSDCPayment: vi.fn(async () => ({
+    signature: "mock-tx-signature",
+    signedTransactionBase64: "bW9jay1zaWduZWQ=",
+    blockhash: "mock-blockhash",
+    lastValidBlockHeight: 12345,
+  })),
 }));
 
 const ACCOUNT = "MockAccount1111111111111111111111111111111111";
@@ -83,6 +97,36 @@ function createFetchStub(routes: Route[]) {
     calls.push({ url, body });
     const route = routes.find((r) => r.match(url));
     if (!route) {
+      /**
+       * requestQuote now obtains its OWN fresh challenge to prove the
+       * creator identity to the purchase guard. Tests that exercise the
+       * payment flow get a deterministic challenge here; a test that
+       * wants a specific challenge still overrides it with a route.
+       */
+      /**
+       * The validated broadcast endpoint: the controller signs, persists,
+       * binds and broadcasts through it. The mock returns the SAME
+       * signature the mocked signing produced.
+       */
+      if (url.includes("/api/solana/broadcast")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, signature: "mock-tx-signature" }),
+        } as Response;
+      }
+      if (url.includes("/api/creator/issue-challenge")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            id: "purchase-challenge",
+            challengeId: "purchase-challenge",
+            challenge: "purchase",
+            message: "AETERNA identity challenge:purchase",
+            expiresAt: Date.now() + 600_000,
+          }),
+        } as Response;
+      }
       throw new Error("UNMOCKED_FETCH: " + url);
     }
     return {
@@ -103,6 +147,11 @@ function createWalletStub(
     changeWallet: vi.fn(async () => {}),
     signMessage: vi.fn(async () => ({ signature: new Uint8Array(64) })),
     signAndSendTransaction: vi.fn(async () => ({ signature: "mock-wallet-tx" })),
+    // Two-phase payment: the wallet SIGNS WITHOUT SENDING. The stub
+    // returns the transaction it was given, marked as signed.
+    signTransaction: vi.fn(
+      async (tx: Transaction | VersionedTransaction) => tx
+    ),
     ...overrides,
   };
 }
@@ -126,10 +175,15 @@ function setup(options: {
   return { controller: createServicePaymentController(deps), calls };
 }
 
-/** quote -> connect -> verify identity, the shared prefix of all payment tests. */
+/**
+ * quote -> connect -> verify identity, the shared prefix of all payment
+ * tests. The wallet is synced FIRST because the quote endpoint now
+ * requires a cryptographically proven creator identity (the purchase
+ * guard) — exactly as the production flow does.
+ */
 async function driveToWalletVerified(controller: ServicePaymentController) {
-  await controller.requestQuote();
   controller.syncWallet(createWalletStub());
+  await controller.requestQuote();
   await controller.connectWallet();
 }
 
@@ -144,6 +198,8 @@ const SUCCESS_ROUTES: Route[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The pending-attempt pointer is browser state; every test starts clean.
+  clearPendingPaymentAttempt();
 });
 
 describe("PATCH-2H service payment controller", () => {
@@ -242,7 +298,7 @@ describe("PATCH-2H service payment controller", () => {
     await controller.confirmAndVerify();
 
     expect(controller.getState().phase).toBe("available");
-    expect(vi.mocked(sendSolanaUSDCPayment)).toHaveBeenCalledWith(
+    expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledWith(
       expect.objectContaining({
         destination: DESTINATION,
         amountAtomic: "1000000",
@@ -301,6 +357,9 @@ describe("PATCH-2H service payment controller", () => {
       routes: [{ match: (u) => u.includes("create-quote"), ok: false, body: { ok: false, error: "QUOTE_DENIED" } }],
     });
 
+    // The guarded quote requires a proven creator identity: the wallet is
+    // synced first, exactly like the production flow.
+    controller.syncWallet(createWalletStub());
     await controller.requestQuote();
 
     expect(controller.getState().phase).toBe("error");
@@ -349,6 +408,7 @@ describe("PATCH-2H service payment controller", () => {
   it("(f) reset returns the controller to the idle state", async () => {
     const { controller } = setup({ routes: [{ match: (u) => u.includes("create-quote"), body: QUOTE_BODY }] });
 
+    controller.syncWallet(createWalletStub());
     await controller.requestQuote();
     expect(controller.getState().phase).toBe("quote_ready");
     expect(controller.getState().quote).not.toBeNull();
@@ -424,12 +484,18 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       onCreditDiscovered,
     });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
 
     expect(controller.getState().phase).toBe("wallet_verified");
-    expect(countCalls(calls, "issue-challenge")).toBe(1);
+    /**
+     * Exactly TWO challenges/signatures for the whole flow, one per
+     * PROOF — never a redundant third:
+     *   1. the discovery proof (reused unchanged by verify-proof), and
+     *   2. the purchase-guard proof taken when the quote is requested.
+     */
+    expect(countCalls(calls, "issue-challenge")).toBe(2);
     expect(countCalls(calls, "credit-status")).toBe(1);
     expect(countCalls(calls, "verify-proof")).toBe(1);
     expect(onCreditDiscovered).toHaveBeenCalledTimes(1);
@@ -438,6 +504,8 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       creatorCreditId: null,
       creatorIdentityId: "identity-1",
       account: ACCOUNT,
+      summary: null,
+      unfinishedLifecycles: null,
     });
   });
 
@@ -470,6 +538,8 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       creatorCreditId: "credit-9",
       creatorIdentityId: "identity-9",
       account: ACCOUNT,
+      summary: null,
+      unfinishedLifecycles: null,
     });
     expect(countCalls(calls, "verify-proof")).toBe(0);
     expect(onCreditDiscovered).toHaveBeenCalledWith({
@@ -477,12 +547,14 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       creatorCreditId: "credit-9",
       creatorIdentityId: "identity-9",
       account: ACCOUNT,
+      summary: null,
+      unfinishedLifecycles: null,
     });
 
     // Payment must stay forbidden after a restored credit.
     controller.setParams({ creatorIdentityId: null, protocolAccepted: true, stopAfterCredit: true });
     await controller.confirmAndVerify();
-    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(vi.mocked(signSolanaUSDCPayment)).not.toHaveBeenCalled();
     expect(onCreditReady).not.toHaveBeenCalled();
   });
 
@@ -499,8 +571,8 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
     });
     controller.setParams({ creatorIdentityId: null, protocolAccepted: true, stopAfterCredit: true });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
     await controller.confirmAndVerify();
 
@@ -513,7 +585,7 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
     );
     expect(countCalls(calls, "verify-proof")).toBe(1);
     expect(controller.getState().phase).toBe("available");
-    expect(vi.mocked(sendSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
   });
 
   it("D: credit-status strictly precedes verify-proof (challenge-consumption ordering)", async () => {
@@ -525,8 +597,8 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       ],
     });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
 
     const discoveryIndex = calls.findIndex((c) => c.url.includes("credit-status"));
@@ -544,8 +616,8 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       ],
     });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
     expect(controller.getState().phase).toBe("error");
     expect(controller.getState().identityProof).not.toBeNull();
@@ -560,7 +632,13 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
     controller.syncWallet(wallet2);
     await controller.connectWallet();
 
-    expect(countCalls(calls, "issue-challenge")).toBe(2);
+    /**
+     * Three challenges in total: the purchase-guard proof taken by the
+     * first requestQuote, the discovery proof of the first flow, and the
+     * discovery proof of the new account's flow. Each is signed EXACTLY
+     * once, and the old account's proof is never reused.
+     */
+    expect(countCalls(calls, "issue-challenge")).toBe(3);
     expect(wallet2.signMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -572,8 +650,8 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       ],
     });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
     expect(controller.getState().identityProof).not.toBeNull();
 
@@ -593,15 +671,15 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
     });
     controller.setParams({ creatorIdentityId: null, protocolAccepted: true, stopAfterCredit: true });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
 
     expect(controller.getState().phase).toBe("error");
     expect(controller.getState().verificationError).toBe("INVALID_SIGNATURE");
 
     await controller.confirmAndVerify();
-    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(vi.mocked(signSolanaUSDCPayment)).not.toHaveBeenCalled();
   });
 
   it("H: a transient discovery failure retries with the SAME proof — no second challenge/signature", async () => {
@@ -679,8 +757,8 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       ],
     });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
 
     expect(controller.getState().phase).toBe("wallet_verified");
@@ -689,6 +767,8 @@ describe("PATCH-2J single-sign identity + credit discovery", () => {
       creatorCreditId: null,
       creatorIdentityId: null,
       account: ACCOUNT,
+      summary: null,
+      unfinishedLifecycles: null,
     });
     expect(countCalls(calls, "verify-proof")).toBe(1);
   });
@@ -721,7 +801,7 @@ describe("PATCH-2K-A payment-after-discovery guard", () => {
     expect(state.error).toBe("CREDIT_DISCOVERY_REQUIRED");
     expect(state.discovery).toBeNull();
     expect(onCreditReady).not.toHaveBeenCalled();
-    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(vi.mocked(signSolanaUSDCPayment)).not.toHaveBeenCalled();
     // No quote creation, no verify, no grant — in fact no network call at all.
     expect(countCalls(calls, "create-quote")).toBe(0);
     expect(countCalls(calls, "service-payment/verify")).toBe(0);
@@ -745,15 +825,15 @@ describe("PATCH-2K-A payment-after-discovery guard", () => {
 
     // The legacy modal flow held a quote before discovery; the guard must
     // block payment even with quote + identity + wallet all present.
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
     expect(controller.getState().phase).toBe("available");
 
     controller.setParams({ creatorIdentityId: "identity-9", protocolAccepted: true, stopAfterCredit: true });
     await controller.confirmAndVerify();
 
-    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(vi.mocked(signSolanaUSDCPayment)).not.toHaveBeenCalled();
     expect(onCreditReady).not.toHaveBeenCalled();
     // The restored-credit state is preserved untouched (no error clobber).
     expect(controller.getState().phase).toBe("available");
@@ -772,15 +852,15 @@ describe("PATCH-2K-A payment-after-discovery guard", () => {
     });
     controller.setParams({ creatorIdentityId: null, protocolAccepted: true, stopAfterCredit: true });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
     expect(controller.getState().phase).toBe("error");
 
     await controller.confirmAndVerify();
 
     expect(controller.getState().error).toBe("CREDIT_DISCOVERY_REQUIRED");
-    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(vi.mocked(signSolanaUSDCPayment)).not.toHaveBeenCalled();
     expect(countCalls(calls, "service-payment/verify")).toBe(0);
     expect(countCalls(calls, "grant-credit")).toBe(0);
   });
@@ -789,8 +869,8 @@ describe("PATCH-2K-A payment-after-discovery guard", () => {
     const { controller, calls } = setup({ routes: SUCCESS_ROUTES });
     controller.setParams({ creatorIdentityId: null, protocolAccepted: true, stopAfterCredit: true });
 
-    await controller.requestQuote();
     controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
     await controller.connectWallet();
     expect(controller.getState().phase).toBe("wallet_verified");
 
@@ -800,14 +880,14 @@ describe("PATCH-2K-A payment-after-discovery guard", () => {
     await controller.confirmAndVerify();
     expect(controller.getState().discovery).toBeNull();
     expect(controller.getState().error).toBe("CREDIT_DISCOVERY_REQUIRED");
-    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(vi.mocked(signSolanaUSDCPayment)).not.toHaveBeenCalled();
 
     // Disconnect: same reset semantics.
     controller.syncWallet(createWalletStub({ connected: false, account: null }));
     await controller.confirmAndVerify();
     expect(controller.getState().discovery).toBeNull();
     expect(controller.getState().error).toBe("CREDIT_DISCOVERY_REQUIRED");
-    expect(vi.mocked(sendSolanaUSDCPayment)).not.toHaveBeenCalled();
+    expect(vi.mocked(signSolanaUSDCPayment)).not.toHaveBeenCalled();
     expect(countCalls(calls, "service-payment/verify")).toBe(0);
     expect(countCalls(calls, "grant-credit")).toBe(0);
   });
@@ -838,6 +918,14 @@ function createSequencedFetchStub(
       body = init?.body;
     }
     calls.push({ url, body });
+
+    // The validated broadcast endpoint (sign → persist → bind → broadcast).
+    if (url.includes("/api/solana/broadcast")) {
+      return {
+        ok: true,
+        json: async () => ({ ok: true, signature: "mock-tx-signature" }),
+      } as Response;
+    }
 
     if (url.includes("service-payment/verify")) {
       const index = Math.min(verifyIndex, verifyResponses.length - 1);
@@ -895,8 +983,8 @@ async function driveToVerifiedPayment(
     protocolAccepted: true,
     stopAfterCredit: true,
   });
-  await controller.requestQuote();
   controller.syncWallet(createWalletStub());
+  await controller.requestQuote();
   await controller.connectWallet();
   return controller;
 }
@@ -904,13 +992,13 @@ async function driveToVerifiedPayment(
 describe("payment reliability — bounded verification polling (D2/D3/D4)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.mocked(sendSolanaUSDCPayment).mockResolvedValue("mock-tx-signature");
+    vi.mocked(signSolanaUSDCPayment).mockResolvedValue({ signature: "mock-tx-signature", signedTransactionBase64: "bW9jay1zaWduZWQ=", blockhash: "mock-blockhash", lastValidBlockHeight: 12345 });
   });
 
   afterEach(() => {
     vi.useRealTimers();
-    vi.mocked(sendSolanaUSDCPayment).mockReset();
-    vi.mocked(sendSolanaUSDCPayment).mockResolvedValue("mock-tx-signature");
+    vi.mocked(signSolanaUSDCPayment).mockReset();
+    vi.mocked(signSolanaUSDCPayment).mockResolvedValue({ signature: "mock-tx-signature", signedTransactionBase64: "bW9jay1zaWduZWQ=", blockhash: "mock-blockhash", lastValidBlockHeight: 12345 });
   });
 
   it("2/5: TX_NOT_FOUND is retried, then a VERIFIED response grants exactly once", async () => {
@@ -926,7 +1014,7 @@ describe("payment reliability — bounded verification polling (D2/D3/D4)", () =
     expect(stub.verifyCalls()).toHaveLength(2);
     expect(stub.grantCalls()).toHaveLength(1);
     // No second blockchain transaction was ever requested.
-    expect(vi.mocked(sendSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
   });
 
   it("3/7: a transaction that is never observable ends in a recoverable error, never as paid", async () => {
@@ -946,7 +1034,7 @@ describe("payment reliability — bounded verification polling (D2/D3/D4)", () =
     expect(stub.verifyCalls().length).toBeGreaterThan(1);
     expect(stub.verifyCalls().length).toBeLessThanOrEqual(23);
     // Still exactly one blockchain transaction attempt.
-    expect(vi.mocked(sendSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
   });
 
   it("a definitive verdict (TX_FAILED) is NOT retried", async () => {
@@ -966,7 +1054,7 @@ describe("payment reliability — bounded verification polling (D2/D3/D4)", () =
   });
 
   it("6: a wallet rejection remains a rejection — no verification, no payment", async () => {
-    vi.mocked(sendSolanaUSDCPayment).mockRejectedValueOnce(
+    vi.mocked(signSolanaUSDCPayment).mockRejectedValueOnce(
       new Error("User rejected the request.")
     );
     const stub = createSequencedFetchStub([VERIFIED_RESPONSE]);
@@ -978,10 +1066,17 @@ describe("payment reliability — bounded verification polling (D2/D3/D4)", () =
 
     const state = controller.getState();
     expect(state.phase).toBe("error");
-    expect(state.error).toContain("User rejected");
+    /**
+     * A wallet rejection is the ONE failure that provably happens BEFORE
+     * anything is sent, so it is reported as its own state
+     * (PAYMENT_REJECTED_BY_WALLET) and leaves NO "unknown outcome"
+     * marker: the same purchase intent may safely be retried.
+     */
+    expect(state.error).toBe("PAYMENT_REJECTED_BY_WALLET");
     // A cancellation never reaches verification or credit.
     expect(stub.verifyCalls()).toHaveLength(0);
     expect(stub.grantCalls()).toHaveLength(0);
+    expect(readPendingPaymentAttempt()).toBeNull();
   });
 
   it("8: canonical destination, amount and payer are unchanged", async () => {
@@ -992,13 +1087,240 @@ describe("payment reliability — bounded verification polling (D2/D3/D4)", () =
     await vi.advanceTimersByTimeAsync(10_000);
     await pending;
 
-    expect(vi.mocked(sendSolanaUSDCPayment)).toHaveBeenCalledWith(
+    expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledWith(
       expect.objectContaining({
         destination: DESTINATION,
         amountAtomic: "1000000",
         publicKey: ACCOUNT,
-        signAndSendTransaction: expect.any(Function),
+        signTransaction: expect.any(Function),
       })
     );
+  });
+});
+
+/* ================= PRE-PAYMENT ENTITLEMENT RE-CHECK (KV lag) =================
+ *
+ * A single "no rights" answer is NOT authority for a new $1: KV is
+ * eventually consistent, so a right granted seconds ago can be invisible.
+ * `recheckEntitlement()` therefore repeats the READ-ONLY enumeration with
+ * the same signed proof until either an active right appears or the
+ * enumeration is vouched complete. It must never create a quote, a
+ * payment or an entitlement, and it must throw (never answer "none") on
+ * an unreadable/unknown/failed response.
+ */
+
+describe("pre-payment entitlement re-check", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-18T00:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const walletStub = () => {
+    const signMessage = vi.fn(async () => ({ signature: new Uint8Array(64) }));
+    return {
+      wallet: {
+        connected: true,
+        account: ACCOUNT,
+        walletName: "Test Wallet",
+        openWalletPicker: vi.fn(async () => {}),
+        changeWallet: vi.fn(async () => {}),
+        signMessage,
+        signAndSendTransaction: vi.fn(async () => ({ signature: "unused" })),
+        signTransaction: vi.fn(
+          async (tx: Transaction | VersionedTransaction) => tx
+        ),
+        disconnect: vi.fn(async () => {}),
+      },
+      signMessage,
+    };
+  };
+
+  const creditStatusRoute = (body: unknown) => ({
+    match: (u: string) => u.includes("credit-status"),
+    body,
+  });
+
+  const issueChallengeRoute = {
+    match: (u: string) => u.includes("issue-challenge"),
+    body: ISSUE_BODY,
+  };
+
+  const COMPLETE_NONE = {
+    ok: true,
+    status: "none",
+    creatorCreditId: null,
+    creatorIdentityId: "identity-1",
+    summary: {
+      availableCount: 0,
+      consumingCount: 0,
+      consumedCount: 0,
+      total: 0,
+      enumerationComplete: true,
+    },
+    unfinishedLifecycles: [],
+  };
+
+  const UNCONFIRMED_NONE = {
+    ...COMPLETE_NONE,
+    summary: { ...COMPLETE_NONE.summary, enumerationComplete: false },
+  };
+
+  const AVAILABLE = {
+    ok: true,
+    status: "available",
+    creatorCreditId: "credit-9",
+    creatorIdentityId: "identity-9",
+    summary: {
+      availableCount: 1,
+      consumingCount: 0,
+      consumedCount: 0,
+      total: 1,
+      enumerationComplete: true,
+    },
+    unfinishedLifecycles: [],
+  };
+
+  const CONSUMING = {
+    ok: true,
+    status: "consuming",
+    creatorCreditId: null,
+    creatorIdentityId: "identity-9",
+    summary: {
+      availableCount: 0,
+      consumingCount: 1,
+      consumedCount: 0,
+      total: 1,
+      enumerationComplete: true,
+    },
+    unfinishedLifecycles: [
+      { creatorCreditId: "credit-9", lifecycleId: "lifecycle-9", capsuleId: "capsule-9" },
+    ],
+  };
+
+  it("a CONFIRMED absence ends the re-check immediately (no quote, no payment)", async () => {
+    const { controller, calls } = setup({
+      routes: [issueChallengeRoute, creditStatusRoute(COMPLETE_NONE)],
+    });
+    const { wallet } = walletStub();
+    controller.syncWallet(wallet);
+
+    const result = await controller.recheckEntitlement();
+
+    expect(result.status).toBe("none");
+    expect(result.summary?.enumerationComplete).toBe(true);
+    // Read-only: no payment endpoints were touched at all.
+    expect(calls.filter((c) => c.url.includes("create-quote"))).toHaveLength(0);
+    expect(calls.filter((c) => c.url.includes("service-payment/verify"))).toHaveLength(0);
+    expect(calls.filter((c) => c.url.includes("grant-credit"))).toHaveLength(0);
+    // Exactly one signature for the whole check.
+    expect(wallet.signMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("an ACTIVE right short-circuits the window — no retry, no payment", async () => {
+    for (const body of [AVAILABLE, CONSUMING]) {
+      const { controller, calls } = setup({
+        routes: [issueChallengeRoute, creditStatusRoute(body)],
+      });
+      const { wallet } = walletStub();
+      controller.syncWallet(wallet);
+
+      const result = await controller.recheckEntitlement();
+
+      expect(result.status).toBe(body.status);
+      // One read only: the window is abandoned as soon as a right appears.
+      expect(calls.filter((c) => c.url.includes("credit-status"))).toHaveLength(1);
+      expect(calls.filter((c) => c.url.includes("create-quote"))).toHaveLength(0);
+      expect(wallet.signMessage).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("an UNCONFIRMED absence is retried on a bounded schedule and returns without completeness", async () => {
+    const { controller, calls } = setup({
+      routes: [issueChallengeRoute, creditStatusRoute(UNCONFIRMED_NONE)],
+    });
+    const { wallet } = walletStub();
+    controller.syncWallet(wallet);
+
+    const promise = controller.recheckEntitlement();
+
+    // Drive the bounded window forward: the schedule sums to 60s.
+    for (let i = 0; i < 8; i += 1) {
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+    const result = await promise;
+
+    expect(result.status).toBe("none");
+    // NOT a confirmed absence — a caller must refuse to pay on it.
+    expect(result.summary?.enumerationComplete).toBe(false);
+    // The window was actually used (several reads), and it stayed READ-ONLY.
+    expect(calls.filter((c) => c.url.includes("credit-status")).length).toBeGreaterThan(1);
+    expect(calls.filter((c) => c.url.includes("create-quote"))).toHaveLength(0);
+    expect(calls.filter((c) => c.url.includes("grant-credit"))).toHaveLength(0);
+    // Still a single signature for the whole window.
+    expect(wallet.signMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("an unreadable/unknown answer THROWS instead of returning 'none'", async () => {
+    for (const body of [
+      { ok: true },                                  // status missing
+      { ok: true, status: "weird" },                 // unknown status
+      { ok: false, error: "ENTITLEMENT_STATE_UNREADABLE" },
+    ]) {
+      const { controller } = setup({
+        routes: [issueChallengeRoute, { match: (u: string) => u.includes("credit-status"), body, ok: false }],
+      });
+      const { wallet } = walletStub();
+      controller.syncWallet(wallet);
+
+      await expect(controller.recheckEntitlement()).rejects.toThrow();
+    }
+  });
+
+  it("an unconfirmed absence that later becomes CONFIRMED ends the window early", async () => {
+    const calls: { url: string }[] = [];
+    let responses = 0;
+    // self-contained stub: the first two reads are unconfirmed, the third
+    // confirms the absence, so the window must end there.
+    const fetchStub = (async (input: unknown) => {
+      const url = String(input);
+      calls.push({ url });
+      if (url.includes("issue-challenge")) {
+        return { ok: true, json: async () => ISSUE_BODY } as Response;
+      }
+      responses += 1;
+      const body = responses >= 3 ? COMPLETE_NONE : UNCONFIRMED_NONE;
+      return { ok: true, json: async () => body } as Response;
+    }) as unknown as typeof fetch;
+
+    const controller = createServicePaymentController({ fetchImpl: fetchStub });
+    const { wallet } = walletStub();
+    controller.syncWallet(wallet);
+
+    const promise = controller.recheckEntitlement();
+    for (let i = 0; i < 3; i += 1) {
+      await vi.advanceTimersByTimeAsync(20_000);
+    }
+    const result = await promise;
+
+    expect(result.summary?.enumerationComplete).toBe(true);
+    expect(calls.filter((c) => c.url.includes("credit-status")).length).toBe(3);
+  });
+
+  it("it refuses to run without a connected wallet account", async () => {
+    const { controller } = setup({
+      routes: [issueChallengeRoute, creditStatusRoute(COMPLETE_NONE)],
+    });
+    controller.syncWallet({
+      ...walletStub().wallet,
+      connected: false,
+      account: null,
+    });
+
+    await expect(controller.recheckEntitlement()).rejects.toThrow();
   });
 });

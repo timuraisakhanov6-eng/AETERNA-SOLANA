@@ -352,13 +352,29 @@ export interface SendSolanaUSDCPaymentOptions {
   ) => Promise<{ err?: unknown; confirmationStatus?: string } | null>
 }
 
-export async function sendSolanaUSDCPayment({
+/**
+ * Builds the CANONICAL $1 USDC service-payment transaction.
+ *
+ * Extracted verbatim from sendSolanaUSDCPayment so the two-phase flow
+ * (sign → persist → bind → broadcast) builds EXACTLY the same
+ * transaction as the legacy single-call flow: same instructions, same
+ * amount, same mint, same recipient, same fee payer. The strict server
+ * broadcast endpoint validates this shape, so there must never be a
+ * second builder.
+ */
+async function buildServicePaymentTransaction({
   destination = AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS,
   amountAtomic = "1000000",
   publicKey: publicKeyOption,
-  signAndSendTransaction,
-  getSignatureStatus: getSignatureStatusOption,
-}: SendSolanaUSDCPaymentOptions): Promise<string> {
+}: {
+  destination?: string | undefined
+  amountAtomic?: string | undefined
+  publicKey?: string | null | undefined
+}): Promise<{
+  transaction: import("@solana/web3.js").Transaction
+  blockhash: string
+  lastValidBlockHeight: number | null
+}> {
   const web3 = await import("@solana/web3.js")
   const { Transaction, PublicKey } = web3
   const spl = await import("@solana/spl-token")
@@ -368,20 +384,6 @@ export async function sendSolanaUSDCPayment({
     createAssociatedTokenAccountInstruction,
     TOKEN_PROGRAM_ID,
   } = spl
-
-  /**
-   * Fail-closed contract guard — never a ReferenceError.
-   *
-   * `signAndSendTransaction` is a REQUIRED contract, but a JavaScript caller
-   * can still pass anything. A missing / non-function callback is rejected
-   * with an explicit typed error BEFORE any transaction is built, so a broken
-   * caller fails loudly and early instead of reaching an undefined symbol.
-   */
-  if (typeof signAndSendTransaction !== "function") {
-    throw new Error(
-      "signAndSendTransaction is required: AETERNA signs and sends through the wallet adapter only"
-    )
-  }
 
   const publicKey = publicKeyOption
   if (!publicKey) {
@@ -467,6 +469,146 @@ export async function sendSolanaUSDCPayment({
   if (typeof blockhashData.lastValidBlockHeight === "number") {
     transaction.lastValidBlockHeight = blockhashData.lastValidBlockHeight
   }
+
+
+  return {
+    transaction,
+    blockhash: blockhashData.blockhash,
+    lastValidBlockHeight:
+      typeof blockhashData.lastValidBlockHeight === "number"
+        ? blockhashData.lastValidBlockHeight
+        : null,
+  }
+}
+
+/**
+ * Signs the canonical payment WITHOUT sending it.
+ *
+ * Returns the transaction signature (computed from the signed
+ * transaction itself), the serialized signed bytes, and the blockhash
+ * window. The caller persists all of it, binds the signature
+ * server-side, and only then broadcasts through the validated endpoint —
+ * so a lost response can only ever resume the SAME transaction.
+ */
+export async function signSolanaUSDCPayment({
+  destination = AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS,
+  amountAtomic = "1000000",
+  publicKey: publicKeyOption,
+  signTransaction,
+}: {
+  destination?: string
+  amountAtomic?: string
+  publicKey?: string | null
+  signTransaction: (
+    transaction: import("@solana/web3.js").Transaction | import("@solana/web3.js").VersionedTransaction
+  ) => Promise<import("@solana/web3.js").Transaction | import("@solana/web3.js").VersionedTransaction>
+}): Promise<{
+  signature: string
+  signedTransactionBase64: string
+  blockhash: string
+  lastValidBlockHeight: number | null
+}> {
+  if (typeof signTransaction !== "function") {
+    throw new Error(
+      "signTransaction is required: AETERNA signs through the wallet adapter only"
+    )
+  }
+  if (!publicKeyOption) {
+    throw new Error("publicKey is required when using signTransaction")
+  }
+
+  const { transaction, blockhash, lastValidBlockHeight } =
+    await buildServicePaymentTransaction({ destination, amountAtomic, publicKey: publicKeyOption })
+
+  const signed = await signTransaction(transaction)
+
+  // Fully signed means: exactly one signature slot and a non-empty value.
+  const signatures = (signed as { signatures?: Array<{ length?: number } | null> }).signatures
+  if (!Array.isArray(signatures) || signatures.length !== 1 || !signatures[0]) {
+    throw new Error("Transaction is not fully signed")
+  }
+
+  const signedTransaction = signed as import("@solana/web3.js").Transaction
+  const signatureBytes = signedTransaction.signature
+  if (!signatureBytes || signatureBytes.length === 0) {
+    throw new Error("Signed transaction carries no signature")
+  }
+
+  return {
+    // The Solana transaction signature IS the base58 of the first (and
+    // only) signature — derived from the bytes that will be broadcast.
+    signature: base58EncodeBytes(new Uint8Array(signatureBytes)),
+    signedTransactionBase64: bytesToBase64(signedTransaction.serialize()),
+    blockhash,
+    lastValidBlockHeight,
+  }
+}
+
+const BASE58_ALPHABET_LOCAL =
+  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+/** Base58 encoding of raw bytes (no dependency). */
+function base58EncodeBytes(bytes: Uint8Array): string {
+  // Starts EMPTY (a seeded leading 0 digit would add a spurious '1').
+  const digits: number[] = []
+  for (const byte of bytes) {
+    let carry = byte
+    for (let i = 0; i < digits.length; i++) {
+      carry += digits[i]! << 8
+      digits[i] = carry % 58
+      carry = Math.floor(carry / 58)
+    }
+    while (carry > 0) {
+      digits.push(carry % 58)
+      carry = Math.floor(carry / 58)
+    }
+  }
+  let result = ""
+  for (const byte of bytes) {
+    if (byte === 0) result += BASE58_ALPHABET_LOCAL[0]
+    else break
+  }
+  for (let i = digits.length - 1; i >= 0; i--) {
+    result += BASE58_ALPHABET_LOCAL[digits[i]!]
+  }
+  return result
+}
+
+/** Base64 encoding of raw bytes (no dependency). */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ""
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]!)
+  }
+  return btoa(binary)
+}
+
+export async function sendSolanaUSDCPayment({
+  destination = AETERNA_SOLANA_SERVICE_SETTLEMENT_ADDRESS,
+  amountAtomic = "1000000",
+  publicKey: publicKeyOption,
+  signAndSendTransaction,
+  getSignatureStatus: getSignatureStatusOption,
+}: SendSolanaUSDCPaymentOptions): Promise<string> {
+  /**
+   * Fail-closed contract guard — never a ReferenceError.
+   *
+   * `signAndSendTransaction` is a REQUIRED contract, but a JavaScript caller
+   * can still pass anything. A missing / non-function callback is rejected
+   * with an explicit typed error BEFORE any transaction is built, so a broken
+   * caller fails loudly and early instead of reaching an undefined symbol.
+   */
+  if (typeof signAndSendTransaction !== "function") {
+    throw new Error(
+      "signAndSendTransaction is required: AETERNA signs and sends through the wallet adapter only"
+    )
+  }
+
+  const { transaction } = await buildServicePaymentTransaction({
+    destination,
+    amountAtomic,
+    publicKey: publicKeyOption,
+  })
 
   const result = await signAndSendTransaction(transaction)
   if (!result?.signature) {

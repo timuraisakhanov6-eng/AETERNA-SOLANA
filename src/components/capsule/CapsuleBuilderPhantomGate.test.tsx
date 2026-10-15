@@ -5,32 +5,42 @@
  * Model 01 supports Phantom only at the wallet UX/integration layer
  * (docs/canonical/AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1).
  *
- * These tests pin the user-visible behaviour of the FIRST Create Capsule
- * click on the REAL CapsuleBuilder wiring (real reducer, real headless
- * service-payment controller; only the wallet transport, the child widgets
- * and fetch are mocked):
+ * ADAPTATION TO THE HOME GATE ARCHITECTURE
+ * ----------------------------------------
+ * The first Create Capsule click used to run this gate inline on
+ * /create. It now runs on the HOME page (CreateAccessGate) and /create is
+ * creation-only. The scenarios are therefore pinned where the behaviour
+ * actually lives:
  *
  *   Phantom absent  -> installation notice, and NO connect / NO SIWS /
  *                      NO quote / NO $1 payment / NO Irys action.
  *   Phantom present -> the existing connect flow continues unchanged.
+ *   mobile, no Phantom -> the official in-app-browser deeplink, never a
+ *                      hand-built URL and never a redirect loop.
  *
  * The gate is UX-only and never becomes protocol authority: identity is
  * still established server-side through SIWS, payment is still verified
  * server-side, and Creator Credit authority is unchanged.
  *
- * jsdom component test — same convention as CapsuleBuilderRestoreBatching.
- * All network access is mocked. No production calls. No real payment.
+ * The final scenario is the builder-side regression that replaces the old
+ * inline gate: /create must host NO wallet gate at all — an admitted
+ * workspace performs no connect, no discovery and no signature.
+ *
+ * jsdom component test. All network access is mocked. No production calls.
+ * No real payment.
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import {
   CreatorCreditProvider,
   CreatorIdentityProvider,
 } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
+import { CreateAccessProvider } from "@/context/CreateAccessContext";
+import CreateAccessGate from "@/components/access/CreateAccessGate";
 import CapsuleBuilder from "@/components/capsule/CapsuleBuilder";
 import {
   PHANTOM_EXPLORER_ID,
@@ -54,34 +64,29 @@ vi.mock("@reown/appkit-controllers", () => ({
   MobileWalletUtil: { handleMobileDeeplinkRedirect: mobileDeeplinkMock },
 }));
 
-const {
-  stableWallet,
-  openWalletPickerMock,
-  sendSolanaUSDCPaymentMock,
-  fetchMock,
-} = vi.hoisted(() => {
-  const openWalletPickerMock = vi.fn(async () => {});
-  const sendSolanaUSDCPaymentMock = vi.fn(async () => "tx-sig-phantom-gate");
-  const fetchMock = vi.fn(async (_input?: unknown) => ({
-    ok: true,
-    json: async () => ({ ok: true }),
-  }));
+const { stableWallet, openWalletPickerMock, sendSolanaUSDCPaymentMock, signMessageMock } =
+  vi.hoisted(() => {
+    const openWalletPickerMock = vi.fn(async () => {});
+    const sendSolanaUSDCPaymentMock = vi.fn(async () => "tx-sig-phantom-gate");
+    const signMessageMock = vi.fn(async () => ({
+      signature: new Uint8Array(64),
+    }));
 
-  // Mutable per test (connected/disconnected) — same object identity, as
-  // production AETERNAWalletContext memoizes its value.
-  const stableWallet = {
-    connected: false,
-    account: null as string | null,
-    walletName: null as string | null,
-    openWalletPicker: openWalletPickerMock,
-    changeWallet: vi.fn(async () => {}),
-    signMessage: vi.fn(async () => ({ signature: new Uint8Array(64) })),
-    signAndSendTransaction: vi.fn(async () => ({ signature: "unused" })),
-    disconnect: vi.fn(async () => {}),
-  };
+    // Mutable per test (connected/disconnected) — same object identity, as
+    // production AETERNAWalletContext memoizes its value.
+    const stableWallet = {
+      connected: false,
+      account: null as string | null,
+      walletName: null as string | null,
+      openWalletPicker: openWalletPickerMock,
+      changeWallet: vi.fn(async () => {}),
+      signMessage: signMessageMock,
+      signAndSendTransaction: vi.fn(async () => ({ signature: "unused" })),
+      disconnect: vi.fn(async () => {}),
+    };
 
-  return { stableWallet, openWalletPickerMock, sendSolanaUSDCPaymentMock, fetchMock };
-});
+    return { stableWallet, openWalletPickerMock, sendSolanaUSDCPaymentMock, signMessageMock };
+  });
 
 vi.mock("@/context/AETERNAWalletContext", () => ({
   useAeternaWallet: () => stableWallet,
@@ -89,8 +94,6 @@ vi.mock("@/context/AETERNAWalletContext", () => ({
 
 vi.mock("@/context/CapsuleContext", () => ({
   useCapsule: () => ({
-    // Non-empty: canSeal requires items.length > 0 for the first Create
-    // Capsule click to be enabled.
     items: [
       {
         id: "item-gate-1",
@@ -135,7 +138,19 @@ vi.mock("@/lib/storage/creatorIrys", () => ({
 
 /* ───────────────── harness ───────────────── */
 
-const tree = () =>
+const fetchMock = vi.fn(async () => ({
+  ok: true,
+  json: async () => ({ ok: true }),
+}));
+
+const ADMISSION = {
+  creatorCreditId: "creator-credit-phantom-gate",
+  creatorIdentityId: "creator-identity-phantom-gate",
+  account: "7XkWqBase58WalletAccountPhantomGate",
+};
+
+/** The Home page's gate. */
+const gateTree = () =>
   React.createElement(
     MemoryRouter,
     null,
@@ -148,23 +163,51 @@ const tree = () =>
         React.createElement(
           LandingPaymentGateProvider,
           null,
-          React.createElement(CapsuleBuilder)
+          React.createElement(CreateAccessProvider, {
+            children: React.createElement(CreateAccessGate),
+          })
         )
       )
     )
   );
 
-async function acceptProtocol() {
-  fireEvent.click(screen.getByRole("checkbox"));
-  await waitFor(() => {
-    expect(
-      (screen.getByRole("checkbox") as HTMLElement).dataset["state"]
-    ).toBe("checked");
-  });
-}
+/** /create with an admission already granted by the Home gate. */
+const builderTree = () =>
+  React.createElement(
+    MemoryRouter,
+    { initialEntries: ["/create"] },
+    React.createElement(
+      CreatorIdentityProvider,
+      null,
+      React.createElement(
+        CreatorCreditProvider,
+        null,
+        React.createElement(
+          LandingPaymentGateProvider,
+          null,
+          React.createElement(
+            CreateAccessProvider,
+            {
+              initialAdmission: ADMISSION,
+              children: React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/create",
+                  element: React.createElement(CapsuleBuilder),
+                })
+              ),
+            }
+          )
+        )
+      )
+    )
+  );
+
+const GATE_BUTTON = "CREATE CAPSULE";
 
 function requestedUrls(): string[] {
-  return fetchMock.mock.calls.map((call) => String(call[0]));
+  return fetchMock.mock.calls.map((call) => String((call as unknown as unknown[])[0]));
 }
 
 function setPhantom(present: boolean): void {
@@ -176,25 +219,20 @@ function setPhantom(present: boolean): void {
   }
 }
 
-describe("Model 01 Phantom-only Create gate", () => {
+describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
   beforeEach(() => {
     fetchMock.mockClear();
     vi.stubGlobal("fetch", fetchMock);
     openWalletPickerMock.mockClear();
     sendSolanaUSDCPaymentMock.mockClear();
-    // Desktop by default; mobile tests opt in explicitly.
+    signMessageMock.mockClear();
     isMobileMock.mockReset();
     isMobileMock.mockReturnValue(false);
     mobileDeeplinkMock.mockReset();
     stableWallet.connected = false;
     stableWallet.account = null;
     stableWallet.walletName = null;
-    if (typeof globalThis.crypto?.randomUUID !== "function") {
-      Object.defineProperty(globalThis.crypto, "randomUUID", {
-        value: () => "00000000-0000-4000-8000-000000000000",
-        configurable: true,
-      });
-    }
+    setPhantom(false);
   });
 
   afterEach(() => {
@@ -205,10 +243,9 @@ describe("Model 01 Phantom-only Create gate", () => {
 
   it("1-4: Phantom absent shows the installation notice and performs NO connect, NO SIWS, NO quote, NO payment", async () => {
     setPhantom(false);
-    render(tree());
-    await acceptProtocol();
+    render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain(
@@ -239,10 +276,9 @@ describe("Model 01 Phantom-only Create gate", () => {
     stableWallet.connected = true;
     stableWallet.account = "7XkWqBase58WalletAccountPhantomGate";
 
-    render(tree());
-    await acceptProtocol();
+    render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
 
     await waitFor(() => {
       expect(
@@ -255,10 +291,9 @@ describe("Model 01 Phantom-only Create gate", () => {
 
   it("10: the installation link is the official Phantom URL with no referral parameter", async () => {
     setPhantom(false);
-    render(tree());
-    await acceptProtocol();
+    render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
 
     const link = await screen.findByRole("link", { name: "Install Phantom" });
     expect(PHANTOM_INSTALL_URL).toBe("https://phantom.com/download");
@@ -269,10 +304,9 @@ describe("Model 01 Phantom-only Create gate", () => {
   it("mobile + no injected Phantom offers 'Open in Phantom' and never connects, quotes or pays", async () => {
     isMobileMock.mockReturnValue(true);
     setPhantom(false);
-    render(tree());
-    await acceptProtocol();
+    render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain(PHANTOM_MOBILE_TITLE);
@@ -288,23 +322,19 @@ describe("Model 01 Phantom-only Create gate", () => {
     expect(sendSolanaUSDCPaymentMock).not.toHaveBeenCalled();
     const urls = requestedUrls();
     expect(urls.some((u) => u.includes("issue-challenge"))).toBe(false);
-    expect(urls.some((u) => u.includes("verify-proof"))).toBe(false);
     expect(urls.some((u) => u.includes("create-quote"))).toBe(false);
-    expect(urls.some((u) => u.includes("service-payment/verify"))).toBe(false);
-    expect(urls.some((u) => u.includes("grant-credit"))).toBe(false);
     expect(urls.some((u) => u.includes("storage/quote"))).toBe(false);
 
-    // No redirect until the user taps the action.
+    // No redirect until the user taps the action (no redirect loop).
     expect(mobileDeeplinkMock).not.toHaveBeenCalled();
   });
 
   it("mobile: 'Open in Phantom' invokes the installed public deeplink utility (no WalletConnect)", async () => {
     isMobileMock.mockReturnValue(true);
     setPhantom(false);
-    render(tree());
-    await acceptProtocol();
+    render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
     await screen.findByRole("button", { name: PHANTOM_MOBILE_OPEN_LABEL });
 
     fireEvent.click(screen.getByRole("button", { name: PHANTOM_MOBILE_OPEN_LABEL }));
@@ -319,10 +349,9 @@ describe("Model 01 Phantom-only Create gate", () => {
   it("mobile: the fallback install link is the official Phantom URL", async () => {
     isMobileMock.mockReturnValue(true);
     setPhantom(false);
-    render(tree());
-    await acceptProtocol();
+    render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
 
     const link = await screen.findByRole("link", { name: "Install Phantom" });
     expect(link.getAttribute("href")).toBe("https://phantom.com/download");
@@ -334,10 +363,9 @@ describe("Model 01 Phantom-only Create gate", () => {
     stableWallet.connected = true;
     stableWallet.account = "7XkWqBase58WalletAccountPhantomMobile";
 
-    render(tree());
-    await acceptProtocol();
+    render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
 
     await waitFor(() => {
       expect(requestedUrls().some((u) => u.includes("issue-challenge"))).toBe(true);
@@ -351,15 +379,35 @@ describe("Model 01 Phantom-only Create gate", () => {
   it("desktop + no Phantom still shows the install notice and never deeplinks", async () => {
     isMobileMock.mockReturnValue(false);
     setPhantom(false);
-    render(tree());
-    await acceptProtocol();
+    render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain("Phantom Wallet Required");
     });
     expect(mobileDeeplinkMock).not.toHaveBeenCalled();
     expect(openWalletPickerMock).not.toHaveBeenCalled();
+  });
+
+  it("REGRESSION: /create hosts NO wallet gate — an admitted workspace never connects or discovers", async () => {
+    setPhantom(true);
+    stableWallet.connected = true;
+    stableWallet.account = ADMISSION.account;
+
+    render(builderTree());
+
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("Creator access ready");
+    });
+
+    // The inline gate is gone: no picker, no challenge, no discovery, no
+    // signature, no payment on the creation page.
+    expect(openWalletPickerMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(signMessageMock).not.toHaveBeenCalled();
+    expect(sendSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    // …and the phantom notices live on Home, not here.
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

@@ -5,6 +5,7 @@ import App from "./App";
 import { CapsuleProvider } from "@/context/CapsuleContext";
 import { CreatorIdentityProvider, CreatorCreditProvider } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
+import { CreateAccessProvider } from "@/context/CreateAccessContext";
 import { AETERNAWalletProvider } from "@/context/AETERNAWalletContext";
 
 import {
@@ -48,7 +49,9 @@ createRoot(rootElement).render(
         <CreatorIdentityProvider>
           <CreatorCreditProvider>
             <LandingPaymentGateProvider>
-              <App />
+              <CreateAccessProvider>
+                <App />
+              </CreateAccessProvider>
             </LandingPaymentGateProvider>
           </CreatorCreditProvider>
         </CreatorIdentityProvider>

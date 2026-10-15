@@ -127,9 +127,16 @@ export async function verifySolanaSignature(
   const messageBytes = new TextEncoder().encode(message);
 
   try {
+    // Fresh Uint8Array copies (over plain ArrayBuffers) so the WebCrypto
+    // BufferSource typing holds — the same pattern verifyTransactionSignature
+    // in lib/solana/legacyTransaction.ts uses. Behaviour is unchanged: both
+    // inputs were already validated for exact length above.
+    const keyBytes = Uint8Array.from(publicKeyBytes);
+    const sigBytes = Uint8Array.from(signatureBytes);
+
     const key = await crypto.subtle.importKey(
       "raw",
-      publicKeyBytes,
+      keyBytes,
       { name: "Ed25519" },
       false,
       ["verify"]
@@ -138,7 +145,7 @@ export async function verifySolanaSignature(
     return await crypto.subtle.verify(
       { name: "Ed25519" },
       key,
-      signatureBytes,
+      sigBytes,
       messageBytes
     );
   } catch {

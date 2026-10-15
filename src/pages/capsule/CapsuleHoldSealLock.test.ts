@@ -81,6 +81,7 @@ vi.mock("@/lib/runtime/runtimeRegistry", () => ({
 
 import CapsuleHold from "@/pages/capsule/CapsuleHold";
 import { AETERNAWalletContext } from "@/context/AETERNAWalletContext";
+import { CreateAccessProvider } from "@/context/CreateAccessContext";
 
 /* ───────────────────────── fixtures ───────────────────────── */
 
@@ -196,7 +197,9 @@ function renderHold() {
       React.createElement(
         AETERNAWalletContext.Provider,
         { value: walletValue },
-        React.createElement(CapsuleHold)
+        React.createElement(CreateAccessProvider, {
+          children: React.createElement(CapsuleHold),
+        })
       )
     )
   );

@@ -1,30 +1,16 @@
-import { useState, useRef, useEffect, useCallback, useReducer, useSyncExternalStore } from "react";
+import { useState, useRef, useEffect, useCallback, useReducer } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Lock, Loader2 } from "lucide-react";
 import { useCapsule } from "../../context/CapsuleContext";
 import { useCreatorIdentity } from "@/context/CreatorRuntimeContext";
 import { useAeternaWallet } from "@/context/AETERNAWalletContext";
-import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext";
-import {
-  createServicePaymentController,
-} from "@/lib/payment/servicePaymentController";
-import type { ServicePaymentController } from "@/lib/payment/servicePaymentController";
+import { useCreateAccess } from "@/context/CreateAccessContext";
+import { upsertUnfinishedLifecycle } from "@/lib/access/unfinishedLifecycle";
 import {
   ensureStorageFundingSignature,
   verifyStoragePaymentWithRetry,
 } from "@/components/capsule/storageVerificationRetry";
-import {
-  PHANTOM_INSTALL_URL,
-  PHANTOM_MOBILE_BODY,
-  PHANTOM_MOBILE_OPEN_LABEL,
-  PHANTOM_MOBILE_TITLE,
-  PHANTOM_REQUIRED_BODY,
-  PHANTOM_REQUIRED_TITLE,
-  isMobileBrowser,
-  isPhantomAvailable,
-  openAeternaInPhantomMobile,
-} from "@/lib/wallet/phantomProvider";
 import {
   INITIAL_CREATE_FLOW_STATE,
   reduceCreateFlow,
@@ -208,31 +194,6 @@ export function CapsulePreparingSurface() {
     </div>
   );
 }
-
-/* ================= PATCH-2K-B GATE ERROR UX ================= */
-
-// Short, non-technical gate error text for the inline status line. The
-// raw controller error code stays in state (support/debug) and is never
-// rendered.
-function describeGateError(raw: string | null): string {
-  if (!raw) return "Something went wrong. Please try again.";
-  const code = raw.toUpperCase();
-  if (code.includes("SIGNATURE") || code.includes("CHALLENGE")) {
-    return "Wallet verification was not completed. Please try again.";
-  }
-  if (code.includes("QUOTE")) {
-    return "Payment setup failed. Please try again.";
-  }
-  if (code.includes("PAYMENT") || code.includes("VERIF") || code.includes("GRANT")) {
-    return "Payment could not be verified. No entitlement was granted. Please try again.";
-  }
-  if (code.includes("WALLET") || code.includes("ACCOUNT")) {
-    return "Wallet connection issue. Please try again.";
-  }
-  return "Something went wrong. Please try again.";
-}
-
-
 
 /* ================= MIME NORMALIZATION ================= */
 
@@ -513,47 +474,28 @@ export default function CapsuleBuilder() {
   } = useCapsule();
 
   const { creatorIdentityId } = useCreatorIdentity();
-  const { entitlement, reportCreditDiscovery, reportCreditReady } =
-    useLandingPaymentGate();
   const wallet = useAeternaWallet();
   const walletRef = useRef(wallet);
   useEffect(() => {
     walletRef.current = wallet;
   }, [wallet]);
 
-  /* ================= INLINE SERVICE PAYMENT GATE (PATCH-2K-B) ================= */
+  /* ================= ADMISSION (Home access gate -> /create) ================= */
 
-  // Mounted-lifetime probe for the controller's wallet-connection wait
-  // loop (PATCH-2I recovery semantics: an abandoned wait must resolve).
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  // Admission is granted by the Home access gate ONLY after a
+  // server-verified outcome (an AVAILABLE Creator Credit discovered
+  // for this identity, or a freshly granted credit after a verified
+  // $1 payment). It is in-memory, never persisted and never a
+  // payment proof: the Creator Credit record and the challenge-proof
+  // identity remain server-side authority, and every creation
+  // operation below still runs the server-side gates (reserve /
+  // storage quote / upload-token / seal / finalize) unchanged.
+  const { admission, clearAccess } = useCreateAccess();
 
-  // Single headless service-payment controller instance (PATCH-2H): the
-  // inline gate drives the same canonical flow the payment modal used to
-  // render. The controller must not calculate price, declare success
-  // locally, write Credit state, or treat frontend state as authority.
-  const servicePaymentRef = useRef<ServicePaymentController | null>(null);
-  if (!servicePaymentRef.current) {
-    servicePaymentRef.current = createServicePaymentController({
-      isCancelled: () => !mountedRef.current,
-    });
-  }
-  const servicePayment = servicePaymentRef.current;
-
-  const servicePaymentRuntime = useSyncExternalStore(
-    servicePayment.subscribe,
-    servicePayment.getState,
-    servicePayment.getState
-  );
-
-  // PATCH-2K-A create-flow state machine: the ONLY source of which gate
-  // step the user is in. Server facts enter exclusively as reducer
-  // events; the reducer knows nothing about wallets, HTTP, KV or prices.
+  // PATCH-2K-A create-flow state machine: the ONLY source of which
+  // creation step the user is in. On /create it is seeded from
+  // admission (paid); the connect / discovery / $1 steps lived on
+  // the Home access gate and are never re-run here.
   const [createFlowState, dispatchCreateFlow] = useReducer(
     reduceCreateFlow,
     INITIAL_CREATE_FLOW_STATE
@@ -616,14 +558,6 @@ export default function CapsuleBuilder() {
   const [pendingLifecycleId, setPendingLifecycleId] = useState<string | null>(null);
   const [storageReviewLoading, setStorageReviewLoading] = useState(false);
   const [servicePaymentError, setServicePaymentError] = useState<string | null>(null);
-  // Model 01 wallet policy: Phantom only. True when Create Capsule was
-  // clicked without a Phantom provider present. UX gate only.
-  const [phantomRequired, setPhantomRequired] = useState(false);
-  // Model 01 mobile: true when Create Capsule was clicked on a mobile
-  // browser without an injected Phantom. Phantom connects through its
-  // in-app browser on mobile, so the user is offered an explicit
-  // "Open in Phantom" action instead of the desktop install notice.
-  const [phantomMobileRequired, setPhantomMobileRequired] = useState(false);
   // Final Capsule Review dialog visibility. storageReview (the canonical
   // quote record) is deliberately NOT cleared on close: the dialog can be
   // re-opened without a second quote while the quote stays valid.
@@ -751,6 +685,21 @@ export default function CapsuleBuilder() {
 
     try {
       const reserved = await reserveLifecycle(prepared, result.creatorCreditId, result.lifecycleId)
+
+      // Hint for the bounded, USER-TRIGGERED recovery of this
+      // lifecycle (POST /api/creator/recover-lifecycle): the Durable
+      // Object remains the sole authority and the record is never
+      // consulted automatically — it only lets the Home gate OFFER
+      // the restore action after the browser was closed. Best-effort:
+      // a storage failure must never break the successful reserve.
+      if (creatorIdentityId) {
+        upsertUnfinishedLifecycle({
+          creatorIdentityId,
+          creatorCreditId: result.creatorCreditId,
+          lifecycleId: reserved.lifecycleId,
+          capsuleId: prepared.prepared.capsuleId,
+        });
+      }
       const sessionData = {
         ...prepared,
         billableSizeBytes: prepared.billableSizeBytes,
@@ -810,184 +759,46 @@ export default function CapsuleBuilder() {
   const isAwaitingVerification = sealPhase === "awaiting-verification";
   const isBusy = isPreparing;
 
-  /* ================= INLINE GATE ACTIONS (PATCH-2K-B) ================= */
+  /* ================= ADMISSION SEEDING + WALLET GUARD ================= */
 
-  // Controller → gate/reducer: server-verified facts enter the state
-  // machine as events only. Entitlement facts go to the gate mirror
-  // (authoritative in-session signal); the raw proof never leaves the
-  // controller.
+  // Admission -> paid workspace (single PATCH-2F-style restore
+  // point). The Home access gate already established the entitlement
+  // server-side; seeding performs NO connect, NO signature, NO quote
+  // and NO payment here. Re-runs are safe: DISCOVERY_AVAILABLE is
+  // idempotent at paid and the seed writes the same result again.
   useEffect(() => {
-    servicePayment.setCallbacks({
-      onCreditDiscovered: (result) => {
-        reportCreditDiscovery(result);
-        dispatchCreateFlow(
-          result.status === "available"
-            ? "DISCOVERY_AVAILABLE"
-            : "DISCOVERY_NONE"
-        );
-      },
-      onCreditReady: (result) => {
-        reportCreditReady(result);
-        dispatchCreateFlow("PAYMENT_CONFIRMED");
-      },
-    });
-  }, [servicePayment, reportCreditDiscovery, reportCreditReady]);
+    if (!admission) return;
 
-  useEffect(() => {
-    servicePayment.setParams({
-      creatorIdentityId: null,
-      protocolAccepted: true,
-      stopAfterCredit: true,
-    });
-  }, [servicePayment]);
+    const result: ServicePaymentResult = {
+      creatorCreditId: admission.creatorCreditId,
+      creatorIdentityId: admission.creatorIdentityId,
+      account: admission.account,
+    };
+    if (admission.paymentIntentId !== undefined) {
+      result.paymentIntentId = admission.paymentIntentId;
+    }
+    setServicePaymentResult(result);
+    dispatchCreateFlow("DISCOVERY_AVAILABLE");
+  }, [admission]);
 
-  useEffect(() => {
-    servicePayment.syncWallet(wallet);
-  }, [servicePayment, wallet]);
-
-  // Wallet → reducer: account switch / disconnect invalidate the flow
-  // (PATCH-2J account-bound proof semantics). The first mount emits
-  // nothing; reconnecting the SAME account after a disconnect re-restores
-  // the in-session entitlement below. PATCH-2K-C: the dispatch decision
-  // is walletFlowEvent — a wallet-object re-emission while already
-  // disconnected emits no event, so discovering/needs-payment are no
-  // longer reset to ready by a repeated DISCONNECTED.
+  // Wallet -> admission: an account switch or a disconnect voids the
+  // (account-bound) admission and returns the creator to the Home
+  // access gate, which re-runs the canonical discovery. PATCH-2K-C
+  // semantics (walletFlowEvent) are preserved: the first mount emits
+  // nothing, and a wallet-object re-emission while already
+  // disconnected emits no event.
   const previousWalletAccountRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const previous = previousWalletAccountRef.current;
     if (previous !== undefined) {
       const ev = walletFlowEvent(previous, wallet.connected, wallet.account);
       if (ev) {
-        dispatchCreateFlow(ev);
+        clearAccess();
+        navigate("/", { replace: true });
       }
     }
     previousWalletAccountRef.current = wallet.connected ? wallet.account : null;
-  }, [wallet]);
-
-  // Controller error → reducer. A payment-phase failure (wallet rejection
-  // / server verification) returns to the $1 confirm step with the
-  // discovery answer preserved (PATCH-2I: no credit lost, no re-discovery,
-  // no second signature); identity-phase failures surface the retry state.
-  // The reducer no-ops ERROR outside busy states, so ready/paid are never
-  // clobbered.
-  useEffect(() => {
-    if (servicePaymentRuntime.phase !== "error") return;
-    dispatchCreateFlow(
-      createFlowState === "payment-in-progress"
-        ? "PAYMENT_ABORTED"
-        : "ERROR"
-    );
-  }, [servicePaymentRuntime.phase, createFlowState]);
-
-  // First explicit Create Capsule action: starts identity verification and
-  // credit discovery — never a quote, never a payment (PATCH-2K-A: payment
-  // is reachable only after an authoritative NO-CREDIT discovery).
-  const handleFirstCreateClick = () => {
-    if (createFlowState !== "ready" && createFlowState !== "error") return;
-
-    // Model 01 wallet policy: Phantom only
-    // (docs/canonical/AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1).
-    // Stop BEFORE connect, SIWS, quote, the $1 payment, Creator Credit or
-    // any Irys action when Phantom is not available.
-    // UX gate only — the server remains the sole identity/payment authority.
-    if (!isPhantomAvailable()) {
-      setServicePaymentError(null);
-
-      // Model 01 mobile: Phantom does not inject into mobile Safari/Chrome.
-      // It connects through its own in-app browser, so offer the official
-      // Phantom deep link instead of the desktop install notice. Nothing is
-      // connected, quoted or paid here.
-      if (isMobileBrowser()) {
-        setPhantomMobileRequired(true);
-        setPhantomRequired(false);
-        return;
-      }
-
-      setPhantomMobileRequired(false);
-      setPhantomRequired(true);
-      return;
-    }
-
-    setPhantomMobileRequired(false);
-    setPhantomRequired(false);
-    setServicePaymentError(null);
-    dispatchCreateFlow("CREATE_CLICKED");
-
-    const runtime = servicePayment.getState();
-    if (
-      runtime.discovery?.status === "none" &&
-      runtime.verifiedCreatorIdentityId
-    ) {
-      // Retry after a payment-phase error: identity and the NO-CREDIT
-      // discovery answer are already established — return straight to the
-      // $1 confirm step without re-running discovery or asking for a
-      // second signature.
-      dispatchCreateFlow("DISCOVERY_NONE");
-      return;
-    }
-
-    void servicePayment.connectWallet();
-  };
-
-  // THE single production payment trigger: an explicit Confirm $1 click
-  // while the flow is in needs-payment. The PATCH-2K-A discovery guard
-  // inside the controller applies as defense-in-depth.
-  const handleConfirmServicePayment = async () => {
-    if (createFlowState !== "needs-payment") return;
-    dispatchCreateFlow("PAYMENT_STARTED");
-
-    if (servicePayment.getState().quote === null) {
-      await servicePayment.requestQuote();
-      if (servicePayment.getState().quote === null) {
-        // Quote failed: the controller is in the error phase; the ERROR
-        // effect above moves the flow to the retry state.
-        return;
-      }
-    }
-    await servicePayment.confirmAndVerify();
-  };
-
-  /* ================= ENTITLEMENT RESTORE (PATCH-2F / PATCH-2J) ================= */
-
-  // PATCH-2J: sign-based credit discovery (issue-challenge → signMessage
-  // → credit-status) runs inside the headless payment controller. The
-  // single signature is requested only by an explicit Create Capsule
-  // action (handleFirstCreateClick) — never on mount.
-  //
-  // In-session: a successful $1 payment (grant via onCreditReady → gate
-  // reportCreditReady) or a discovery-restored AVAILABLE credit
-  // (onCreditDiscovered → gate reportCreditDiscovery) lands in the gate
-  // entitlement mirror; this effect is the single PATCH-2F restore point
-  // that returns the workspace to "paid" — no second signature, no
-  // second $1. The mirror is account-bound: a different connected wallet
-  // must re-discover instead of restoring.
-
-  useEffect(() => {
-    if (!entitlement?.creatorCreditId) return;
-    if (!entitlement.creatorIdentityId || !entitlement.account) return;
-    // The entitlement is account-bound: never restore it for a different
-    // connected wallet (an account switch must re-discover).
-    if (entitlement.account !== wallet.account) return;
-
-    const result: ServicePaymentResult = {
-      creatorCreditId: entitlement.creatorCreditId,
-      creatorIdentityId: entitlement.creatorIdentityId,
-      account: entitlement.account,
-    };
-    if (entitlement.paymentIntentId !== undefined) {
-      result.paymentIntentId = entitlement.paymentIntentId;
-    }
-    setServicePaymentResult(result);
-    // PATCH-2F: a server-authenticated AVAILABLE entitlement restores the
-    // paid workspace. PATCH-2M: this effect must also run when the flow is
-    // already "paid" — reportCreditDiscovery/reportCreditReady batch
-    // setEntitlement with the paid dispatch into ONE React commit, so an
-    // early paid-return here left servicePaymentResult null and dead-ended
-    // Create Capsule. Re-runs are safe: reduceCreateFlow treats
-    // DISCOVERY_AVAILABLE as an idempotent no-op at paid (and it still
-    // wins from payment-in-progress).
-    dispatchCreateFlow("DISCOVERY_AVAILABLE");
-  }, [entitlement, createFlowState, wallet]);
+  }, [wallet, clearAccess, navigate]);
 
   const walletMatch = useCallback(() => {
     const account = walletRef.current?.account;
@@ -1353,54 +1164,23 @@ export default function CapsuleBuilder() {
   // gate invariants (payment only after discovery, an AVAILABLE credit
   // never pays, paid is never clobbered) are pinned by
   // capsuleCreateFlow.test.ts on the live reducer.
+  // /create is reachable only through the Home access gate, so the
+  // flow is "paid" from the admission seeding onwards. The connect /
+  // discovery / $1 disable matrix lived on the gate.
   const isCreateDisabled =
-    storageReview !== null
-      ? sealPhase !== "idle" || createFlowState !== "paid"
-      : createFlowState === "ready"
-      ? !canSeal
-      : createFlowState === "paid"
-      ? !canSeal || sealPhase !== "idle"
-      : createFlowState === "needs-payment" || createFlowState === "error"
-      ? false
-      : true; // discovering / payment-in-progress are busy states
+    createFlowState !== "paid" ||
+    !canSeal ||
+    sealPhase !== "idle" ||
+    Boolean(walletMismatch) ||
+    storageReviewLoading;
 
-  // The Irys price lives inside the Final Capsule Review dialog; the
-  // primary action in the review state only (re)opens that dialog —
-  // never a quote, never a payment.
-  const primaryButtonLabel =
-    createFlowState === "needs-payment"
-      ? "Confirm $1 USDC"
-      : createFlowState === "error"
-      ? "Retry"
-      : "Create Capsule";
+  const primaryButtonLabel = "Create Capsule";
 
-  // PATCH-2K-B inline gate status: compact text next to Create Capsule.
-  // No endpoint names, quote ids, credit ids or transaction internals are
-  // shown; raw controller error codes stay in state and are never
-  // rendered.
-  const gateStatus = (() => {
-    if (storageReview !== null) return null;
-    switch (createFlowState) {
-      case "discovering":
-        return servicePaymentRuntime.phase === "connecting_wallet"
-          ? "Connect wallet"
-          : servicePaymentRuntime.phase === "verifying_identity"
-          ? "Verifying wallet…"
-          : "Checking your access…";
-      case "needs-payment":
-        return "One-time setup — $1 USDC";
-      case "payment-in-progress":
-        return "Processing…";
-      case "paid":
-        return "Creator access ready";
-      case "error":
-        return describeGateError(
-          servicePaymentRuntime.error ?? servicePaymentRuntime.verificationError
-        );
-      default:
-        return null; // ready — plain Create Capsule
-    }
-  })();
+  // Compact status next to Create Capsule. The connect / discovery /
+  // $1 statuses live on the Home access gate; /create only reports
+  // the server-verified paid state. No endpoint names, quote ids,
+  // credit ids or transaction internals are shown.
+  const gateStatus = createFlowState === "paid" ? "Creator access ready" : null;
 
   return (
     <div className="min-h-screen bg-background relative">
@@ -1503,51 +1283,6 @@ export default function CapsuleBuilder() {
                 </div>
               )}
 
-              {phantomMobileRequired && (
-                <div
-                  role="alert"
-                  className="p-3 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-500 animate-in fade-in zoom-in-95 space-y-2"
-                >
-                  <p className="font-medium">{PHANTOM_MOBILE_TITLE}</p>
-                  <p>{PHANTOM_MOBILE_BODY}</p>
-                  <div className="flex flex-wrap items-center gap-3 pt-1">
-                    <Button
-                      type="button"
-                      onClick={openAeternaInPhantomMobile}
-                      className="h-9 px-4 text-xs"
-                    >
-                      {PHANTOM_MOBILE_OPEN_LABEL}
-                    </Button>
-                    <a
-                      href={PHANTOM_INSTALL_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="underline underline-offset-2"
-                    >
-                      Install Phantom
-                    </a>
-                  </div>
-                </div>
-              )}
-
-              {phantomRequired && (
-                <div
-                  role="alert"
-                  className="p-3 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-500 animate-in fade-in zoom-in-95 space-y-1"
-                >
-                  <p className="font-medium">{PHANTOM_REQUIRED_TITLE}</p>
-                  <p>{PHANTOM_REQUIRED_BODY}</p>
-                  <a
-                    href={PHANTOM_INSTALL_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline underline-offset-2"
-                  >
-                    Install Phantom
-                  </a>
-                </div>
-              )}
-
               {servicePaymentError && (
                 <div className="aeterna-error-notice p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
                   {servicePaymentError}
@@ -1563,15 +1298,11 @@ export default function CapsuleBuilder() {
 
             <div className="space-y-3">
               <Button
-                disabled={isCreateDisabled || storageReviewLoading || Boolean(walletMismatch)}
+                disabled={isCreateDisabled}
                 onClick={
                   storageReview !== null
                     ? () => setIsReviewOpen(true)
-                    : createFlowState === "paid"
-                    ? handleFinalCreateClick
-                    : createFlowState === "needs-payment"
-                    ? handleConfirmServicePayment
-                    : handleFirstCreateClick
+                    : handleFinalCreateClick
                 }
                 className={[
                   "w-full h-auto min-h-14 whitespace-normal text-lg font-display tracking-widest transition-all active:scale-[0.98]",

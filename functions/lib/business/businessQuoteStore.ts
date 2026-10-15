@@ -102,6 +102,55 @@ export async function getBusinessQuote(
  * if Quote already exists,
  * existing Quote is returned unchanged.
  */
+/**
+ * Renew the TIME WINDOW of an EXISTING Business Quote.
+ *
+ * The commercial terms of a payment intent are immutable (amount,
+ * currency, paymentIntentId) — this function changes ONLY `expiresAt`
+ * (and the matching KV TTL), and only for a quote that has already
+ * EXPIRED.
+ *
+ * Why "only when expired": renewal exists so a creator whose purchase
+ * attempt was interrupted (wallet cancelled, page reloaded, connection
+ * lost) can complete the SAME payment intent instead of being blocked
+ * forever. Making it conditional on expiry is what makes concurrent
+ * renewals idempotent — the second caller simply receives the
+ * already-renewed quote instead of pushing the window further.
+ *
+ * Safety: renewal can never create a second entitlement. One
+ * paymentIntentId yields at most one verified payment (global
+ * transaction uniqueness + the intent pointer) and therefore at most
+ * one Creator Credit (the grant is idempotent per
+ * creatorIdentityId + quoteId). Renewal only widens the window in
+ * which an already-sent payment may still be verified.
+ */
+export async function renewBusinessQuote(
+  env: BusinessQuoteKV,
+  paymentIntentId: string,
+  now: number,
+  ttlMs: number
+): Promise<BusinessQuote | null> {
+  const existing = await getBusinessQuote(env, paymentIntentId);
+  if (!existing) return null;
+
+  // Already valid: never push a live window further out.
+  if (existing.expiresAt > now) return existing;
+
+  const renewed: BusinessQuote = {
+    ...existing,
+    createdAt: now,
+    expiresAt: now + ttlMs,
+  };
+
+  await env.BUSINESS_QUOTES.put(
+    quoteKey(paymentIntentId),
+    JSON.stringify(renewed),
+    { expirationTtl: Math.max(60, Math.ceil(ttlMs / 1000)) }
+  );
+
+  return renewed;
+}
+
 export async function createBusinessQuote(
   env: BusinessQuoteKV,
   quote: BusinessQuote

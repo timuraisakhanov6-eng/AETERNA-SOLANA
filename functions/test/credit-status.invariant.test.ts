@@ -812,3 +812,309 @@ describe("POST /api/creator/credit-status", () => {
     expect(res2.payload.error).toBe("INVALID_ACCOUNT");
   });
 });
+
+/* ================= AUTHORITATIVE ENTITLEMENT ENUMERATION =================
+ *
+ * Discovery mode (creatorCreditId omitted) must report the creator's
+ * AUTHORITATIVE rights from the server's own records: AVAILABLE,
+ * CONSUMING and CONSUMED are distinguished, duplicates across the two
+ * index shapes are collapsed, and an incomplete / corrupt / foreign-owning
+ * enumeration fails CLOSED instead of degrading to "none" (a "none" that
+ * is not backed by a complete, consistent check would authorise a second
+ * $1 payment).
+ */
+
+const OWNER_ACCOUNT_REAL = "0xd5a9291fA9018b2168F9c5c785e4B7BbeCA51a7f";
+const OWNER_SIGNATURE_REAL =
+  "0x57cf9db5baf4181da98d503ef389e277ac810d417c93ba45d2f380092b67a18a3f8c194f8ea5dd75530914a77c89d0e55afee9161805f2f7116c659750c5c75e1c";
+const CHALLENGE_REAL = "challenge-valid";
+
+function seedRealChallenge(env: CreditStatusEnv) {
+  seedChallenge(env, CHALLENGE_REAL, Date.now() + 60_000);
+  seedIdentity(env, CREATOR_IDENTITY_ID, OWNER_ACCOUNT_REAL);
+}
+
+function seedCreditRecord(
+  env: CreditStatusEnv,
+  creditId: string,
+  status: string,
+  options: {
+    createdAt?: number;
+    lifecycleId?: string | null;
+    capsuleId?: string;
+    creatorIdentityId?: string;
+  } = {}
+) {
+  const record = {
+    id: creditId,
+    creatorIdentityId: options.creatorIdentityId ?? CREATOR_IDENTITY_ID,
+    status,
+    quoteId: `intent-${creditId}`,
+    createdAt: options.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+    lifecycleId: options.lifecycleId ?? null,
+    capsuleId: options.capsuleId ?? `capsule-${creditId}`,
+  };
+  env.CREATOR_CREDITS.put(`creator:credit:${creditId}`, JSON.stringify(record));
+  return record;
+}
+
+/** Write an index pointer under EITHER shape. */
+function seedIndexPointer(
+  env: CreditStatusEnv,
+  creditId: string,
+  shape: "capsuleId" | "quoteId",
+  suffix: string
+) {
+  env.CREATOR_CREDITS.put(
+    `creator:credit:index:${CREATOR_IDENTITY_ID}:${suffix}`,
+    creditId
+  );
+}
+
+function discoveryPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    challengeId: CHALLENGE_REAL,
+    network: "eip155:8453",
+    account: OWNER_ACCOUNT_REAL,
+    signature: OWNER_SIGNATURE_REAL,
+    ...overrides,
+  };
+}
+
+describe("authoritative entitlement enumeration (discovery mode)", () => {
+  async function postCreditStatus(env: CreditStatusEnv, input: Record<string, unknown>) {
+    const module = await import("./../api/creator/credit-status");
+    const res = await module.onRequestPost(buildContext(env, input));
+    return { status: res.status, payload: await res.json() };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-18T00:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("AVAILABLE + CONSUMING are discovered with NO client-supplied identifiers and NO localStorage", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    seedCreditRecord(env, "credit-available", "AVAILABLE", { createdAt: 100 });
+    seedCreditRecord(env, "credit-consuming", "CONSUMING", {
+      lifecycleId: "lifecycle-x",
+      capsuleId: "capsule-x",
+    });
+    seedIndexPointer(env, "credit-available", "quoteId", "intent-credit-available");
+    seedIndexPointer(env, "credit-consuming", "capsuleId", "capsule-consuming");
+
+    const { status, payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(status).toBe(200);
+    expect(payload.ok).toBe(true);
+    // AVAILABLE wins over the unfinished attempt.
+    expect(payload.status).toBe("available");
+    expect(payload.creatorCreditId).toBe("credit-available");
+    expect(payload.creatorIdentityId).toBe(CREATOR_IDENTITY_ID);
+    expect(payload.summary).toEqual({
+      availableCount: 1,
+      consumingCount: 1,
+      consumedCount: 0,
+      total: 2,
+      enumerationComplete: true,
+    });
+    // The unfinished lifecycle is reported with its own recovery ids.
+    expect(payload.unfinishedLifecycles).toEqual([
+      {
+        creatorCreditId: "credit-consuming",
+        lifecycleId: "lifecycle-x",
+        capsuleId: "capsule-x",
+      },
+    ]);
+  });
+
+  it("a CONSUMING-only wallet is reported as consuming — never as an absence", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    seedCreditRecord(env, "credit-consuming", "CONSUMING", {
+      lifecycleId: "lifecycle-y",
+      capsuleId: "capsule-y",
+    });
+    seedIndexPointer(env, "credit-consuming", "capsuleId", "capsule-consuming");
+
+    const { status, payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(status).toBe(200);
+    expect(payload.status).toBe("consuming");
+    // No "no rights" answer, no payment eligibility.
+    expect(payload.summary.availableCount).toBe(0);
+    expect(payload.summary.consumingCount).toBe(1);
+    expect(payload.unfinishedLifecycles[0].lifecycleId).toBe("lifecycle-y");
+  });
+
+  it("both index shapes pointing at ONE credit do not create a duplicate", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    seedCreditRecord(env, "credit-dupe", "CONSUMING", {
+      lifecycleId: "lifecycle-dupe",
+      capsuleId: "capsule-dupe",
+    });
+    // The same credit reachable through BOTH index shapes.
+    seedIndexPointer(env, "credit-dupe", "quoteId", "intent-dupe");
+    seedIndexPointer(env, "credit-dupe", "capsuleId", "capsule-dupe");
+
+    const { payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(payload.summary.consumingCount).toBe(1);
+    expect(payload.summary.total).toBe(1);
+    expect(payload.unfinishedLifecycles).toHaveLength(1);
+  });
+
+  it("multiple AVAILABLE rights keep the pinned deterministic rule and are counted", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    // Out of insertion order on purpose: earliest createdAt must win.
+    seedCreditRecord(env, "credit-late", "AVAILABLE", { createdAt: 500 });
+    seedCreditRecord(env, "credit-early", "AVAILABLE", { createdAt: 100 });
+    seedIndexPointer(env, "credit-late", "quoteId", "intent-late");
+    seedIndexPointer(env, "credit-early", "quoteId", "intent-early");
+
+    const { payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(payload.status).toBe("available");
+    expect(payload.creatorCreditId).toBe("credit-early");
+    expect(payload.summary.availableCount).toBe(2);
+    expect(payload.summary.total).toBe(2);
+  });
+
+  it("CONSUMED rights are reported in the summary, never as an unfinished attempt", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    seedCreditRecord(env, "credit-spent", "CONSUMED");
+    seedIndexPointer(env, "credit-spent", "quoteId", "intent-spent");
+
+    const { payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(payload.status).toBe("none");
+    expect(payload.summary).toEqual({
+      availableCount: 0,
+      consumingCount: 0,
+      consumedCount: 1,
+      total: 1,
+      enumerationComplete: true,
+    });
+    // A consumed right is NOT offered for recovery.
+    expect(payload.unfinishedLifecycles).toEqual([]);
+  });
+
+  it("a complete enumeration with no rights is distinguishable from an error", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+
+    const { status, payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(status).toBe(200);
+    expect(payload.ok).toBe(true);
+    expect(payload.status).toBe("none");
+    expect(payload.summary.total).toBe(0);
+    expect(payload.summary.enumerationComplete).toBe(true);
+  });
+
+  it("a corrupt credit record fails CLOSED — never 'none'", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    env.CREATOR_CREDITS.put("creator:credit:index:creator-1:whatever", "credit-broken");
+    env.CREATOR_CREDITS.put("creator:credit:credit-broken", "{not-json");
+
+    const { status, payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(status).toBe(500);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toBe("ENTITLEMENT_STATE_UNREADABLE");
+    expect(payload.status).toBeUndefined();
+  });
+
+  it("an index that points at a record owned by ANOTHER identity fails CLOSED", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    seedCreditRecord(env, "credit-foreign-owner", "AVAILABLE", {
+      creatorIdentityId: "creator-someone-else",
+    });
+    seedIndexPointer(env, "credit-foreign-owner", "quoteId", "intent-foreign");
+
+    const { status, payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(status).toBe(500);
+    expect(payload.error).toBe("ENTITLEMENT_INDEX_INCONSISTENT");
+  });
+
+  it("an index entry whose record id does not match the pointer fails CLOSED", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    // The pointer resolves "credit-a", but the stored record claims a
+    // different id — a genuine index/record inconsistency.
+    env.CREATOR_CREDITS.put(
+      "creator:credit:credit-a",
+      JSON.stringify({
+        id: "credit-b",
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        status: "AVAILABLE",
+        quoteId: "intent-a",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        lifecycleId: null,
+        capsuleId: "capsule-a",
+      })
+    );
+    env.CREATOR_CREDITS.put("creator:credit:index:creator-1:weird", "credit-a");
+
+    const { payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toBe("ENTITLEMENT_INDEX_INCONSISTENT");
+  });
+
+  it("an INCOMPLETE listing fails CLOSED", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    seedCreditRecord(env, "credit-visible", "AVAILABLE");
+    seedIndexPointer(env, "credit-visible", "quoteId", "intent-visible");
+
+    // A binding that explicitly reports an incomplete listing.
+    const partialListKV = {
+      ...env.CREATOR_CREDITS,
+      async list() {
+        return { keys: [{ name: "creator:credit:index:creator-1:intent-visible" }], list_complete: false };
+      },
+    };
+    const partialEnv: CreditStatusEnv = { ...env, CREATOR_CREDITS: partialListKV };
+
+    const { status, payload } = await postCreditStatus(partialEnv, discoveryPayload());
+
+    expect(status).toBe(500);
+    expect(payload.error).toBe("ENTITLEMENT_ENUMERATION_INCOMPLETE");
+  });
+
+  it("a DIFFERENT creator identity never sees another creator's rights", async () => {
+    const env = buildEnv();
+    seedRealChallenge(env);
+    // Rights that belong to somebody else, indexed under THEIR prefix.
+    seedCreditRecord(env, "credit-other", "AVAILABLE", {
+      creatorIdentityId: "creator-someone-else",
+    });
+    env.CREATOR_CREDITS.put(
+      "creator:credit:index:creator-someone-else:intent-other",
+      "credit-other"
+    );
+
+    const { status, payload } = await postCreditStatus(env, discoveryPayload());
+
+    expect(status).toBe(200);
+    expect(payload.status).toBe("none");
+    expect(payload.summary.total).toBe(0);
+    expect(payload.unfinishedLifecycles).toEqual([]);
+    expect(payload.creatorIdentityId).toBe(CREATOR_IDENTITY_ID);
+  });
+});

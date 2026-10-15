@@ -48,6 +48,13 @@ export interface AeternaWallet extends AeternaWalletState {
   openWalletPicker: () => Promise<void>;
   signMessage: (message: string | Uint8Array) => Promise<{ signature: Uint8Array }>;
   signAndSendTransaction: (transaction: import('@solana/web3.js').Transaction | import('@solana/web3.js').VersionedTransaction) => Promise<{ signature: string }>;
+  /**
+   * Signs WITHOUT sending, so the caller can capture the transaction
+   * signature, persist it, and bind it server-side BEFORE the network
+   * sees the transaction. This is what removes the window in which a
+   * transaction could be broadcast while the app lost its signature.
+   */
+  signTransaction: (transaction: import('@solana/web3.js').Transaction | import('@solana/web3.js').VersionedTransaction) => Promise<import('@solana/web3.js').Transaction | import('@solana/web3.js').VersionedTransaction>;
 }
 
 interface AETERNAWalletContextValue {
@@ -252,6 +259,25 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
     }
   }, [walletProvider]);
 
+  const signTransaction = useCallback(async (transaction: import('@solana/web3.js').Transaction | import('@solana/web3.js').VersionedTransaction) => {
+    if (!walletProvider) {
+      const failure = 'Wallet provider is not available';
+      setError(failure);
+      setState((prev) => ({ ...prev, error: failure }));
+      throw new Error(failure);
+    }
+
+    try {
+      setError(null);
+      return await walletProvider.signTransaction(transaction);
+    } catch (e) {
+      const messageText = e instanceof Error ? e.message : 'Unknown signTransaction error';
+      setError(messageText);
+      setState((prev) => ({ ...prev, error: messageText }));
+      throw e;
+    }
+  }, [walletProvider]);
+
   const wallet = useMemo<AeternaWallet>(
     () => ({
       ...state,
@@ -262,8 +288,9 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
       openWalletPicker,
       signMessage,
       signAndSendTransaction,
+      signTransaction,
     }),
-    [state, error, connect, disconnect, changeWallet, openWalletPicker, signMessage, signAndSendTransaction]
+    [state, error, connect, disconnect, changeWallet, openWalletPicker, signMessage, signAndSendTransaction, signTransaction]
   );
 
   const value = useMemo<AETERNAWalletContextValue>(() => ({ state, wallet }), [state, wallet]);
@@ -289,6 +316,9 @@ const initializingWallet: AeternaWallet = {
     throw new Error('Wallet is initializing');
   },
   signAndSendTransaction: async () => {
+    throw new Error('Wallet is initializing');
+  },
+  signTransaction: async () => {
     throw new Error('Wallet is initializing');
   },
 };

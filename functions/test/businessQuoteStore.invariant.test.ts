@@ -4,9 +4,67 @@ import {
   onRequestOptions,
 } from "./../api/service-payment/create-quote";
 import { createBusinessQuote, getBusinessQuote } from "./../lib/business/businessQuoteStore";
-import { createFakeKV, createFakeRequest, makeEventContext } from "./harness";
+import {
+  createFakeKV,
+  createFakeRequest,
+  makeEventContext,
+  createFakeCreditCoordinatorBinding,
+} from "./harness";
 
 const ALLOWED_ORIGIN = "https://aeternacapsule.com";
+
+/**
+ * Real EIP-191 fixture shared with the credit-status invariants: the
+ * signature is valid for `AETERNA identity challenge:challenge-valid`
+ * and the account below. create-quote now requires a cryptographically
+ * proven creator identity before it will mint a payment intent.
+ */
+const OWNER_ACCOUNT = "0xd5a9291fA9018b2168F9c5c785e4B7BbeCA51a7f";
+const OWNER_SIGNATURE =
+  "0x57cf9db5baf4181da98d503ef389e277ac810d417c93ba45d2f380092b67a18a3f8c194f8ea5dd75530914a77c89d0e55afee9161805f2f7116c659750c5c75e1c";
+const CHALLENGE_ID = "challenge-valid";
+const CREATOR_IDENTITY_ID = "creator-1";
+
+function createFakeCreatorIdentities() {
+  const store = new Map<string, string>();
+  store.set(
+    `creator:challenge:${CHALLENGE_ID}`,
+    JSON.stringify({
+      challenge: CHALLENGE_ID,
+      network: "eip155:8453",
+      expiresAt: Date.now() + 60_000,
+    })
+  );
+  store.set(
+    `creator:identity:eip155:8453:${OWNER_ACCOUNT.toLowerCase()}`,
+    JSON.stringify({
+      id: CREATOR_IDENTITY_ID,
+      account: OWNER_ACCOUNT.toLowerCase(),
+      network: "eip155:8453",
+    })
+  );
+  store.set(
+    `creator:identity:id:${CREATOR_IDENTITY_ID}`,
+    `eip155:8453:${OWNER_ACCOUNT.toLowerCase()}`
+  );
+  return {
+    get: async (key: string) => store.get(key) ?? null,
+    put: async (key: string, value: string) => {
+      store.set(key, value);
+    },
+    delete: async (key: string) => {
+      store.delete(key);
+    },
+  };
+}
+
+/** The signed proof every create-quote call must now carry. */
+const PROOF = {
+  challengeId: CHALLENGE_ID,
+  network: "eip155:8453",
+  account: OWNER_ACCOUNT,
+  signature: OWNER_SIGNATURE,
+};
 
 function buildContext(overrides?: {
   body?: unknown;
@@ -15,6 +73,8 @@ function buildContext(overrides?: {
 }) {
   const env = {
     BUSINESS_QUOTES: createFakeKV(),
+    CREATOR_IDENTITIES: createFakeCreatorIdentities(),
+    CREDIT_OP_COORDINATOR: createFakeCreditCoordinatorBinding(),
   };
 
   const request = createFakeRequest({
@@ -31,6 +91,7 @@ function buildContext(overrides?: {
 describe("Business Quote invariants — canonical service-payment create-quote", () => {
   const validBody = {
     paymentIntentId: "intent-1",
+    ...PROOF,
   };
 
   it("server price authority: expectedAmount is canonical fixed 1 USDC, not client-supplied", async () => {

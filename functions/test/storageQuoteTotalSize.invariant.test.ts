@@ -31,10 +31,54 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { createFakeKV, createFakeRequest, makeEventContext } from "./harness";
+import {
+  createFakeKV,
+  createFakeRequest,
+  makeEventContext,
+  createFakeCreditCoordinatorBinding,
+} from "./harness";
 import { onRequestPost as storageQuotePost } from "./../api/storage/quote";
 import { onRequestPost as preparedPost } from "./../api/capsule/prepared";
 import { onRequestPost as serviceQuotePost } from "./../api/service-payment/create-quote";
+
+/* Real EIP-191 fixture (shared with the credit-status invariants). */
+const OWNER_ACCOUNT = "0xd5a9291fA9018b2168F9c5c785e4B7BbeCA51a7f";
+const OWNER_SIGNATURE =
+  "0x57cf9db5baf4181da98d503ef389e277ac810d417c93ba45d2f380092b67a18a3f8c194f8ea5dd75530914a77c89d0e55afee9161805f2f7116c659750c5c75e1c";
+const CHALLENGE_ID = "challenge-valid";
+
+function createFakeCreatorIdentities() {
+  const store = new Map<string, string>();
+  store.set(
+    `creator:challenge:${CHALLENGE_ID}`,
+    JSON.stringify({
+      challenge: CHALLENGE_ID,
+      network: "eip155:8453",
+      expiresAt: Date.now() + 600_000,
+    })
+  );
+  store.set(
+    `creator:identity:eip155:8453:${OWNER_ACCOUNT.toLowerCase()}`,
+    JSON.stringify({
+      id: "creator-1",
+      account: OWNER_ACCOUNT.toLowerCase(),
+      network: "eip155:8453",
+    })
+  );
+  store.set(
+    "creator:identity:id:creator-1",
+    `eip155:8453:${OWNER_ACCOUNT.toLowerCase()}`
+  );
+  return {
+    get: async (key: string) => store.get(key) ?? null,
+    put: async (key: string, value: string) => {
+      store.set(key, value);
+    },
+    delete: async (key: string) => {
+      store.delete(key);
+    },
+  };
+}
 import {
   AES_GCM_IV_LENGTH,
   AES_GCM_TAG_LENGTH,
@@ -478,9 +522,20 @@ describe("quote total fail-closed guard", () => {
 
 describe("10. $1 AETERNA service payment is unchanged", () => {
   it("service-payment/create-quote still returns exactly 1 USDC", async () => {
+    /**
+     * create-quote now requires a cryptographically proven creator
+     * identity and an atomic purchase reservation (the identity-scoped
+     * guard) before it mints a payment intent — the PRICE is unchanged.
+     */
     const request = createFakeRequest({
       headers: { origin: ORIGIN, "content-type": "application/json" },
-      body: { paymentIntentId: "intent-1" },
+      body: {
+        paymentIntentId: "intent-1",
+        challengeId: CHALLENGE_ID,
+        network: "eip155:8453",
+        account: OWNER_ACCOUNT,
+        signature: OWNER_SIGNATURE,
+      },
     });
 
     const res = await (serviceQuotePost as unknown as (
@@ -488,7 +543,11 @@ describe("10. $1 AETERNA service payment is unchanged", () => {
     ) => Promise<Response>)(
       makeEventContext({
         request,
-        env: { BUSINESS_QUOTES: createFakeKV() } as never,
+        env: {
+          BUSINESS_QUOTES: createFakeKV(),
+          CREATOR_IDENTITIES: createFakeCreatorIdentities(),
+          CREDIT_OP_COORDINATOR: createFakeCreditCoordinatorBinding(),
+        } as never,
       })
     );
 

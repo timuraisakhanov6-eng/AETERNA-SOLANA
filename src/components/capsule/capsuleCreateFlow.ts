@@ -11,6 +11,10 @@
  * Invariants (pinned by capsuleCreateFlow.test.ts):
  * - payment is reachable only through DISCOVERY_NONE
  *   (ready → discovering → needs-payment → payment-in-progress);
+ * - DISCOVERY_CONSUMING (a right bound to an unfinished lifecycle) parks
+ *   the flow in needs-recovery, which has NO transition to payment: the
+ *   only ways out are an explicit re-check (CREATE_CLICKED) or a
+ *   successful recovery (RESET → discovering);
  * - DISCOVERY_AVAILABLE never leads to payment (PATCH-2F: an available
  *   Creator Credit always restores paid, idempotently, and wins from
  *   payment-in-progress);
@@ -37,6 +41,7 @@ export type CreateFlowState =
   | "ready"
   | "discovering"
   | "needs-payment"
+  | "needs-recovery"
   | "payment-in-progress"
   | "paid"
   | "error"
@@ -45,6 +50,7 @@ export type CreateFlowEvent =
   | "CREATE_CLICKED"
   | "DISCOVERY_AVAILABLE"
   | "DISCOVERY_NONE"
+  | "DISCOVERY_CONSUMING"
   | "PAYMENT_STARTED"
   | "PAYMENT_CONFIRMED"
   | "PAYMENT_ABORTED"
@@ -68,13 +74,24 @@ export function reduceCreateFlow(
 ): CreateFlowState {
   switch (event) {
     case "CREATE_CLICKED":
-      return state === "ready" || state === "error" ? "discovering" : state
+      return state === "ready" ||
+        state === "error" ||
+        // D1: a CONSUMING answer parked the flow in needs-recovery; an
+        // explicit re-check may re-run discovery, but never a payment.
+        state === "needs-recovery"
+        ? "discovering"
+        : state
     case "DISCOVERY_AVAILABLE":
       // PATCH-2G semantics: available always restores paid (idempotent)
       // and wins from payment-in-progress.
       return state === "paid" ? state : "paid"
     case "DISCOVERY_NONE":
       return state === "discovering" ? "needs-payment" : state
+    case "DISCOVERY_CONSUMING":
+      // D1: the server authoritatively reports a right that is bound to an
+      // unfinished lifecycle. This state NEVER leads to a payment — the UI
+      // offers recovery instead.
+      return state === "discovering" ? "needs-recovery" : state
     case "PAYMENT_STARTED":
       return state === "needs-payment" ? "payment-in-progress" : state
     case "PAYMENT_CONFIRMED":

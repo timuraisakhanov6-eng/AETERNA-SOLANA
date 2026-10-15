@@ -1,38 +1,37 @@
 // @vitest-environment jsdom
 /**
- * AETERNA — PATCH-2M regression test: service-payment result batch race.
+ * AETERNA — PATCH-2M regression: service-payment result batch race.
  *
- * Reproduces the React 18 automatic-batching race on the REAL
- * CapsuleBuilder wiring (real reducer, real headless service-payment
- * controller, real LandingPaymentGateProvider mirror — only fetch,
- * wallet transport, vault preparation and the Irys module are mocked):
+ * ORIGINAL DEFECT (PATCH-2M, pre-Home-gate architecture)
+ * -----------------------------------------------------
+ * The entitlement-restore effect's stale `if (createFlowState === "paid")
+ * return;` guard swallowed the ONLY `setServicePaymentResult(...)` write,
+ * so the flow committed `paid` with `servicePaymentResult = null` and
+ * dead-ended `handleFinalCreateClick` silently — no preparation, no
+ * /api/storage/quote, no Final Capsule Review. These tests FAILED on
+ * pre-patch code and PASSED after the fix.
  *
- *   onCreditDiscovered / onCreditReady fire
- *     reportCreditDiscovery/Ready (→ setEntitlement)  ┐ one synchronous
- *     dispatchCreateFlow(...)                          ┘ block → ONE
- *   React 18.3.1 commit: createFlowState = "paid" AND entitlement set.
+ * ADAPTATION TO THE HOME GATE ARCHITECTURE
+ * ----------------------------------------
+ * The result no longer arrives from an inline controller on /create; it is
+ * SEEDED from the Home gate's in-memory admission. The same class of race
+ * therefore now lives in the admission-seeding effect, and the same
+ * user-visible guarantee must hold:
  *
- * Pre-PATCH-2M the entitlement-restore effect's stale
- * `if (createFlowState === "paid") return;` guard swallowed the ONLY
- * `setServicePaymentResult(...)` write, so paid + servicePaymentResult=null
- * dead-ended handleFinalCreateClick silently (no preparation, no
- * /api/storage/quote, no Final Capsule Review). These tests assert the
- * user-visible behavior — the second Create Capsule click must reach
- * preparePreparedCapsule + /api/capsule/prepared + /api/storage/quote —
- * so they FAIL on pre-patch code and PASS after the one-line fix.
+ *   admission seeded ⇒ `servicePaymentResult` set AND `createFlowState`
+ *   = "paid" in ONE commit ⇒ the FIRST Create Capsule click on /create
+ *   must reach preparePreparedCapsule + /api/capsule/prepared +
+ *   /api/storage/quote + the Final Capsule Review dialog.
  *
- * Idempotence is pinned on the live wiring: after paid, a rerender must
- * not re-run discovery (second signature), re-grant, or re-quote. A
- * restore-effect render loop would surface here as "Maximum update
- * depth exceeded" or as duplicated endpoint calls.
+ * A regression that seeds the state machine without the payment result
+ * dead-ends exactly as before, and these tests fail.
  *
- * The wallet mock object is deliberately hoisted and shared: production
- * AETERNAWalletContext memoizes its value, and the restore effect
- * depends on the wallet object — a fresh object per render would
- * fabricate effect churn the race test must not introduce.
+ * Idempotence is pinned on the live wiring: after paid, a rerender must not
+ * re-seed, re-sign, re-quote or loop (a render loop would surface as
+ * "Maximum update depth exceeded" or duplicated endpoint calls).
  *
- * jsdom component test — same convention as CreditRuntimePatch2.test.tsx.
- * All network access is mocked. No production calls. No real payment.
+ * jsdom component test. All network access is mocked. No production calls,
+ * no real payment, no wallet transaction.
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
@@ -42,8 +41,10 @@ import { MemoryRouter } from "react-router-dom";
 import {
   CreatorCreditProvider,
   CreatorIdentityProvider,
+  useCreatorIdentity,
 } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
+import { CreateAccessProvider } from "@/context/CreateAccessContext";
 import CapsuleBuilder from "@/components/capsule/CapsuleBuilder";
 
 const {
@@ -52,7 +53,6 @@ const {
   CREATOR_CREDIT_ID,
   stableWallet,
   signMessageMock,
-  sendSolanaUSDCPaymentMock,
   preparePreparedCapsuleMock,
 } = vi.hoisted(() => {
   const WALLET_ACCOUNT = "7XkWqBase58WalletAccountFor2MTest";
@@ -62,7 +62,6 @@ const {
   const signMessageMock = vi.fn(async () => ({
     signature: new Uint8Array(64),
   }));
-  const sendSolanaUSDCPaymentMock = vi.fn(async () => "tx-sig-2m-test");
 
   // Stable identity across renders (see file header) — mirrors the
   // production useMemo'd wallet context value.
@@ -93,7 +92,6 @@ const {
     CREATOR_CREDIT_ID,
     stableWallet,
     signMessageMock,
-    sendSolanaUSDCPaymentMock,
     preparePreparedCapsuleMock,
   };
 });
@@ -104,8 +102,8 @@ vi.mock("@/context/AETERNAWalletContext", () => ({
 
 vi.mock("@/context/CapsuleContext", () => ({
   useCapsule: () => ({
-    // Non-empty: canSeal requires items.length > 0 before the first
-    // Create Capsule click is enabled.
+    // Non-empty: canSeal requires items.length > 0 before Create Capsule
+    // is enabled.
     items: [
       {
         id: "item-2m-1",
@@ -142,7 +140,7 @@ vi.mock("@/lib/capsule/preparePreparedCapsule", () => ({
 }));
 
 vi.mock("@/lib/wallet/solanaWallet", () => ({
-  sendSolanaUSDCPayment: sendSolanaUSDCPaymentMock,
+  sendSolanaUSDCPayment: vi.fn(async () => "tx-sig-2m-test"),
 }));
 
 vi.mock("@/lib/storage/creatorIrys", () => ({
@@ -157,34 +155,6 @@ const json = (body: unknown, ok = true) => ({
   json: async () => body,
 });
 
-const CHALLENGE_RESPONSE = () =>
-  json({
-    ok: true,
-    id: "challenge-2m",
-    challengeId: "challenge-2m",
-    challenge: "abc",
-    message: "AETERNA identity challenge",
-    expiresAt: Date.now() + 600_000,
-  });
-
-const AVAILABLE_DISCOVERY = () =>
-  json({
-    ok: true,
-    status: "available",
-    creatorCreditId: CREATOR_CREDIT_ID,
-    creatorIdentityId: CREATOR_IDENTITY_ID,
-    account: WALLET_ACCOUNT,
-  });
-
-const NO_CREDIT_DISCOVERY = () =>
-  json({
-    ok: true,
-    status: "none",
-    creatorCreditId: null,
-    creatorIdentityId: null,
-    account: WALLET_ACCOUNT,
-  });
-
 const PREPARED_PROJECTION = () =>
   json({ ok: true, preparedProjection: { preparedProjectionId: "projection-2m" } });
 
@@ -194,11 +164,6 @@ const STORAGE_QUOTE = () =>
     storagePaymentId: "storage-payment-2m",
     expectedAmountAtomic: "1000000",
     displayAmountUSDC: "1.00",
-    // The canonical server quote ALWAYS carries the billable size
-    // (functions/api/storage/quote.ts: encryptedSizeBytes +
-    // totalChunkSizeBytes). CapsuleBuilder propagates it into the
-    // /create/hold state, so a fixture without it is not a faithful
-    // stand-in for the real endpoint.
     billableSizeBytes: 4096,
   });
 
@@ -218,10 +183,30 @@ function installFetchRoutes(
 const fetchCallsTo = (fragment: string) =>
   fetchMock.mock.calls.filter((call) => String(call[0]).includes(fragment));
 
+/** The exact admission shape the Home access gate grants. */
+const ADMISSION = {
+  creatorCreditId: CREATOR_CREDIT_ID,
+  creatorIdentityId: CREATOR_IDENTITY_ID,
+  account: WALLET_ACCOUNT,
+};
+
+/**
+ * The Home gate also adopts the server-verified identity; the workspace's
+ * wallet-match guard compares the seeded result against it, so the harness
+ * must mirror that step.
+ */
+function SeedIdentity() {
+  const { adoptIdentity } = useCreatorIdentity();
+  React.useEffect(() => {
+    adoptIdentity(CREATOR_IDENTITY_ID);
+  }, [adoptIdentity]);
+  return null;
+}
+
 const tree = () =>
   React.createElement(
     MemoryRouter,
-    null,
+    { initialEntries: ["/create"] },
     React.createElement(
       CreatorIdentityProvider,
       null,
@@ -231,7 +216,18 @@ const tree = () =>
         React.createElement(
           LandingPaymentGateProvider,
           null,
-          React.createElement(CapsuleBuilder)
+          React.createElement(
+            CreateAccessProvider,
+            {
+              initialAdmission: ADMISSION,
+              children: React.createElement(
+                React.Fragment,
+                null,
+                React.createElement(SeedIdentity),
+                React.createElement(CapsuleBuilder)
+              ),
+            }
+          )
         )
       )
     )
@@ -246,16 +242,13 @@ async function acceptProtocol() {
   });
 }
 
-describe("PATCH-2M service-payment result batch race", () => {
+describe("PATCH-2M service-payment result batch race (Home gate architecture)", () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    // Model 01 wallet policy: Phantom only. These scenarios exercise the
-    // existing create/payment flow, so a Phantom provider must be present
-    // for the Create Capsule gate to admit the flow.
+    // Model 01 wallet policy: Phantom only.
     (window as unknown as { phantom?: unknown }).phantom = { solana: {} };
-    // jsdom's crypto lacks randomUUID on some Node 20 combinations; the
-    // controller's requestQuote needs it. No-op when the API exists.
+    // jsdom's crypto lacks randomUUID on some Node 20 combinations.
     if (typeof globalThis.crypto?.randomUUID !== "function") {
       Object.defineProperty(globalThis.crypto, "randomUUID", {
         value: () => "uuid-2m-test",
@@ -267,16 +260,14 @@ describe("PATCH-2M service-payment result batch race", () => {
   afterEach(() => {
     cleanup();
     delete (window as unknown as { phantom?: unknown }).phantom;
-    // clearAllMocks (NOT restoreAllMocks): call history must reset
-    // between scenarios while the hoisted implementations survive.
+    // clearAllMocks (NOT restoreAllMocks): call history must reset between
+    // scenarios while the hoisted implementations survive.
     vi.clearAllMocks();
     vi.unstubAllGlobals();
   });
 
-  it("SCENARIO A: same-batch AVAILABLE discovery populates servicePaymentResult and reaches the storage quote", async () => {
+  it("SCENARIO A: the admission seed commits paid + result together, so the FIRST Create Capsule click reaches the storage quote", async () => {
     installFetchRoutes([
-      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
-      { match: "/api/creator/credit-status", respond: AVAILABLE_DISCOVERY },
       { match: "/api/capsule/prepared", respond: PREPARED_PROJECTION },
       { match: "/api/storage/quote", respond: STORAGE_QUOTE },
     ]);
@@ -284,28 +275,25 @@ describe("PATCH-2M service-payment result batch race", () => {
     const view = render(tree());
     await acceptProtocol();
 
-    // First explicit Create Capsule: one signature, one discovery.
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
-
-    // setEntitlement + DISCOVERY_AVAILABLE commit in ONE React 18 batch:
-    // the flow shows paid ("Creator access ready") regardless of the
-    // patch — the race decided here.
+    // The Home gate already established the entitlement server-side; the
+    // workspace mirrors it as paid (no discovery, no signature).
     await waitFor(() => {
       expect(screen.getByRole("status").textContent).toBe(
         "Creator access ready"
       );
     });
 
-    expect(signMessageMock).toHaveBeenCalledTimes(1);
-    expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(1);
-    expect(fetchCallsTo("/api/creator/credit-status")).toHaveLength(1);
+    // Seeding performs NO discovery and NO signature.
+    expect(signMessageMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/creator/credit-status")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(0);
     expect(fetchCallsTo("/api/capsule/prepared")).toHaveLength(0);
 
     // servicePaymentResult is asserted indirectly through behavior: the
-    // final Create Capsule click must pass its `!servicePaymentResult`
-    // guard (CapsuleBuilder handleFinalCreateClick) and reach the
-    // prepared projection + canonical Irys quote + Final Capsule Review.
-    // PRE-PATCH this click is a silent no-op and these waits time out.
+    // Create Capsule click must pass the `!servicePaymentResult` guard in
+    // handleFinalCreateClick and reach the prepared projection + canonical
+    // Irys quote + Final Capsule Review. A seed that commits paid WITHOUT
+    // the result dead-ends here silently and this wait times out.
     fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
 
     await waitFor(
@@ -322,101 +310,36 @@ describe("PATCH-2M service-payment result batch race", () => {
       expect(screen.getByRole("dialog")).toBeTruthy(); // Final Capsule Review open
     });
 
-    // Idempotence: rerender while paid must not re-run discovery or
-    // re-quote, and must not loop the restore effect.
+    // Idempotence: rerendering while paid must not re-seed, re-sign,
+    // re-prepare or re-quote, and must not loop the seeding effect.
     view.rerender(tree());
-    expect(signMessageMock).toHaveBeenCalledTimes(1);
-    expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(1);
-    expect(fetchCallsTo("/api/creator/credit-status")).toHaveLength(1);
+    expect(signMessageMock).not.toHaveBeenCalled();
     expect(fetchCallsTo("/api/capsule/prepared")).toHaveLength(1);
     expect(fetchCallsTo("/api/storage/quote")).toHaveLength(1);
+    expect(preparePreparedCapsuleMock).toHaveBeenCalledTimes(1);
   });
 
-  it("SCENARIO B: same-batch PAYMENT_CONFIRMED populates servicePaymentResult after the $1 grant", async () => {
+  it("SCENARIO B: the seed performs no payment work — the $1 already happened on Home", async () => {
     installFetchRoutes([
-      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
-      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
-      {
-        match: "/api/creator/verify-proof",
-        respond: () =>
-          json({
-            ok: true,
-            creatorIdentityId: CREATOR_IDENTITY_ID,
-            account: WALLET_ACCOUNT,
-          }),
-      },
-      {
-        match: "/api/service-payment/create-quote",
-        respond: () =>
-          json({
-            ok: true,
-            paymentIntentId: "payment-intent-2m",
-            expectedAmount: 1,
-            currency: "USDC",
-            expiresAt: Date.now() + 600_000,
-          }),
-      },
-      {
-        match: "/api/service-payment/verify",
-        respond: () => json({ ok: true, status: "VERIFIED" }),
-      },
-      {
-        match: "/api/creator/grant-credit",
-        respond: () =>
-          json({ ok: true, status: "AVAILABLE", creatorCreditId: CREATOR_CREDIT_ID }),
-      },
       { match: "/api/capsule/prepared", respond: PREPARED_PROJECTION },
       { match: "/api/storage/quote", respond: STORAGE_QUOTE },
     ]);
 
-    const view = render(tree());
+    render(tree());
     await acceptProtocol();
-
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
     await waitFor(() => {
-      expect(screen.getByRole("status").textContent).toBe(
-        "One-time setup — $1 USDC"
-      );
+      expect(screen.getByRole("status").textContent).toBe("Creator access ready");
     });
 
-    // PATCH-2J: one signature covers discovery AND proof consumption.
-    expect(signMessageMock).toHaveBeenCalledTimes(1);
-    expect(fetchCallsTo("/api/creator/verify-proof")).toHaveLength(1);
-    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
-
-    // The $1 step: grant → onCreditReady → reportCreditReady +
-    // PAYMENT_CONFIRMED land in one batch. PRE-PATCH the paid state
-    // commits with servicePaymentResult still null.
-    fireEvent.click(screen.getByRole("button", { name: "Confirm $1 USDC" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("status").textContent).toBe(
-        "Creator access ready"
-      );
-    });
-    expect(sendSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
-    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(1);
-    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1);
-
-    // Next Create Capsule reaches preparation instead of a silent no-op.
     fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
-
-    await waitFor(
-      () => expect(preparePreparedCapsuleMock).toHaveBeenCalledTimes(1),
-      { timeout: 3000 }
-    );
     await waitFor(() => {
       expect(fetchCallsTo("/api/storage/quote")).toHaveLength(1);
     });
-    await waitFor(() => {
-      expect(screen.getByRole("dialog")).toBeTruthy();
-    });
 
-    // Idempotence after paid: no second grant, no second quote.
-    view.rerender(tree());
-    expect(sendSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
-    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1);
-    expect(fetchCallsTo("/api/storage/quote")).toHaveLength(1);
-    expect(preparePreparedCapsuleMock).toHaveBeenCalledTimes(1);
+    // /create never re-runs the service-payment pipeline.
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/verify-proof")).toHaveLength(0);
   });
 });

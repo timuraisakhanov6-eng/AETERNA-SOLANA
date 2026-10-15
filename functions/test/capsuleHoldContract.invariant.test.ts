@@ -68,6 +68,7 @@ vi.mock("@/lib/runtime/runtimeRegistry", () => ({
 
 import CapsuleHold from "@/pages/capsule/CapsuleHold";
 import { AETERNAWalletContext } from "@/context/AETERNAWalletContext";
+import { CreateAccessProvider } from "@/context/CreateAccessContext";
 
 /* ───────────────── fixtures ───────────────── */
 
@@ -154,7 +155,14 @@ function renderHold() {
       React.createElement(
         AETERNAWalletContext.Provider,
         { value: walletValue },
-        React.createElement(CapsuleHold)
+        // Production nests CreateAccessProvider INSIDE the wallet
+        // provider (main.tsx). CapsuleHold consumes it, so the harness
+        // must supply the real provider rather than let the hook throw.
+        React.createElement(
+          CreateAccessProvider,
+          null,
+          React.createElement(CapsuleHold)
+        )
       )
     )
   );

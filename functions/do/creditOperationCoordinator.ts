@@ -64,6 +64,56 @@ type Operation =
       chunkIds: string[];
     }
   | { op: "read"; creatorCreditId: string }
+  /* ---- identity-scoped entitlement coordination ---- */
+  | { op: "identity-summary"; creatorIdentityId: string }
+  | {
+      op: "identity-reserve-attempt";
+      creatorIdentityId: string;
+      quoteId: string;
+      paymentIntentId: string;
+    }
+  | {
+      op: "identity-authorize-grant";
+      creatorIdentityId: string;
+      quoteId: string;
+      paymentIntentId: string;
+      transactionId: string;
+    }
+  | {
+      op: "identity-note-grant";
+      creatorIdentityId: string;
+      quoteId: string;
+      paymentIntentId: string;
+      creatorCreditId: string;
+    }
+  | {
+      op: "identity-note-reserve";
+      creatorIdentityId: string;
+      creatorCreditId: string;
+      lifecycleId: string;
+      capsuleId: string;
+    }
+  | {
+      op: "identity-note-finalize";
+      creatorIdentityId: string;
+      creatorCreditId: string;
+    }
+  | {
+      op: "identity-note-recover";
+      creatorIdentityId: string;
+      creatorCreditId: string;
+    }
+  | {
+      op: "identity-resolve-intent";
+      creatorIdentityId: string;
+      paymentIntentId: string;
+    }
+  | {
+      op: "identity-bind-broadcast-signature";
+      creatorIdentityId: string;
+      paymentIntentId: string;
+      transactionId: string;
+    }
   | {
       op: "payment-tx-claim";
       network: string;
@@ -86,6 +136,13 @@ quoteId: string;
 paymentIntentId: string;
 transactionId: string;
 evidenceId: string;
+/**
+ * Server-injected credit id minted by the identity coordinator's
+ * authorize-grant op. Used ONLY when creating a NEW claim (replays keep
+ * their stored id), so a retried grant of the same attempt converges on
+ * the same credit. Never accepted from a client.
+ */
+creatorCreditId?: string;
 };
 
 /**
@@ -123,12 +180,31 @@ interface CoordinatorEnv {
     get(key: string): Promise<string | null>;
     put(key: string, value: string): Promise<void>;
     delete(key: string): Promise<void>;
+    list(options: { prefix: string }): Promise<{
+      keys: Array<{ name: string }>;
+      list_complete?: boolean;
+    }>;
   };
   PUBLICATION_VERIFICATIONS: {
     get(key: string): Promise<string | null>;
   };
   SEAL_VERIFICATIONS: {
     get(key: string): Promise<string | null>;
+  };
+  /**
+   * Self-binding to this Durable Object's own namespace. Used by the
+   * identity coordinator to read the authoritative per-credit records
+   * (op "read") of OTHER instances of the same class, so an index entry
+   * can be refreshed from the record that authored the transition
+   * instead of trusting a possibly stale snapshot. Optional: without
+   * it the index snapshot stands (it is conservative in the safe
+   * direction — see identityRefreshLiveEntries).
+   */
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(binding: { id: string }): {
+      fetch(request: Request): Promise<Response>;
+    };
   };
 }
 
@@ -1249,6 +1325,20 @@ async function handleGrant(
     return failureResponse("INVALID_FIELDS", 400);
   }
 
+  /**
+   * Optional server-injected id (identity coordinator authorization).
+   * Validated as a bounded id shape; a malformed value fails closed
+   * instead of silently minting a different credit.
+   */
+  const injectedCreditId =
+    typeof request.creatorCreditId === "string" &&
+    /^[a-z0-9]{8,64}$/.test(request.creatorCreditId)
+      ? request.creatorCreditId
+      : null;
+  if (typeof request.creatorCreditId === "string" && !injectedCreditId) {
+    return failureResponse("INVALID_FIELDS", 400);
+  }
+
   const existing = await getGrantClaim(state, creatorIdentityId, quoteId);
 
   if (existing) {
@@ -1275,7 +1365,10 @@ async function handleGrant(
   const claim: GrantClaimRecord = {
     creatorIdentityId,
     quoteId,
-    creatorCreditId: generateGrantCreditId(),
+    // The identity coordinator mints the id when it authorizes the
+    // grant; a legacy/unauthenticated caller (no coordinator) still
+    // gets a locally generated id.
+    creatorCreditId: injectedCreditId ?? generateGrantCreditId(),
     createdAt: Date.now(),
   };
 
@@ -1292,6 +1385,945 @@ async function handleGrant(
     lifecycleId: null,
     revision: 1,
   });
+}
+
+/* ================= IDENTITY-SCOPED ENTITLEMENT COORDINATOR ================= */
+
+/**
+ * AETERNA — Identity-scoped entitlement coordination.
+ *
+ * One CreditOperationCoordinator instance is addressed per
+ * `identity:<creatorIdentityId>` and owns the AUTHORITATIVE, strongly
+ * consistent view of every Creator Credit and every payment attempt of
+ * ONE creator identity. It complements — never replaces — the
+ * per-credit coordinators (which stay the authority for a single
+ * credit's transitions).
+ *
+ * Why this exists: the KV credit index is eventually consistent, so a
+ * KV-only enumeration can miss a credit that was written seconds ago.
+ * That missed credit is exactly what allowed a second $1 purchase. The
+ * identity index below is written INSIDE the Durable Object
+ * transactionally with the decision it supports, so "no live right" can
+ * never be concluded from a stale projection.
+ *
+ * Maintenance contract (endpoint-side, AFTER the authoritative
+ * per-credit op succeeded):
+ *   grant    -> identity-note-grant    (credit AVAILABLE, attempt fulfilled)
+ *   reserve  -> identity-note-reserve  (credit CONSUMING + lifecycleId)
+ *   finalize -> identity-note-finalize (credit CONSUMED)
+ *   recover  -> identity-note-recover  (credit AVAILABLE again)
+ * Every transition to a "less live" state is written only AFTER the
+ * per-credit coordinator accepted it, so an index entry can never call
+ * a dead right alive — the only possible staleness is "alive when
+ * actually dead", which is the fail-closed direction (it blocks a new
+ * purchase instead of allowing one).
+ */
+
+interface IdentityIndexEntry {
+  id: string;
+  creatorIdentityId: string;
+  status: "AVAILABLE" | "CONSUMING" | "CONSUMED";
+  capsuleId: string | null;
+  lifecycleId: string | null;
+  quoteId: string | null;
+  revision: number;
+  updatedAt: number;
+}
+
+interface PaymentAttemptRecord {
+  paymentIntentId: string;
+  quoteId: string;
+  creatorIdentityId: string;
+  state: "reserved" | "granting" | "fulfilled";
+  creatorCreditId: string | null;
+  transactionId: string | null;
+  /**
+   * The Solana transaction signature whose bytes were validated and
+   * authorised for broadcast for THIS attempt.
+   *
+   * Exactly one signature may ever be bound: two tabs or two devices can
+   * therefore never broadcast two different transactions for one
+   * purchase. Bound BEFORE the network call, so a lost HTTP response is
+   * an idempotent replay of the same signature rather than a second
+   * transfer.
+   */
+  broadcastSignature: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface IdentityBackfillRecord {
+  complete: boolean;
+  completedAt: number;
+  unresolved: string[];
+}
+
+function identityIndexKey(creatorIdentityId: string, creatorCreditId: string): string {
+  return `idindex:${creatorIdentityId}:${creatorCreditId}`;
+}
+
+function identityIndexPrefix(creatorIdentityId: string): string {
+  return `idindex:${creatorIdentityId}:`;
+}
+
+function attemptKey(creatorIdentityId: string, paymentIntentId: string): string {
+  return `attempt:${creatorIdentityId}:${paymentIntentId}`;
+}
+
+function activeAttemptKey(creatorIdentityId: string): string {
+  return `attempt-active:${creatorIdentityId}`;
+}
+
+function backfillKey(creatorIdentityId: string): string {
+  return `backfill:${creatorIdentityId}`;
+}
+
+function isLiveStatus(status: string): boolean {
+  return status === "AVAILABLE" || status === "CONSUMING";
+}
+
+function identityFailure(error: string, status = 409): Response {
+  return new Response(JSON.stringify({ ok: false, error }), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+function identitySuccess(payload: Record<string, unknown>, status = 200): Response {
+  return new Response(JSON.stringify({ ok: true, ...payload }), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+/**
+ * All identity index entries of one creator.
+ *
+ * The credit-id set is maintained explicitly (`creditset:`) instead of
+ * using storage.list(), so the identity coordinator depends on exactly
+ * the same storage primitives (get/put/delete) as the rest of this
+ * module and every existing fake storage keeps working unchanged.
+ */
+function creditSetKey(creatorIdentityId: string): string {
+  return `creditset:${creatorIdentityId}`;
+}
+
+async function readIdentityEntries(
+  state: DurableObjectState,
+  creatorIdentityId: string
+): Promise<IdentityIndexEntry[]> {
+  const ids =
+    (await state.storage.get<string[]>(creditSetKey(creatorIdentityId))) ?? [];
+  const entries: IdentityIndexEntry[] = [];
+  for (const id of ids) {
+    const entry = await state.storage.get<IdentityIndexEntry>(
+      identityIndexKey(creatorIdentityId, id)
+    );
+    if (entry && typeof entry === "object" && typeof entry.id === "string") {
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+
+async function rememberCreditId(
+  state: DurableObjectState,
+  creatorIdentityId: string,
+  creatorCreditId: string
+): Promise<void> {
+  const ids =
+    (await state.storage.get<string[]>(creditSetKey(creatorIdentityId))) ?? [];
+  if (!ids.includes(creatorCreditId)) {
+    ids.push(creatorCreditId);
+    await state.storage.put(creditSetKey(creatorIdentityId), ids);
+  }
+}
+
+/**
+ * One-time backfill of the identity index from the existing KV
+ * projections, for credits that existed BEFORE the identity
+ * coordinator.
+ *
+ * Both existing index shapes are read:
+ *   creator:credit:index:{identity}:{capsuleId} -> credit id pointer
+ *   creator:credit:lifecycle:{identity}:{lifecycleId} -> full record JSON
+ * and every resolved record is re-validated for ownership against the
+ * SERVER-DERIVED identity (a client-supplied id is never trusted).
+ * De-duplication is by creatorCreditId, because one credit can be
+ * reachable through both shapes.
+ *
+ * Completeness requires KV's own `list_complete !== false` AND full
+ * resolution of every pointer. Anything else leaves the backfill
+ * INCOMPLETE, and an incomplete backfill can never authorise the
+ * absence of a right: every decision path then fails closed.
+ *
+ * Existing index entries are NEVER overwritten by the backfill — they
+ * were written by the transactional maintenance contract and are newer
+ * than any KV projection.
+ */
+async function ensureIdentityBackfilled(
+  state: DurableObjectState,
+  env: CoordinatorEnv,
+  creatorIdentityId: string
+): Promise<{ complete: boolean; reason?: string }> {
+  const flag = await state.storage.get<IdentityBackfillRecord>(
+    backfillKey(creatorIdentityId)
+  );
+  if (flag && flag.complete) return { complete: true };
+
+  const listFn = env.CREATOR_CREDITS?.list;
+  if (typeof listFn !== "function") {
+    // Without a list() the existing rights of this identity cannot be
+    // enumerated: unknown state, never "absent".
+    return { complete: false, reason: "ENUMERATION_UNAVAILABLE" };
+  }
+
+  const resolved = new Map<string, IdentityIndexEntry>();
+  const unresolved: string[] = [];
+
+  const prefixes = [
+    `creator:credit:index:${creatorIdentityId}:`,
+    `creator:credit:lifecycle:${creatorIdentityId}:`,
+  ];
+
+  for (const prefix of prefixes) {
+    let listed: { keys: Array<{ name: string }>; list_complete?: boolean };
+    try {
+      listed = await listFn.call(env.CREATOR_CREDITS, { prefix });
+    } catch {
+      return { complete: false, reason: "ENUMERATION_FAILED" };
+    }
+    if (listed.list_complete === false) {
+      return { complete: false, reason: "ENUMERATION_INCOMPLETE" };
+    }
+
+    for (const key of listed.keys) {
+      let raw: string | null = null;
+      try {
+        raw = await env.CREATOR_CREDITS.get(key.name);
+      } catch {
+        unresolved.push(key.name);
+        continue;
+      }
+      if (typeof raw !== "string" || !raw) continue; // dangling pointer
+
+      // The lifecycle index stores the full record; the capsule index
+      // stores a credit id pointer. Normalise both into a record.
+      let record: Record<string, unknown> | null = null;
+      let creditId: string | null = null;
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === "object" && "id" in (parsed as object)) {
+          record = parsed as Record<string, unknown>;
+        }
+      } catch {
+        record = null;
+      }
+      if (!record) {
+        creditId = raw.trim();
+        const recordRaw = await env.CREATOR_CREDITS.get(`creator:credit:${creditId}`);
+        if (typeof recordRaw !== "string" || !recordRaw) {
+          unresolved.push(key.name);
+          continue;
+        }
+        try {
+          record = JSON.parse(recordRaw) as Record<string, unknown>;
+        } catch {
+          unresolved.push(key.name);
+          continue;
+        }
+      }
+      if (!record) {
+        unresolved.push(key.name);
+        continue;
+      }
+
+      const id = typeof record["id"] === "string" ? record["id"] : creditId;
+      if (!id || id !== (creditId ?? id)) {
+        unresolved.push(key.name);
+        continue;
+      }
+      if (record["creatorIdentityId"] !== creatorIdentityId) {
+        // A foreign record reachable through this identity's prefix is
+        // an index inconsistency — never silently ignored.
+        unresolved.push(key.name);
+        continue;
+      }
+      if (record["status"] !== "AVAILABLE" && record["status"] !== "CONSUMING" && record["status"] !== "CONSUMED") {
+        unresolved.push(key.name);
+        continue;
+      }
+      if (!resolved.has(id)) {
+        resolved.set(id, {
+          id,
+          creatorIdentityId,
+          status: record["status"] as IdentityIndexEntry["status"],
+          capsuleId: typeof record["capsuleId"] === "string" ? record["capsuleId"] : null,
+          lifecycleId: typeof record["lifecycleId"] === "string" ? record["lifecycleId"] : null,
+          quoteId: typeof record["quoteId"] === "string" ? record["quoteId"] : null,
+          revision: typeof record["revision"] === "number" ? record["revision"] : 1,
+          updatedAt: typeof record["updatedAt"] === "number" ? record["updatedAt"] : Date.now(),
+        });
+      }
+    }
+  }
+
+  if (unresolved.length > 0) {
+    // Do NOT mark the backfill complete: an old right whose state could
+    // not be determined blocks new purchases until it is resolved.
+    await state.storage.put(backfillKey(creatorIdentityId), {
+      complete: false,
+      completedAt: 0,
+      unresolved,
+    } satisfies IdentityBackfillRecord);
+    return { complete: false, reason: "ENTITLEMENT_STATE_UNKNOWN" };
+  }
+
+  // Merge: existing (newer) entries win; add only what is missing.
+  const existing = await readIdentityEntries(state, creatorIdentityId);
+  const known = new Set(existing.map((e) => e.id));
+  for (const [id, entry] of resolved) {
+    if (!known.has(id)) {
+      await state.storage.put(identityIndexKey(creatorIdentityId, id), entry);
+      await rememberCreditId(state, creatorIdentityId, id);
+    }
+  }
+
+  await state.storage.put(backfillKey(creatorIdentityId), {
+    complete: true,
+    completedAt: Date.now(),
+    unresolved: [],
+  } satisfies IdentityBackfillRecord);
+  return { complete: true };
+}
+
+/**
+ * Read-through refresh of LIVE index entries from the per-credit
+ * coordinators (op "read"), which are the strongly consistent
+ * authorities for each credit's transitions.
+ *
+ * Why: a note-reserve/note-finalize call can fail after the
+ * authoritative per-credit transition already happened. The index then
+ * overstates liveness ("AVAILABLE" for a credit that is actually
+ * CONSUMING/CONSUMED). Refreshing before a purchase decision replaces
+ * that overstatement with the per-credit coordinator's own answer.
+ *
+ * Direction is fail-closed by construction:
+ *  - FOUND      -> the snapshot is replaced by the authoritative record
+ *  - NOT_FOUND  -> a granted-but-never-reserved credit has no DO record
+ *                  (handleReserve creates it lazily); the snapshot is
+ *                  KEPT (still live), never cleared
+ *  - error      -> the snapshot is kept
+ * No entry can ever become "less live" than the index already claims
+ * unless the authoritative record says so.
+ */
+async function refreshIdentityEntries(
+  state: DurableObjectState,
+  env: CoordinatorEnv,
+  creatorIdentityId: string
+): Promise<void> {
+  const binding = env.CREDIT_OP_COORDINATOR;
+  if (!binding) return;
+
+  const entries = await readIdentityEntries(state, creatorIdentityId);
+  for (const entry of entries) {
+    if (!isLiveStatus(entry.status)) continue;
+    try {
+      const stub = binding.get(binding.idFromName(entry.id));
+      const res = await stub.fetch(
+        new Request("https://aeterna-credit-coordinator.invalid", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ op: "read", creatorCreditId: entry.id }),
+        })
+      );
+      if (!res.ok) continue;
+      const read = (await res.json()) as {
+        outcome?: string;
+        status?: string;
+        lifecycleId?: string | null;
+        capsuleId?: string | null;
+        revision?: number;
+        creatorIdentityId?: string;
+      };
+      if (read.outcome !== "FOUND") continue;
+      if (
+        read.status !== "AVAILABLE" &&
+        read.status !== "CONSUMING" &&
+        read.status !== "CONSUMED"
+      ) {
+        continue;
+      }
+      if (read.creatorIdentityId && read.creatorIdentityId !== creatorIdentityId) {
+        continue;
+      }
+      const refreshed: IdentityIndexEntry = {
+        ...entry,
+        status: read.status,
+        lifecycleId: read.lifecycleId ?? null,
+        capsuleId: read.capsuleId ?? entry.capsuleId,
+        revision: typeof read.revision === "number" ? read.revision : entry.revision,
+        updatedAt: Date.now(),
+      };
+      await state.storage.put(identityIndexKey(creatorIdentityId, entry.id), refreshed);
+    } catch {
+      // Unreachable per-credit coordinator: keep the conservative snapshot.
+    }
+  }
+}
+
+/**
+ * Shared decision core: backfill (once) + read-through refresh.
+ * Returns the LIVE entries (AVAILABLE/CONSUMING) and the active
+ * attempt, or a fail-closed error when the state is not fully known.
+ */
+async function computeIdentityState(
+  state: DurableObjectState,
+  env: CoordinatorEnv,
+  creatorIdentityId: string
+): Promise<
+  | { ok: true; entries: IdentityIndexEntry[]; activeAttempt: PaymentAttemptRecord | null }
+  | { ok: false; error: string }
+> {
+  const backfill = await ensureIdentityBackfilled(state, env, creatorIdentityId);
+  if (!backfill.complete) {
+    return { ok: false, error: backfill.reason ?? "ENTITLEMENT_STATE_UNKNOWN" };
+  }
+  await refreshIdentityEntries(state, env, creatorIdentityId);
+
+  const entries = await readIdentityEntries(state, creatorIdentityId);
+  const activePointer = await state.storage.get<{
+    paymentIntentId: string;
+    state: string;
+  }>(activeAttemptKey(creatorIdentityId));
+
+  let activeAttempt: PaymentAttemptRecord | null = null;
+  if (
+    activePointer &&
+    (activePointer.state === "reserved" || activePointer.state === "granting")
+  ) {
+    activeAttempt =
+      (await state.storage.get<PaymentAttemptRecord>(
+        attemptKey(creatorIdentityId, activePointer.paymentIntentId)
+      )) ?? null;
+  }
+  return { ok: true, entries, activeAttempt: activeAttempt ?? null };
+}
+
+function liveEntries(entries: IdentityIndexEntry[]): IdentityIndexEntry[] {
+  return entries.filter((entry) => isLiveStatus(entry.status));
+}
+
+async function handleIdentitySummary(
+  state: DurableObjectState,
+  env: CoordinatorEnv,
+  request: Operation & { op: "identity-summary" }
+): Promise<Response> {
+  const { creatorIdentityId } = request;
+  if (typeof creatorIdentityId !== "string" || !creatorIdentityId) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+
+  const stateResult = await computeIdentityState(state, env, creatorIdentityId);
+  if (!stateResult.ok) {
+    return identityFailure(stateResult.error, 409);
+  }
+
+  const available = stateResult.entries.filter((e) => e.status === "AVAILABLE");
+  const consuming = stateResult.entries.filter((e) => e.status === "CONSUMING");
+  const consumedCount = stateResult.entries.filter((e) => e.status === "CONSUMED").length;
+
+  return identitySuccess({
+    creatorIdentityId,
+    available: available.map((e) => ({
+      creatorCreditId: e.id,
+      capsuleId: e.capsuleId,
+      lifecycleId: e.lifecycleId,
+      updatedAt: e.updatedAt,
+    })),
+    consuming: consuming.map((e) => ({
+      creatorCreditId: e.id,
+      lifecycleId: e.lifecycleId,
+      capsuleId: e.capsuleId,
+      updatedAt: e.updatedAt,
+    })),
+    summary: {
+      availableCount: available.length,
+      consumingCount: consuming.length,
+      consumedCount,
+      total: stateResult.entries.length,
+      enumerationComplete: true,
+    },
+    activeAttempt: stateResult.activeAttempt
+      ? {
+          paymentIntentId: stateResult.activeAttempt.paymentIntentId,
+          quoteId: stateResult.activeAttempt.quoteId,
+          state: stateResult.activeAttempt.state,
+          createdAt: stateResult.activeAttempt.createdAt,
+          /**
+           * Read-through of the EXISTING record: the signature already
+           * bound for this attempt, if any. Reported so a caller that
+           * lost its local pointer can resume VERIFYING that same
+           * transaction instead of signing a new one.
+           */
+          broadcastSignature: stateResult.activeAttempt.broadcastSignature,
+          transactionId: stateResult.activeAttempt.transactionId,
+        }
+      : null,
+  });
+}
+
+/**
+ * Atomic purchase-attempt reservation (called by create-quote BEFORE
+ * any payment intent is minted).
+ *
+ * Under the Durable Object input gate this get -> decide -> put
+ * sequence is atomic for this identity: two concurrent create-quote
+ * requests (two tabs, two devices) can never both reserve. The winner
+ * gets a fresh attempt; the loser is told to CONTINUE the winner's
+ * attempt instead of creating a second purchase.
+ */
+async function handleIdentityReserveAttempt(
+  state: DurableObjectState,
+  env: CoordinatorEnv,
+  request: Operation & { op: "identity-reserve-attempt" }
+): Promise<Response> {
+  const { creatorIdentityId, quoteId, paymentIntentId } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof quoteId !== "string" || !quoteId ||
+    typeof paymentIntentId !== "string" || !paymentIntentId
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+
+  const stateResult = await computeIdentityState(state, env, creatorIdentityId);
+  if (!stateResult.ok) {
+    return identityFailure(stateResult.error, 409);
+  }
+
+  const live = liveEntries(stateResult.entries);
+  if (live.length > 0) {
+    // A right already exists: a new purchase is not merely unnecessary,
+    // it is refused. The existing rights are returned so the caller can
+    // route the creator to creation (AVAILABLE) or to recovery
+    // (CONSUMING) instead of to a second $1.
+    return identityFailure("CREATOR_ALREADY_HAS_LIVE_RIGHT", 409);
+  }
+
+  if (stateResult.activeAttempt) {
+    // An unfinished purchase exists: continue THAT attempt, never mint a
+    // second independent one. The active attempt is returned so the
+    // caller can resume the SAME payment intent (and its quote).
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: "PAYMENT_ATTEMPT_ACTIVE",
+        activeAttempt: {
+          paymentIntentId: stateResult.activeAttempt.paymentIntentId,
+          quoteId: stateResult.activeAttempt.quoteId,
+          state: stateResult.activeAttempt.state,
+          createdAt: stateResult.activeAttempt.createdAt,
+          /**
+           * READ-ONLY read-through of the existing record. This is the
+           * discovery path for a client whose local pending pointer was
+           * lost: the already-bound transaction signature is reported so
+           * the SAME transaction can be verified — never a new one.
+           * Nothing is written here.
+           */
+          broadcastSignature: stateResult.activeAttempt.broadcastSignature,
+          transactionId: stateResult.activeAttempt.transactionId,
+        },
+      }),
+      {
+        status: 409,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      }
+    );
+  }
+
+  const now = Date.now();
+  const attempt: PaymentAttemptRecord = {
+    paymentIntentId,
+    quoteId,
+    creatorIdentityId,
+    state: "reserved",
+    creatorCreditId: null,
+    transactionId: null,
+    broadcastSignature: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await state.storage.put(attemptKey(creatorIdentityId, paymentIntentId), attempt);
+  await state.storage.put(activeAttemptKey(creatorIdentityId), {
+    paymentIntentId,
+    state: "reserved",
+  });
+
+  return identitySuccess({ paymentIntentId, quoteId, state: "reserved" });
+}
+
+/**
+ * Atomic grant authorization (called by grant-credit BEFORE the credit
+ * is minted, AFTER the payment was verified server-side).
+ *
+ * The credit id is minted HERE, inside the identity coordinator, so a
+ * crash between authorization and the per-quote grant can be retried
+ * safely: a re-authorization for the same attempt returns the SAME id,
+ * and a note-grant for any other id is refused.
+ */
+async function handleIdentityAuthorizeGrant(
+  state: DurableObjectState,
+  env: CoordinatorEnv,
+  request: Operation & { op: "identity-authorize-grant" }
+): Promise<Response> {
+  const { creatorIdentityId, quoteId, paymentIntentId, transactionId } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof quoteId !== "string" || !quoteId ||
+    typeof paymentIntentId !== "string" || !paymentIntentId ||
+    typeof transactionId !== "string" || !transactionId
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+
+  const attempt = await state.storage.get<PaymentAttemptRecord>(
+    attemptKey(creatorIdentityId, paymentIntentId)
+  );
+  if (!attempt) {
+    return identityFailure("GRANT_NOT_RESERVED", 409);
+  }
+  if (attempt.creatorIdentityId !== creatorIdentityId || attempt.quoteId !== quoteId) {
+    return identityFailure("GRANT_ATTEMPT_MISMATCH", 409);
+  }
+
+  if (attempt.state === "fulfilled") {
+    if (!attempt.creatorCreditId) {
+      return identityFailure("GRANT_STATE_UNKNOWN", 409);
+    }
+    // Idempotent re-authorization of an already recorded grant.
+    return identitySuccess({
+      creatorCreditId: attempt.creatorCreditId,
+      state: "fulfilled",
+    });
+  }
+  if (attempt.state !== "reserved") {
+    // "granting": the first authorization interrupted — resume it with
+    // the SAME credit id (safe retry of the same payment).
+    if (!attempt.creatorCreditId) {
+      return identityFailure("GRANT_STATE_UNKNOWN", 409);
+    }
+    return identitySuccess({
+      creatorCreditId: attempt.creatorCreditId,
+      state: attempt.state,
+    });
+  }
+
+  const stateResult = await computeIdentityState(state, env, creatorIdentityId);
+  if (!stateResult.ok) {
+    return identityFailure(stateResult.error, 409);
+  }
+  const live = liveEntries(stateResult.entries);
+  if (live.length > 0) {
+    // A live right appeared between reservation and grant (e.g. a
+    // recovery restored an unfinished one). Refuse a SECOND credit:
+    // the payment stays recorded as an unfinished grant, recoverable
+    // by the existing replay path — never a new purchase.
+    return identityFailure("CREATOR_ALREADY_HAS_LIVE_RIGHT", 409);
+  }
+
+  const creatorCreditId = generateGrantCreditId();
+  const updated: PaymentAttemptRecord = {
+    ...attempt,
+    state: "granting",
+    creatorCreditId,
+    transactionId,
+    updatedAt: Date.now(),
+  };
+  await state.storage.put(attemptKey(creatorIdentityId, paymentIntentId), updated);
+  await state.storage.put(activeAttemptKey(creatorIdentityId), {
+    paymentIntentId,
+    state: "granting",
+  });
+
+  return identitySuccess({ creatorCreditId, state: "granting" });
+}
+
+/**
+ * Records the minted credit in the identity index and fulfils the
+ * attempt. Idempotent: a replay of the SAME (attempt, creditId) is a
+ * no-op success; a different creditId for the same attempt is refused.
+ */
+async function handleIdentityNoteGrant(
+  state: DurableObjectState,
+  env: CoordinatorEnv,
+  request: Operation & { op: "identity-note-grant" }
+): Promise<Response> {
+  const { creatorIdentityId, quoteId, paymentIntentId, creatorCreditId } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof quoteId !== "string" || !quoteId ||
+    typeof paymentIntentId !== "string" || !paymentIntentId ||
+    typeof creatorCreditId !== "string" || !creatorCreditId
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+
+  const attempt = await state.storage.get<PaymentAttemptRecord>(
+    attemptKey(creatorIdentityId, paymentIntentId)
+  );
+  if (!attempt) {
+    return identityFailure("GRANT_NOT_RESERVED", 409);
+  }
+  if (attempt.creatorIdentityId !== creatorIdentityId || attempt.quoteId !== quoteId) {
+    return identityFailure("GRANT_ATTEMPT_MISMATCH", 409);
+  }
+
+  if (attempt.state === "fulfilled") {
+    if (attempt.creatorCreditId === creatorCreditId) {
+      return identitySuccess({ outcome: "ALREADY_RECORDED", creatorCreditId });
+    }
+    return identityFailure("GRANT_CREDIT_MISMATCH", 409);
+  }
+
+  if (attempt.creatorCreditId !== creatorCreditId) {
+    return identityFailure("GRANT_CREDIT_MISMATCH", 409);
+  }
+
+  const stateResult = await computeIdentityState(state, env, creatorIdentityId);
+  if (!stateResult.ok) {
+    return identityFailure(stateResult.error, 409);
+  }
+  const live = liveEntries(stateResult.entries);
+  if (live.length > 0) {
+    return identityFailure("CREATOR_ALREADY_HAS_LIVE_RIGHT", 409);
+  }
+
+  const now = Date.now();
+  await state.storage.put(identityIndexKey(creatorIdentityId, creatorCreditId), {
+    id: creatorCreditId,
+    creatorIdentityId,
+    status: "AVAILABLE",
+    capsuleId: null,
+    lifecycleId: null,
+    quoteId,
+    revision: 1,
+    updatedAt: now,
+  } satisfies IdentityIndexEntry);
+  await rememberCreditId(state, creatorIdentityId, creatorCreditId);
+
+  await state.storage.put(attemptKey(creatorIdentityId, paymentIntentId), {
+    ...attempt,
+    state: "fulfilled",
+    updatedAt: now,
+  } satisfies PaymentAttemptRecord);
+  await state.storage.put(activeAttemptKey(creatorIdentityId), {
+    paymentIntentId,
+    state: "fulfilled",
+  });
+
+  return identitySuccess({ outcome: "RECORDED", creatorCreditId });
+}
+
+/**
+ * Index maintenance for the remaining credit transitions. Each runs
+ * AFTER the authoritative per-credit coordinator accepted the
+ * transition, so the index can only ever follow reality.
+ *
+ * A missing entry is inserted (repair of a lost note) rather than
+ * failing: the credit demonstrably exists in the per-credit
+ * coordinator, and an absent index entry would understate liveness —
+ * the unsafe direction.
+ */
+async function noteCreditTransition(
+  state: DurableObjectState,
+  creatorIdentityId: string,
+  creatorCreditId: string,
+  next: {
+    status: IdentityIndexEntry["status"];
+    lifecycleId: string | null;
+    capsuleId?: string | null;
+    bumpRevision?: boolean;
+  }
+): Promise<Response> {
+  const existing = await state.storage.get<IdentityIndexEntry>(
+    identityIndexKey(creatorIdentityId, creatorCreditId)
+  );
+  if (existing && existing.creatorIdentityId !== creatorIdentityId) {
+    return identityFailure("IDENTITY_MISMATCH", 409);
+  }
+
+  const now = Date.now();
+  const entry: IdentityIndexEntry = {
+    id: creatorCreditId,
+    creatorIdentityId,
+    status: next.status,
+    capsuleId:
+      next.capsuleId !== undefined
+        ? next.capsuleId
+        : existing?.capsuleId ?? null,
+    lifecycleId: next.lifecycleId,
+    quoteId: existing?.quoteId ?? null,
+    revision: (existing?.revision ?? 0) + (next.bumpRevision ? 1 : 1),
+    updatedAt: now,
+  };
+  await state.storage.put(identityIndexKey(creatorIdentityId, creatorCreditId), entry);
+  await rememberCreditId(state, creatorIdentityId, creatorCreditId);
+  return identitySuccess({
+    outcome: "RECORDED",
+    creatorCreditId,
+    status: next.status,
+  });
+}
+
+async function handleIdentityNoteReserve(
+  state: DurableObjectState,
+  request: Operation & { op: "identity-note-reserve" }
+): Promise<Response> {
+  const { creatorIdentityId, creatorCreditId, lifecycleId, capsuleId } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof creatorCreditId !== "string" || !creatorCreditId ||
+    typeof lifecycleId !== "string" || !lifecycleId ||
+    typeof capsuleId !== "string" || !capsuleId
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+  return noteCreditTransition(state, creatorIdentityId, creatorCreditId, {
+    status: "CONSUMING",
+    lifecycleId,
+    capsuleId,
+  });
+}
+
+async function handleIdentityNoteFinalize(
+  state: DurableObjectState,
+  request: Operation & { op: "identity-note-finalize" }
+): Promise<Response> {
+  const { creatorIdentityId, creatorCreditId } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof creatorCreditId !== "string" || !creatorCreditId
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+  return noteCreditTransition(state, creatorIdentityId, creatorCreditId, {
+    status: "CONSUMED",
+    lifecycleId: null,
+    bumpRevision: true,
+  });
+}
+
+async function handleIdentityNoteRecover(
+  state: DurableObjectState,
+  request: Operation & { op: "identity-note-recover" }
+): Promise<Response> {
+  const { creatorIdentityId, creatorCreditId } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof creatorCreditId !== "string" || !creatorCreditId
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+  return noteCreditTransition(state, creatorIdentityId, creatorCreditId, {
+    status: "AVAILABLE",
+    lifecycleId: null,
+    bumpRevision: true,
+  });
+}
+
+/**
+ * Read-only resolution of one purchase attempt, scoped to a candidate
+ * identity. The caller (the broadcast endpoint) uses it to learn the
+ * AUTHORITATIVE attempt state; the candidate identity is only a hint —
+ * the endpoint independently requires the transaction's payer account
+ * to belong to that identity, so a wrong hint cannot authorise anything.
+ */
+async function handleIdentityResolveIntent(
+  state: DurableObjectState,
+  request: Operation & { op: "identity-resolve-intent" }
+): Promise<Response> {
+  const { creatorIdentityId, paymentIntentId } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof paymentIntentId !== "string" || !paymentIntentId
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+
+  const attempt = await state.storage.get<PaymentAttemptRecord>(
+    attemptKey(creatorIdentityId, paymentIntentId)
+  );
+  if (!attempt || attempt.creatorIdentityId !== creatorIdentityId) {
+    return identityFailure("INTENT_UNKNOWN", 409);
+  }
+
+  return identitySuccess({
+    creatorIdentityId: attempt.creatorIdentityId,
+    paymentIntentId: attempt.paymentIntentId,
+    quoteId: attempt.quoteId,
+    state: attempt.state,
+    creatorCreditId: attempt.creatorCreditId,
+    transactionId: attempt.transactionId,
+    broadcastSignature: attempt.broadcastSignature,
+  });
+}
+
+/**
+ * Atomically binds ONE transaction signature to one purchase attempt,
+ * BEFORE any broadcast.
+ *
+ * Under the Durable Object input gate the get -> decide -> put sequence
+ * is atomic for this identity, so concurrent requests carrying two
+ * different signatures can never both be authorised: the first wins and
+ * the second is refused. The same signature is an idempotent replay
+ * (a lost HTTP response must not become a second transfer).
+ */
+async function handleIdentityBindBroadcastSignature(
+  state: DurableObjectState,
+  request: Operation & { op: "identity-bind-broadcast-signature" }
+): Promise<Response> {
+  const { creatorIdentityId, paymentIntentId, transactionId } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof paymentIntentId !== "string" || !paymentIntentId ||
+    typeof transactionId !== "string" || !transactionId
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+
+  const attempt = await state.storage.get<PaymentAttemptRecord>(
+    attemptKey(creatorIdentityId, paymentIntentId)
+  );
+  if (!attempt || attempt.creatorIdentityId !== creatorIdentityId) {
+    return identityFailure("INTENT_UNKNOWN", 409);
+  }
+
+  if (attempt.state === "granting" || attempt.state === "fulfilled") {
+    // A payment is already recorded for this attempt: broadcasting a
+    // transaction here would be a second transfer.
+    return identityFailure("INTENT_ALREADY_PAID", 409);
+  }
+  if (attempt.state !== "reserved") {
+    return identityFailure("INTENT_NOT_PAYABLE", 409);
+  }
+
+  const bound = attempt.broadcastSignature;
+  if (bound) {
+    if (bound === transactionId) {
+      return identitySuccess({ outcome: "ALREADY_BOUND", transactionId });
+    }
+    return identityFailure("SIGNATURE_ALREADY_BOUND", 409);
+  }
+
+  const updated: PaymentAttemptRecord = {
+    ...attempt,
+    broadcastSignature: transactionId,
+    updatedAt: Date.now(),
+  };
+  await state.storage.put(attemptKey(creatorIdentityId, paymentIntentId), updated);
+
+  return identitySuccess({ outcome: "BOUND", transactionId });
 }
 
 export class CreditOperationCoordinator {
@@ -1326,6 +2358,24 @@ export class CreditOperationCoordinator {
         return handlePaymentTxCheck(this.state, body);
       case "grant":
         return handleGrant(this.state, this.env, body);
+      case "identity-summary":
+        return handleIdentitySummary(this.state, this.env, body);
+      case "identity-reserve-attempt":
+        return handleIdentityReserveAttempt(this.state, this.env, body);
+      case "identity-authorize-grant":
+        return handleIdentityAuthorizeGrant(this.state, this.env, body);
+      case "identity-note-grant":
+        return handleIdentityNoteGrant(this.state, this.env, body);
+      case "identity-note-reserve":
+        return handleIdentityNoteReserve(this.state, body);
+      case "identity-note-finalize":
+        return handleIdentityNoteFinalize(this.state, body);
+      case "identity-note-recover":
+        return handleIdentityNoteRecover(this.state, body);
+      case "identity-resolve-intent":
+        return handleIdentityResolveIntent(this.state, body);
+      case "identity-bind-broadcast-signature":
+        return handleIdentityBindBroadcastSignature(this.state, body);
       case "read": {
         const credit = await getCreditRecord(this.state, body.creatorCreditId);
         if (!credit) {

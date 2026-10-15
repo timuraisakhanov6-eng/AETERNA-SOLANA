@@ -23,6 +23,8 @@ import type { CapsuleHoldState } from "@/types/capsule";
 import type { OpenAtUtc } from "@/types/manifest";
 import type { ChunkMetadata } from "@/types/vault";
 import type { SealCapsuleResult } from "@/lib/capsule/sealCapsuleCore";
+import { useCreateAccess } from "@/context/CreateAccessContext";
+import { removeUnfinishedLifecycle } from "@/lib/access/unfinishedLifecycle";
 
 
 
@@ -267,6 +269,12 @@ export default function CapsuleHold() {
   const location = useLocation();
 
   const { resetCapsule, capsuleId: sessionCapsuleId } = useCapsule();
+
+  // The Home access gate owns admission to /create. Once a seal
+  // succeeds the creation right is consumed server-side, so the
+  // client-side admission (and any unfinished-lifecycle recovery
+  // hint) must not outlive it.
+  const { clearAccess } = useCreateAccess();
 
   // resetCapsule is recreated on every provider render; the seal effect
   // must never re-run on those renders, so keep it behind a stable ref.
@@ -1127,6 +1135,18 @@ export default function CapsuleHold() {
           /* ── STEP 7: redirect ── */
 
           setSealed(true);
+
+          // The entitlement behind this admission is now consumed
+          // server-side (the seal completed; a pending finalization
+          // still completes on the idempotent retry). Drop the
+          // in-memory admission so a later visit to /create must
+          // re-run the Home gate, and drop THIS attempt's recovery hint
+          // only — a completed seal is not an interrupted attempt, and
+          // other unfinished attempts keep their own hints (D2).
+          clearAccess();
+          if (canonicalLifecycleId) {
+            removeUnfinishedLifecycle(canonicalLifecycleId);
+          }
 
           // Finalization is idempotent server-side. A pending finalize
           // after a successful seal never blocks the user: the credit

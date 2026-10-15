@@ -36,7 +36,7 @@
  * FAILS on pre-fix code (0), PASSES after the write-back.
  *
  * jsdom component test — same harness convention as
- * CapsuleBuilderRestoreBatching.test.tsx. All network access is mocked;
+ * CapsuleBuilder.admission.test.tsx. All network access is mocked;
  * no production calls, no real payment, no wallet transaction.
  */
 
@@ -56,6 +56,11 @@ import {
   CreatorIdentityProvider,
 } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
+import {
+  CreateAccessProvider,
+  useCreateAccess,
+} from "@/context/CreateAccessContext";
+import { useCreatorIdentity } from "@/context/CreatorRuntimeContext";
 import CapsuleBuilder from "@/components/capsule/CapsuleBuilder";
 
 /* Canonical values the server would return. Distinctive on purpose: a
@@ -67,7 +72,6 @@ const {
   CREATOR_IDENTITY_ID,
   CREATOR_CREDIT_ID,
   stableWallet,
-  signMessageMock,
   preparePreparedCapsuleMock,
 } = vi.hoisted(() => {
   const WALLET_ACCOUNT = "7XkWqBase58WalletAccountHoldSizeTest";
@@ -108,7 +112,6 @@ const {
     CREATOR_IDENTITY_ID,
     CREATOR_CREDIT_ID,
     stableWallet,
-    signMessageMock,
     preparePreparedCapsuleMock,
   };
 });
@@ -181,25 +184,6 @@ const json = (body: unknown, ok = true) => ({
   json: async () => body,
 });
 
-const CHALLENGE_RESPONSE = () =>
-  json({
-    ok: true,
-    id: "challenge-holdsize",
-    challengeId: "challenge-holdsize",
-    challenge: "abc",
-    message: "AETERNA identity challenge",
-    expiresAt: Date.now() + 600_000,
-  });
-
-const AVAILABLE_DISCOVERY = () =>
-  json({
-    ok: true,
-    status: "available",
-    creatorCreditId: CREATOR_CREDIT_ID,
-    creatorIdentityId: CREATOR_IDENTITY_ID,
-    account: WALLET_ACCOUNT,
-  });
-
 const PREPARED_PROJECTION = () =>
   json({
     ok: true,
@@ -260,6 +244,26 @@ function HoldProbe() {
   });
 }
 
+/**
+ * Mirrors the Home access gate's server-verified outcome: the identity is
+ * adopted and the in-memory admission is granted BEFORE the workspace
+ * renders. /create performs no connect, no signature, no discovery and
+ * no $1 payment of its own.
+ */
+function SeedAdmission() {
+  const { grantAccess } = useCreateAccess();
+  const { adoptIdentity } = useCreatorIdentity();
+  React.useEffect(() => {
+    adoptIdentity(CREATOR_IDENTITY_ID);
+    grantAccess({
+      creatorCreditId: CREATOR_CREDIT_ID,
+      creatorIdentityId: CREATOR_IDENTITY_ID,
+      account: WALLET_ACCOUNT,
+    });
+  }, [adoptIdentity, grantAccess]);
+  return null;
+}
+
 const tree = () =>
   React.createElement(
     MemoryRouter,
@@ -274,16 +278,25 @@ const tree = () =>
           LandingPaymentGateProvider,
           null,
           React.createElement(
-            Routes,
+            CreateAccessProvider,
             null,
-            React.createElement(Route, {
-              path: "/create",
-              element: React.createElement(CapsuleBuilder),
-            }),
-            React.createElement(Route, {
-              path: "/create/hold",
-              element: React.createElement(HoldProbe),
-            })
+            React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(SeedAdmission),
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/create",
+                  element: React.createElement(CapsuleBuilder),
+                }),
+                React.createElement(Route, {
+                  path: "/create/hold",
+                  element: React.createElement(HoldProbe),
+                })
+              )
+            )
           )
         )
       )
@@ -326,8 +339,6 @@ describe("canonical billable size propagation to /create/hold", () => {
 
   it("hands the server quote's billableSizeBytes to /create/hold and persists it for restore", async () => {
     installFetchRoutes([
-      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
-      { match: "/api/creator/credit-status", respond: AVAILABLE_DISCOVERY },
       { match: "/api/capsule/prepared", respond: PREPARED_PROJECTION },
       { match: "/api/storage/quote", respond: STORAGE_QUOTE },
       { match: "/api/creator/reserve-lifecycle", respond: RESERVE_LIFECYCLE },
@@ -336,15 +347,15 @@ describe("canonical billable size propagation to /create/hold", () => {
     render(tree());
     await acceptProtocol();
 
-    // 1. Explicit Create Capsule → discovery (AVAILABLE) → paid.
-    fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
+    // 1. The Home access gate already established the entitlement
+    //    server-side; the workspace mirrors it as paid (admission seed).
     await waitFor(() => {
       expect(screen.getByRole("status").textContent).toBe(
         "Creator access ready"
       );
     });
 
-    // 2. Second Create Capsule → preparation + projection + canonical quote.
+    // 2. Create Capsule → preparation + projection + canonical quote.
     fireEvent.click(screen.getByRole("button", { name: "Create Capsule" }));
     await waitFor(
       () => expect(preparePreparedCapsuleMock).toHaveBeenCalledTimes(1),

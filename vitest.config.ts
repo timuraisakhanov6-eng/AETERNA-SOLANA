@@ -43,9 +43,12 @@ export default defineConfig({
     // reconciled.
     include: [
       "src/**/*.test.ts",
-      "src/components/capsule/CapsuleBuilderRestoreBatching.test.tsx",
+      "src/components/access/CreateAccessGate.test.tsx",
+      "src/components/capsule/CapsuleBuilder.admission.test.tsx",
       "src/components/capsule/CapsuleBuilderPhantomGate.test.tsx",
+      "src/components/capsule/CapsuleBuilderRestoreBatching.test.tsx",
       "src/components/capsule/ErrorNoticeOverflow.test.tsx",
+      "src/pages/capsule/Create.admission.test.tsx",
       "src/pages/capsule/VaultRenderer.media.test.tsx",
       "src/pages/capsule/LetterCard.test.tsx",
       "src/pages/capsule/CapsuleController.openState.test.tsx",

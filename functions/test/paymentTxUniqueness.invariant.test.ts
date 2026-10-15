@@ -76,6 +76,36 @@ function createKvWiredCreditCoordinatorBinding(
   const queues = new Map<string, Promise<unknown>>();
   const storages = new Map<string, ReturnType<typeof createFakeDurableObjectStorage>>();
 
+  /** The binding itself — also used as the DO's self-binding, so the
+   *  identity coordinator can read per-credit records (op "read") and
+   *  repair a missed index note, exactly like production. */
+  const binding = {
+    idFromName(name: string) {
+      return { id: name };
+    },
+    get(target: { id: string }) {
+      return instanceStub(target.id);
+    },
+  };
+
+  function instanceStub(id: string) {
+    instanceFor(id);
+    return {
+      async fetch(request: Request): Promise<Response> {
+        const tail = queues.get(id) ?? Promise.resolve();
+        const run = tail.then(() => instances.get(id)!.fetch(request));
+        queues.set(
+          id,
+          run.then(
+            () => undefined,
+            () => undefined
+          )
+        );
+        return run;
+      },
+    };
+  }
+
   function instanceFor(id: string): CreditOperationCoordinator {
     let instance = instances.get(id);
     if (!instance) {
@@ -88,9 +118,14 @@ function createKvWiredCreditCoordinatorBinding(
             get: (key: string) => creditsKv.get(key),
             put: (key: string, value: string) => creditsKv.put(key, value),
             delete: (key: string) => creditsKv.delete(key),
+            // The identity coordinator's one-time backfill enumerates the
+            // existing KV projections; the completeness flag mirrors
+            // Cloudflare KV.
+            list: (options: { prefix?: string }) => creditsKv.list(options),
           },
           PUBLICATION_VERIFICATIONS: { get: async () => null },
           SEAL_VERIFICATIONS: { get: async () => null },
+          CREDIT_OP_COORDINATOR: binding,
         } as never
       );
       instances.set(id, instance);
@@ -99,27 +134,8 @@ function createKvWiredCreditCoordinatorBinding(
   }
 
   return {
-    idFromName(name: string) {
-      return { id: name };
-    },
-    get(binding: { id: string }) {
-      const id = binding.id;
-      instanceFor(id);
-      return {
-        async fetch(request: Request): Promise<Response> {
-          const tail = queues.get(id) ?? Promise.resolve();
-          const run = tail.then(() => instances.get(id)!.fetch(request));
-          queues.set(
-            id,
-            run.then(
-              () => undefined,
-              () => undefined
-            )
-          );
-          return run;
-        },
-      };
-    },
+    idFromName: binding.idFromName,
+    get: binding.get,
     /** Direct access to per-instance DO storage for assertions. */
     storages,
   };
@@ -451,8 +467,8 @@ describe("Global payment transaction uniqueness invariants", () => {
     ).toBeUndefined();
   });
 
-  it("CASE F: a different transaction is an independent legitimate payment", async () => {
-    const { env } = buildEnv();
+  it("CASE F: a different transaction is an independent legitimate payment, but a SECOND credit is refused while a live right exists", async () => {
+    const { env, coordinator } = buildEnv();
     mockSolanaTransaction(successfulSolanaTransaction());
     await seedQuote(env.BUSINESS_QUOTES, "intent-a");
     await seedQuote(env.BUSINESS_QUOTES, "intent-b");
@@ -469,6 +485,8 @@ describe("Global payment transaction uniqueness invariants", () => {
       evidenceId: "ev-b1",
       transactionId: SOLANA_TX_OTHER,
     });
+    // The payment rail is independent: a second, different transaction is
+    // verified on its own merits (transaction uniqueness is per tx).
     expect(verifyB.status).toBe(200);
 
     const grantA = await grantCredit(env, {
@@ -476,13 +494,70 @@ describe("Global payment transaction uniqueness invariants", () => {
       evidenceId: "ev-a1",
       transactionId: SOLANA_TX,
     });
+    expect(grantA.status).toBe(200);
+
+    /**
+     * APPROVED RULE (one live right per creator at a time): while the
+     * first credit is still AVAILABLE, the second verified payment may
+     * NOT mint a second credit — the purchase guard refuses it. The
+     * verified payment itself is untouched and stays replayable.
+     */
     const grantB = await grantCredit(env, {
       paymentIntentId: "intent-b",
       evidenceId: "ev-b1",
       transactionId: SOLANA_TX_OTHER,
     });
-    expect(grantA.status).toBe(200);
-    expect(grantB.status).toBe(200);
+    expect(grantB.status).toBe(409);
+    expect(((await grantB.json()) as { error: string }).error).toBe(
+      "CREATOR_ALREADY_HAS_LIVE_RIGHT"
+    );
+    expect(creditRecordIds(env.CREATOR_CREDITS)).toHaveLength(1);
+
+    /**
+     * Once the first right is CONSUMED (publication + seal verified), a
+     * new purchase is legitimate again — and the previously verified
+     * second payment mints its own independent credit. Existing rights
+     * are preserved, never merged.
+     */
+    const firstCreditId = creditRecordIds(env.CREATOR_CREDITS)[0]!;
+    const perCredit = coordinator.get(coordinator.idFromName(firstCreditId));
+    const reserved = await perCredit.fetch(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          op: "reserve",
+          creatorCreditId: firstCreditId,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
+          lifecycleId: "lifecycle-a",
+          capsuleId: "capsule-a",
+        }),
+      })
+    );
+    expect(reserved.status).toBe(200);
+    const finalized = await perCredit.fetch(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          op: "finalize",
+          creatorCreditId: firstCreditId,
+          creatorIdentityId: CREATOR_IDENTITY_ID,
+          lifecycleId: "lifecycle-a",
+          capsuleId: "capsule-a",
+          publicationVerified: true,
+          sealVerified: true,
+        }),
+      })
+    );
+    expect(finalized.status).toBe(200);
+
+    const grantBAfter = await grantCredit(env, {
+      paymentIntentId: "intent-b",
+      evidenceId: "ev-b1",
+      transactionId: SOLANA_TX_OTHER,
+    });
+    expect(grantBAfter.status).toBe(200);
 
     const creditIds = creditRecordIds(env.CREATOR_CREDITS);
     expect(creditIds).toHaveLength(2);

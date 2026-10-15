@@ -9,13 +9,7 @@
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
-import { verifyMessage } from "ethers";
-import { getCreatorIdentity } from "../../../src/lib/creator/creatorIdentityStore";
-import {
-  base58Decode,
-  buildSolanaMessage,
-  verifySolanaSignature,
-} from "../../lib/solanaIdentityProof";
+import { verifyIdentityProof } from "../../lib/creatorIdentityProof";
 
 interface CreditStatusEnv {
   CREATOR_CREDITS: {
@@ -24,6 +18,12 @@ interface CreditStatusEnv {
   };
   CREATOR_IDENTITIES: {
     get(key: string): Promise<string | null>;
+  };
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(binding: { id: string }): {
+      fetch(request: Request): Promise<Response>;
+    };
   };
 }
 
@@ -58,6 +58,65 @@ function baseHeaders(origin: string): Record<string, string> {
 
 function fail(origin: string, status = 400, error = "error"): Response {
   return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders(origin) });
+}
+
+/**
+ * The single response builder for this endpoint.
+ *
+ * Additive extension of the historical payload (ok / status /
+ * creatorCreditId / lifecycleId / creatorIdentityId) with the authoritative
+ * enumeration result, so existing consumers keep working unchanged while
+ * the Home Gate gains the CONSUMING / summary facts it needs.
+ *
+ * `status: "none"` is only ever produced by a COMPLETED, consistent
+ * enumeration (or by an explicit owner-scoped lookup of a non-usable
+ * credit) — never by a corrupt, inconsistent or incomplete one; those
+ * paths return through `fail()` above.
+ */
+function statusResponse(
+  origin: string,
+  status: "available" | "consuming" | "consumed" | "none",
+  creatorCreditId: string | null,
+  lifecycleId: string | null,
+  creatorIdentityId: string,
+  summary: {
+    availableCount: number;
+    consumingCount: number;
+    consumedCount: number;
+    total: number;
+    enumerationComplete: boolean;
+  } | null,
+  unfinishedLifecycles: Array<{
+    creatorCreditId: string;
+    lifecycleId: string | null;
+    capsuleId: string | null;
+  }> | null,
+  /**
+   * Authoritative unfinished PURCHASE attempt (from the identity
+   * coordinator), when one exists. Purely informational for the client:
+   * it explains why a payment window is being resumed instead of a new
+   * purchase being offered. It is never authority to pay.
+   */
+  activeAttempt: {
+    paymentIntentId: string;
+    quoteId: string;
+    state: string;
+    createdAt: number;
+  } | null = null
+): Response {
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      status,
+      creatorCreditId,
+      lifecycleId,
+      creatorIdentityId,
+      summary,
+      unfinishedLifecycles,
+      activeAttempt,
+    }),
+    { status: 200, headers: baseHeaders(origin) }
+  );
 }
 
 export async function onRequestOptions(context: EventContext<Record<string, unknown>, string, CreditStatusEnv>): Promise<Response> {
@@ -114,155 +173,287 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
 
   /**
    * creatorCreditId MAY be omitted: when absent, the endpoint performs
-   * authenticated discovery of the creator's AVAILABLE Credit (see
-   * below). When supplied, the exact pre-existing ownership/status
-   * semantics apply unchanged.
+   * authenticated discovery of the creator's rights (see below). When
+   * supplied, the exact pre-existing ownership/status semantics apply
+   * unchanged.
    */
-
-  const isSolanaRequest = network === "solana";
-  if (isSolanaRequest) {
-    let publicKeyBytes: Uint8Array;
-    try {
-      publicKeyBytes = base58Decode(account);
-    } catch {
-      return fail(origin, 400, "INVALID_ACCOUNT");
-    }
-    if (publicKeyBytes.length !== 32) {
-      return fail(origin, 400, "INVALID_ACCOUNT");
-    }
-  } else if (!/^0x[a-fA-F0-9]{40}$/.test(account)) {
-    return fail(origin, 400, "INVALID_ACCOUNT");
-  }
 
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
 
-  /* ================= Challenge verification ================= */
-
-  const challengeRaw = await context.env.CREATOR_IDENTITIES.get(`creator:challenge:${challengeId}`);
-  if (!challengeRaw) {
-    return fail(origin, 401, "CHALLENGE_NOT_FOUND");
+  const proofResult = await verifyIdentityProof(
+    context.env,
+    { challengeId, network, account, signature },
+    now
+  );
+  if (!proofResult.ok) {
+    return fail(origin, proofResult.status, proofResult.error);
   }
 
-  let challengeRecord: Record<string, unknown>;
-  try {
-    challengeRecord = JSON.parse(challengeRaw) as Record<string, unknown>;
-  } catch {
-    return fail(origin, 400, "CHALLENGE_CORRUPT");
-  }
-
-  if (challengeRecord.network !== network) {
-    return fail(origin, 401, "NETWORK_MISMATCH");
-  }
-
-  if (now > (challengeRecord.expiresAt as number)) {
-    return fail(origin, 401, "CHALLENGE_EXPIRED");
-  }
-
-  let recovered = "";
-  if (isSolanaRequest) {
-    /**
-     * Solana: Ed25519 verification via the shared proof helper. The
-     * verification key is imported from `account` itself, so a valid
-     * signature simultaneously binds the signer to the claimed
-     * account (fail-closed on any mismatch/malformation).
-     */
-    const message = buildSolanaMessage(
-      challengeRecord as unknown as Parameters<typeof buildSolanaMessage>[0]
-    );
-    const valid = await verifySolanaSignature(account, signature, message);
-    if (!valid) {
-      return fail(origin, 401, "INVALID_SIGNATURE");
-    }
-    recovered = account;
-  } else {
-    try {
-      const message = `AETERNA identity challenge:${challengeRecord.challenge}`;
-      const recoveredAddress = await verifyMessage(message, signature);
-      recovered = recoveredAddress;
-    } catch {
-      return fail(origin, 401, "INVALID_SIGNATURE");
-    }
-
-    if (recovered.toLowerCase() !== account.toLowerCase()) {
-      return fail(origin, 401, "ACCOUNT_MISMATCH");
-    }
-  }
-
-  /* ================= Creator identity resolution ================= */
-
-  const identityRecord = await getCreatorIdentity(context.env, network, account);
-  if (!identityRecord) {
-    return fail(origin, 403, "CREATOR_IDENTITY_NOT_FOUND");
-  }
-
-  const authenticatedCreatorIdentityId = identityRecord.id;
+  const authenticatedCreatorIdentityId = proofResult.creatorIdentityId;
 
   /* ================= Creator Credit lookup ================= */
 
   let resolvedCreatorCreditId = creatorCreditId;
+  let kvFallback = false;
+  /**
+   * True when the identity coordinator (strongly consistent) resolved
+   * the credit. A lagging KV projection must then NOT be allowed to
+   * downgrade the answer to "none" — the coordinator already vouched
+   * for the right.
+   */
+  let resolvedByCoordinator = false;
+  /** Authoritative unfinished purchase attempt, when the coordinator reported one. */
+  let coordinatorActiveAttempt: {
+    paymentIntentId: string;
+    quoteId: string;
+    state: string;
+    createdAt: number;
+  } | null = null;
+
+  /**
+   * Authoritative enumeration of the authenticated creator's rights.
+   *
+   * Populated in discovery mode (no client-supplied creatorCreditId) and
+   * reported additively in EVERY response of this endpoint. The KV prefix
+   * is built EXCLUSIVELY from the SERVER-DERIVED
+   * authenticatedCreatorIdentityId — a client-supplied creatorIdentityId
+   * is never trusted — and every resolved record is re-validated for
+   * ownership against that same server-derived value.
+   *
+   * Discovery is strictly read-only: no KV writes, no consumption, no
+   * reservation.
+   */
+  let entitlementSummary: {
+    availableCount: number;
+    consumingCount: number;
+    consumedCount: number;
+    total: number;
+    enumerationComplete: boolean;
+  } | null = null;
+  let unfinishedLifecycles: Array<{
+    creatorCreditId: string;
+    lifecycleId: string | null;
+    capsuleId: string | null;
+  }> | null = null;
 
   if (!resolvedCreatorCreditId) {
     /**
-     * Authenticated discovery mode (creatorCreditId omitted).
+     * IDENTITY COORDINATOR (strongly consistent) — the PRIMARY source.
      *
-     * The KV prefix is constructed EXCLUSIVELY from the
-     * SERVER-DERIVED authenticated creatorIdentityId — never from any
-     * client-supplied value — then resolved credit records are
-     * re-validated for ownership. Discovery is strictly read-only:
-     * no KV writes, no consumption, no reservation.
+     * The KV enumeration below is eventually consistent, so a credit
+     * written seconds ago can be missing from it; that missed credit is
+     * what used to authorise a second $1. The identity-scoped Durable
+     * Object holds the same facts transactionally, so it is consulted
+     * first. KV remains the fallback for environments without the
+     * binding, and as positive evidence whenever it DOES find rights.
      */
-    const indexPrefix = `creator:credit:index:${authenticatedCreatorIdentityId}:`;
-    const listed = await context.env.CREATOR_CREDITS.list({ prefix: indexPrefix });
-
-    const availableCredits: Array<{
-      id: string;
-      createdAt: number;
-    }> = [];
-
-    for (const key of listed.keys) {
-      const creditIdRaw = await context.env.CREATOR_CREDITS.get(key.name);
-      if (!creditIdRaw || typeof creditIdRaw !== "string") {
-        continue;
-      }
-      const recordRaw = await context.env.CREATOR_CREDITS.get(`creator:credit:${creditIdRaw}`);
-      if (!recordRaw || typeof recordRaw !== "string") {
-        continue;
-      }
+    const coordinatorBinding = (context.env as CreditStatusEnv).CREDIT_OP_COORDINATOR;
+    if (coordinatorBinding) {
       try {
-        const record = JSON.parse(recordRaw) as {
-          id?: unknown;
-          creatorIdentityId?: unknown;
-          status?: unknown;
-          createdAt?: unknown;
+        const stub = coordinatorBinding.get(
+          coordinatorBinding.idFromName(`identity:${authenticatedCreatorIdentityId}`)
+        );
+        const res = await stub.fetch(
+          new Request("https://aeterna-credit-coordinator.invalid", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              op: "identity-summary",
+              creatorIdentityId: authenticatedCreatorIdentityId,
+            }),
+          })
+        );
+        const data = (await res.json()) as {
+          ok?: boolean;
+          available?: Array<{ creatorCreditId: string; createdAt?: number }>;
+          consuming?: Array<{
+            creatorCreditId: string;
+            lifecycleId: string | null;
+            capsuleId: string | null;
+          }>;
+          summary?: {
+            availableCount: number;
+            consumingCount: number;
+            consumedCount: number;
+            total: number;
+          };
+          activeAttempt?: {
+            paymentIntentId: string;
+            quoteId: string;
+            state: string;
+            createdAt: number;
+          } | null;
+          error?: string;
         };
-        if (
-          typeof record.id === "string" &&
-          record.id === creditIdRaw &&
-          typeof record.creatorIdentityId === "string" &&
-          record.creatorIdentityId === authenticatedCreatorIdentityId &&
-          record.status === "AVAILABLE" &&
-          typeof record.createdAt === "number" &&
-          Number.isFinite(record.createdAt)
-        ) {
-          availableCredits.push({ id: record.id, createdAt: record.createdAt });
+
+        if (!res.ok || !data?.ok) {
+          // The identity coordinator refuses to vouch for a complete,
+          // consistent view (unresolved old right, unenumerable index):
+          // an absence can NOT be established — fail closed.
+          return fail(
+            origin,
+            503,
+            (data && data.error) || "ENTITLEMENT_STATE_UNKNOWN"
+          );
         }
+
+        const available = Array.isArray(data.available) ? data.available : [];
+        const consuming = Array.isArray(data.consuming) ? data.consuming : [];
+        const doSummary = {
+          availableCount: available.length,
+          consumingCount: consuming.length,
+          consumedCount: data.summary?.consumedCount ?? 0,
+          total:
+            available.length +
+            consuming.length +
+            (data.summary?.consumedCount ?? 0),
+          enumerationComplete: true,
+        };
+        const doUnfinished = consuming.map((entry) => ({
+          creatorCreditId: entry.creatorCreditId,
+          lifecycleId: entry.lifecycleId ?? null,
+          capsuleId: entry.capsuleId ?? null,
+        }));
+
+        if (available.length === 0) {
+          return statusResponse(
+            origin,
+            consuming.length > 0 ? "consuming" : "none",
+            null,
+            null,
+            authenticatedCreatorIdentityId,
+            doSummary,
+            doUnfinished,
+            data.activeAttempt ?? null
+          );
+        }
+
+        // Same deterministic rule as the KV path: earliest granted
+        // (smallest createdAt), tie-break smallest id.
+        const sorted = [...available].sort((a, b) => {
+          const ca =
+            typeof a.createdAt === "number" && Number.isFinite(a.createdAt)
+              ? a.createdAt
+              : Number.MAX_SAFE_INTEGER;
+          const cb =
+            typeof b.createdAt === "number" && Number.isFinite(b.createdAt)
+              ? b.createdAt
+              : Number.MAX_SAFE_INTEGER;
+          return ca !== cb ? ca - cb : a.creatorCreditId < b.creatorCreditId ? -1 : 1;
+        });
+        resolvedCreatorCreditId = sorted[0]!.creatorCreditId;
+        entitlementSummary = doSummary;
+        unfinishedLifecycles = doUnfinished;
+        coordinatorActiveAttempt = data.activeAttempt ?? null;
+        resolvedByCoordinator = true;
+
+        // Fall through to the shared record read below, which validates
+        // ownership from the KV projection exactly like before.
       } catch {
-        // corrupt record — skip (fail closed: never returned as available)
+        /**
+         * Durable Object unreachable: fall back to the KV enumeration,
+         * but a KV answer that found NOTHING is downgraded to an
+         * UNCONFIRMED absence (enumerationComplete: false) — the
+         * client must not treat it as authority to pay. Positive
+         * findings stay authoritative as before.
+         */
+        kvFallback = true;
       }
     }
 
-    if (availableCredits.length === 0) {
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          status: "none",
-          creatorCreditId: null,
-          lifecycleId: lifecycleId || null,
-          creatorIdentityId: authenticatedCreatorIdentityId,
-        }),
-        { status: 200, headers: baseHeaders(origin) }
-      );
+    /**
+     * KV enumeration: only when the identity coordinator did not
+     * resolve the answer (no binding, or it was unreachable). Its own
+     * fail-closed error codes are unchanged.
+     */
+    if (resolvedCreatorCreditId) {
+      // The DO path already resolved the credit; skip KV entirely.
+    } else {
+    const indexPrefix = `creator:credit:index:${authenticatedCreatorIdentityId}:`;
+    const listed = await context.env.CREATOR_CREDITS.list({ prefix: indexPrefix });
+
+    /**
+     * Completeness is reported ONLY when the binding states it. An absent
+     * `list_complete` (older bindings, test doubles) means "unknown", NOT
+     * "complete" — the caller must then treat a "no rights" answer as an
+     * UNCONFIRMED absence (see the Home Gate pre-payment re-check).
+     */
+    const listComplete = (listed as { list_complete?: unknown }).list_complete;
+    if (listComplete === false) {
+      return fail(origin, 500, "ENTITLEMENT_ENUMERATION_INCOMPLETE");
+    }
+    const enumerationComplete = listComplete === true;
+
+    /**
+     * One right may be reachable through BOTH index shapes
+     * (…:{capsuleId} written at reserve and …:{quoteId} written at grant),
+     * so the resolved credit ids are de-duplicated before any record read.
+     */
+    const creditIds = new Set<string>();
+    for (const key of listed.keys) {
+      const creditIdRaw = await context.env.CREATOR_CREDITS.get(key.name);
+      if (!creditIdRaw) continue; // dangling pointer — nothing to reason about
+      if (typeof creditIdRaw !== "string") {
+        return fail(origin, 500, "ENTITLEMENT_STATE_UNREADABLE");
+      }
+      const creditId = creditIdRaw.trim();
+      if (creditId) creditIds.add(creditId);
+    }
+
+    const availableCredits: Array<{ id: string; createdAt: number }> = [];
+    const consumingLifecycles: Array<{
+      creatorCreditId: string;
+      lifecycleId: string | null;
+      capsuleId: string | null;
+    }> = [];
+    let consumedCount = 0;
+
+    for (const creditId of [...creditIds].sort()) {
+      const recordRaw = await context.env.CREATOR_CREDITS.get(`creator:credit:${creditId}`);
+      if (!recordRaw) continue; // dangling index pointer — not an inconsistency
+
+      let record: Record<string, unknown>;
+      try {
+        record = JSON.parse(recordRaw) as Record<string, unknown>;
+      } catch {
+        return fail(origin, 500, "ENTITLEMENT_STATE_UNREADABLE");
+      }
+
+      if (typeof record["id"] !== "string" || record["id"] !== creditId) {
+        return fail(origin, 500, "ENTITLEMENT_INDEX_INCONSISTENT");
+      }
+      if (record["creatorIdentityId"] !== authenticatedCreatorIdentityId) {
+        return fail(origin, 500, "ENTITLEMENT_INDEX_INCONSISTENT");
+      }
+
+      if (record["status"] === "AVAILABLE") {
+        const createdAt = record["createdAt"];
+        // Unknown createdAt ranks last (never last-foremost), tie-broken by
+        // id — identical ordering to the pinned multi-AVAILABLE invariant
+        // whenever createdAt is present.
+        availableCredits.push({
+          id: creditId,
+          createdAt:
+            typeof createdAt === "number" && Number.isFinite(createdAt)
+              ? createdAt
+              : Number.MAX_SAFE_INTEGER,
+        });
+      } else if (record["status"] === "CONSUMING") {
+        // The authoritative CreditRecord already carries the recovery
+        // identifiers — the client never has to supply them.
+        const lifecycleId = record["lifecycleId"];
+        const capsuleId = record["capsuleId"];
+        consumingLifecycles.push({
+          creatorCreditId: creditId,
+          lifecycleId: typeof lifecycleId === "string" ? lifecycleId : null,
+          capsuleId: typeof capsuleId === "string" ? capsuleId : null,
+        });
+      } else if (record["status"] === "CONSUMED") {
+        consumedCount += 1;
+      } else {
+        return fail(origin, 500, "ENTITLEMENT_STATE_UNREADABLE");
+      }
     }
 
     /**
@@ -278,14 +469,77 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
         ? -1
         : 1
     );
+
+    entitlementSummary = {
+      availableCount: availableCredits.length,
+      consumingCount: consumingLifecycles.length,
+      consumedCount,
+      total:
+        availableCredits.length + consumingLifecycles.length + consumedCount,
+      enumerationComplete,
+    };
+    unfinishedLifecycles = consumingLifecycles;
+
+    if (availableCredits.length === 0) {
+      /**
+       * No AVAILABLE right. A CONSUMING answer means a right EXISTS but is
+       * bound to an unfinished lifecycle — it must never be reported as an
+       * absence, because an absence is what authorises a new $1.
+       *
+       * When this enumeration ran only because the identity coordinator
+       * was unreachable, an empty result is an UNCONFIRMED absence
+       * (enumerationComplete: false): eventual consistency means a
+       * recently written credit may simply be invisible yet.
+       */
+      const status =
+        consumingLifecycles.length > 0 ? "consuming" : "none";
+      const fallbackSummary = kvFallback
+        ? { ...entitlementSummary!, enumerationComplete: false }
+        : entitlementSummary;
+      return statusResponse(
+        origin,
+        status,
+        null,
+        null,
+        authenticatedCreatorIdentityId,
+        fallbackSummary,
+        unfinishedLifecycles
+      );
+    }
+
     resolvedCreatorCreditId = availableCredits[0]!.id;
+    }
   }
 
   const creditRaw = await context.env.CREATOR_CREDITS.get(`creator:credit:${resolvedCreatorCreditId}`);
   if (!creditRaw) {
-    return new Response(
-      JSON.stringify({ ok: true, status: "none", creatorCreditId: resolvedCreatorCreditId, lifecycleId: lifecycleId || null, creatorIdentityId: authenticatedCreatorIdentityId }),
-      { status: 200, headers: baseHeaders(origin) }
+    if (resolvedByCoordinator) {
+      /**
+       * The KV projection is not (yet) readable — the documented
+       * eventual-consistency window. The identity coordinator already
+       * established that this credit EXISTS and is AVAILABLE, so the
+       * answer is "available"; reporting "none" here is exactly the
+       * downgrade that used to authorise a second $1.
+       */
+      return statusResponse(
+        origin,
+        "available",
+        resolvedCreatorCreditId,
+        null,
+        authenticatedCreatorIdentityId,
+        entitlementSummary,
+        unfinishedLifecycles,
+        coordinatorActiveAttempt
+      );
+    }
+    return statusResponse(
+      origin,
+      "none",
+      resolvedCreatorCreditId,
+      null,
+      authenticatedCreatorIdentityId,
+      entitlementSummary,
+      unfinishedLifecycles
     );
   }
 
@@ -356,15 +610,14 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     status = "none";
   }
 
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      status,
-      creatorCreditId: creditRecord.id,
-      lifecycleId: lifecycleId || creditRecord.lifecycleId || null,
-      creatorIdentityId: authenticatedCreatorIdentityId,
-    }),
-    { status: 200, headers: baseHeaders(origin) }
+  return statusResponse(
+    origin,
+    status,
+    creditRecord.id,
+    lifecycleId || creditRecord.lifecycleId || null,
+    authenticatedCreatorIdentityId,
+    entitlementSummary,
+    unfinishedLifecycles
   );
 }
 

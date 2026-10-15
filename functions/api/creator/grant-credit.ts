@@ -80,7 +80,8 @@ export async function onRequestOptions(context: EventContext<Record<string, unkn
 }
 
 export async function onRequestPost(context: EventContext<Record<string, unknown>, string, GrantCreditEnv>): Promise<Response> {
-  const { request, env } = context;
+  const { request } = context;
+  const env = context.env as unknown as GrantCreditEnv;
   const origin = request.headers.get("origin") ?? "";
   if (!isAllowedOrigin(origin)) {
     return fail(origin, 403, "INVALID_ORIGIN");
@@ -245,6 +246,94 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   }
 
   const quoteId = verifiedPayment.quoteId;
+
+  /* ================= IDENTITY COORDINATOR AUTHORIZATION =================
+
+  Before any credit is minted, the identity-scoped Durable Object
+  authorizes THIS grant: the payment must be tied to an attempt that
+  was atomically reserved when NO live right existed, and no live
+  right may exist now either. It mints the credit id here so a retry
+  converges on the SAME credit.
+
+  A verified payment whose attempt was never reserved (a payment
+  verified before this guard existed, or a direct verify->grant call)
+  is not stranded: the SAME atomic reservation is performed
+  retroactively here, still requiring the absence of a live right. */
+
+  const identityStub = () =>
+    coordinatorBinding.get(
+      coordinatorBinding.idFromName(`identity:${creatorIdentityId}`)
+    );
+
+  const postToIdentity = async (payload: Record<string, unknown>): Promise<Response> =>
+    identityStub().fetch(
+      new Request("https://aeterna-credit-coordinator.invalid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+
+  const readIdentity = async (payload: Record<string, unknown>) => {
+    const res = await postToIdentity(payload);
+    return {
+      httpOk: res.ok,
+      data: (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        creatorCreditId?: string;
+      } | null,
+    };
+  };
+
+  let authorization = await readIdentity({
+    op: "identity-authorize-grant",
+    creatorIdentityId,
+    quoteId,
+    paymentIntentId,
+    transactionId: recordedTransactionId,
+  });
+
+  if (!authorization.data?.ok && authorization.data?.error === "GRANT_NOT_RESERVED") {
+    // Retroactive atomic reservation for an attempt-less verified
+    // payment — identical guards (no live right, one active attempt).
+    const retro = await readIdentity({
+      op: "identity-reserve-attempt",
+      creatorIdentityId,
+      quoteId,
+      paymentIntentId,
+    });
+    if (retro.data?.ok) {
+      authorization = await readIdentity({
+        op: "identity-authorize-grant",
+        creatorIdentityId,
+        quoteId,
+        paymentIntentId,
+        transactionId: recordedTransactionId,
+      });
+    } else if (retro.data?.error) {
+      // The reservation itself was refused (a live right already
+      // exists, or an unfinished purchase is active): surface THAT
+      // reason instead of the stale "not reserved" one.
+      authorization = {
+        httpOk: retro.httpOk,
+        data: { ok: false, error: retro.data.error },
+      };
+    }
+  }
+
+  if (!authorization.data?.ok || typeof authorization.data.creatorCreditId !== "string") {
+    const error = authorization.data?.error ?? "PAYMENT_GRANT_NOT_RESERVED";
+    return fail(
+      origin,
+      error === "CREATOR_ALREADY_HAS_LIVE_RIGHT" ? 409 : 409,
+      error === "CREATOR_ALREADY_HAS_LIVE_RIGHT"
+        ? "CREATOR_ALREADY_HAS_LIVE_RIGHT"
+        : "PAYMENT_GRANT_NOT_RESERVED"
+    );
+  }
+  const authorizedCreditId = authorization.data.creatorCreditId;
+
   const coordinatorId = coordinatorBinding.idFromName(`${creatorIdentityId}:${quoteId}`);
   const coordinator = coordinatorBinding.get(coordinatorId);
 
@@ -261,6 +350,7 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
           paymentIntentId,
           transactionId: recordedTransactionId,
           evidenceId: verifiedPaymentId,
+          creatorCreditId: authorizedCreditId,
         }),
       })
     );
@@ -291,6 +381,32 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
       origin,
       grantResponse.status === 400 ? 400 : 409,
       grantData?.error || "CREDIT_GRANT_FAILED"
+    );
+  }
+
+  /* ================= IDENTITY INDEX RECORDING =================
+
+  The credit is now minted. Recording it in the identity index is what
+  keeps the purchase guard truthful for every later discovery. If this
+  call fails, the grant is NOT acknowledged: the verified payment stays
+  unconsumed and the client retry re-runs the SAME idempotent flow
+  (authorize -> grant -> note), so no money and no entitlement is
+  lost. */
+
+  const note = await readIdentity({
+    op: "identity-note-grant",
+    creatorIdentityId,
+    quoteId,
+    paymentIntentId,
+    creatorCreditId: grantData.creatorCreditId,
+  });
+  if (!note.data?.ok) {
+    return fail(
+      origin,
+      503,
+      note.data?.error === "CREATOR_ALREADY_HAS_LIVE_RIGHT"
+        ? "CREATOR_ALREADY_HAS_LIVE_RIGHT"
+        : "CREDIT_GRANT_RECORDING_FAILED"
     );
   }
 

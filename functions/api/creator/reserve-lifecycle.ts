@@ -15,6 +15,7 @@
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
+import { noteIdentityTransition } from "../../lib/identityIndexMaintenance";
 import { getTrustedTime } from "../time";
 import {
   CAPSULE_ID_REGEX,
@@ -250,6 +251,20 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
       }),
     })
   );
+
+  // Identity index maintenance (after the authoritative reserve).
+  const reserveOutcome = await response
+    .clone()
+    .json()
+    .catch(() => null) as { ok?: boolean; status?: string } | null;
+  if (reserveOutcome?.ok) {
+    await noteIdentityTransition(bindings, "reserve", {
+      creatorIdentityId,
+      creatorCreditId,
+      lifecycleId,
+      capsuleId,
+    });
+  }
 
   return response;
 }

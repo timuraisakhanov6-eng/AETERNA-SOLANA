@@ -1,0 +1,565 @@
+/**
+ * AETERNA — Strict signed-transaction broadcast
+ *
+ * POST /api/solana/broadcast
+ *
+ * The ONE write path to the Solana network for the canonical $1 USDC
+ * service payment. It accepts an ALREADY-SIGNED transaction and:
+ *
+ *   1. parses it strictly (legacy format only, exact length, bounded
+ *      counts) — anything else is rejected;
+ *   2. verifies the ed25519 signature cryptographically against the
+ *      transaction's own fee payer;
+ *   3. re-derives the expected Associated Token Accounts and validates
+ *      EVERY instruction (program, account metas, amount, mint,
+ *      destination) — not by string search, but from the compiled
+ *      message;
+ *   4. resolves the creator identity SERVER-SIDE from the payment intent
+ *      (the identity coordinator's intent index) and requires the
+ *      transaction's payer to be that identity's on-chain account;
+ *   5. proves the configured RPC is Solana mainnet-beta (genesis-hash
+ *      comparison against a server constant) and refuses on any
+ *      mismatch or unverifiable answer — before any state is written;
+ *   6. atomically binds the transaction signature to the payment attempt
+ *      in the identity coordinator, so two tabs/devices can never
+ *      broadcast two different transactions for one purchase;
+ *   7. only then forwards the SAME bytes to the configured RPC and
+ *      requires the returned signature to match the computed one.
+ *
+ * /api/solana/rpc stays READ-ONLY: no write method was added to its
+ * allowlist. The upstream RPC URL is never echoed, and neither the raw
+ * transaction nor its bytes are ever logged.
+ */
+
+import type { EventContext } from "@cloudflare/workers-types";
+import { rateLimit, getClientIp } from "../../lib/rateLimit";
+import { solanaJsonRpc } from "../../lib/solana/rpc";
+import { base58Decode, base64ToUint8Array } from "../../lib/solanaIdentityProof";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  SYSTEM_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  TransactionParseError,
+  base58Encode,
+  deriveAssociatedTokenAddress,
+  parseLegacyTransaction,
+  verifyTransactionSignature,
+} from "../../lib/solana/legacyTransaction";
+import { getCreatorIdentity } from "../../../src/lib/creator/creatorIdentityStore";
+
+export interface SolanaBroadcastEnv {
+  SOLANA_MAINNET_RPC_URL?: string;
+  CREATOR_IDENTITIES?: {
+    get(key: string): Promise<string | null>;
+  };
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(binding: { id: string }): {
+      fetch(request: Request): Promise<Response>;
+    };
+  };
+}
+
+/**
+ * Canonical payment parameters. These MUST match the client's payment
+ * builder (src/lib/wallet/solanaWallet.ts) and the server-side payment
+ * verification (/api/service-payment/verify). They are never taken from
+ * the request.
+ */
+const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOLANA_SERVICE_SETTLEMENT_ADDRESS =
+  "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu";
+const SERVICE_PAYMENT_ATOMIC = 1_000_000n;
+
+/**
+ * Canonical Solana MAINNET-BETA genesis hash.
+ *
+ * This is the value mainnet-beta validators pin with
+ * `--expected-genesis-hash`, i.e. a public protocol constant — NOT a
+ * secret and NOT a value taken from the request. It is the single
+ * network on which this payment is valid: the configured RPC
+ * (`SOLANA_MAINNET_RPC_URL`), the settlement address, the USDC mint and
+ * the `"solana-mainnet"` network recorded by the storage/service
+ * payment verification are all mainnet configuration.
+ *
+ * Used ONLY to prove the configured RPC really is mainnet-beta before
+ * anything is bound or broadcast. There is deliberately no fallback,
+ * no auto-switch and no client-supplied cluster: a mismatch or an
+ * undeterminable answer refuses the broadcast.
+ */
+const SOLANA_MAINNET_BETA_GENESIS_HASH =
+  "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+/** Solana packet limit. */
+const MAX_TRANSACTION_BYTES = 1232;
+/** SPL Token `Transfer` instruction tag. */
+const SPL_TOKEN_TRANSFER = 3;
+/**
+ * The canonical ATA-create instruction carries EMPTY data (verified
+ * against the installed @solana/spl-token builder, which passes
+ * `Buffer.alloc(0)`); the idempotent variant would carry `[1]` and is
+ * deliberately NOT accepted, because the payment builder never emits it.
+ */
+const ATA_CREATE_DATA_LENGTH = 0;
+
+const ALLOWED_ORIGINS = [
+  "https://aeternacapsule.com",
+  "https://www.aeternacapsule.com",
+  "https://aeterna-solana.pages.dev",
+];
+
+const PAGES_PREVIEW_REGEX = /^[a-z0-9-]+\.aeterna-capsule\.pages\.dev$/;
+
+function isAllowedOrigin(origin: string): boolean {
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && PAGES_PREVIEW_REGEX.test(url.hostname))
+      return true;
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+function baseHeaders(origin: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
+  if (isAllowedOrigin(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
+}
+
+function fail(origin: string, status: number, error: string): Response {
+  return new Response(JSON.stringify({ ok: false, error }), {
+    status,
+    headers: baseHeaders(origin),
+  });
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function readU64LE(data: Uint8Array, offset: number): bigint {
+  let value = 0n;
+  for (let i = 7; i >= 0; i--) {
+    value = (value << 8n) | BigInt(data[offset + i]!);
+  }
+  return value;
+}
+
+/**
+ * Fail-closed network guard.
+ *
+ * Proves the SERVER-configured RPC really is Solana mainnet-beta by
+ * comparing the chain's genesis hash with the canonical constant.
+ * Nothing is bound and nothing is broadcast until this returns `null`
+ * (verified).
+ *
+ * Refusal cases — all BEFORE any state change or network write:
+ *   - the probe could not be performed (RPC unreachable / erroring /
+ *     timing out)                    -> 503 RPC_NETWORK_UNAVAILABLE
+ *   - the answer was not a usable genesis hash
+ *                                     -> 502 RPC_NETWORK_UNDETERMINED
+ *   - the answer was a DIFFERENT chain -> 502 RPC_NETWORK_MISMATCH
+ *
+ * The expected hash is a server constant and is never read from the
+ * request, so a client cannot pick a cluster, an RPC URL or move the
+ * expected network. There is no auto-switch to another network.
+ */
+async function requireMainnetBeta(
+  rpcUrl: string,
+  origin: string
+): Promise<Response | null> {
+  let genesis: unknown;
+  try {
+    genesis = await solanaJsonRpc<unknown>(rpcUrl, "getGenesisHash", []);
+  } catch {
+    // A failed / timed-out / erroring probe is NOT proof of network.
+    return fail(origin, 503, "RPC_NETWORK_UNAVAILABLE");
+  }
+  if (typeof genesis !== "string" || genesis.length === 0) {
+    return fail(origin, 502, "RPC_NETWORK_UNDETERMINED");
+  }
+  if (genesis !== SOLANA_MAINNET_BETA_GENESIS_HASH) {
+    return fail(origin, 502, "RPC_NETWORK_MISMATCH");
+  }
+  return null;
+}
+
+export async function onRequestOptions(
+  context: EventContext<Record<string, unknown>, string, SolanaBroadcastEnv>
+): Promise<Response> {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!isAllowedOrigin(origin)) {
+    return new Response(null, { status: 403 });
+  }
+  return new Response(null, { status: 204, headers: baseHeaders(origin) });
+}
+
+export async function onRequestPost(
+  context: EventContext<Record<string, unknown>, string, SolanaBroadcastEnv>
+): Promise<Response> {
+  const origin = context.request.headers.get("origin") ?? "";
+  if (!isAllowedOrigin(origin)) {
+    return fail(origin, 403, "INVALID_ORIGIN");
+  }
+
+  const ip = getClientIp(context.request);
+  if (!ip || !rateLimit(ip)) {
+    return fail(origin, 429, "TOO_MANY_REQUESTS");
+  }
+
+  const contentType = context.request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return fail(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+  }
+
+  const env = context.env as SolanaBroadcastEnv;
+
+  // The RPC endpoint is server configuration ONLY — never request-derived.
+  const rpcUrl =
+    typeof env.SOLANA_MAINNET_RPC_URL === "string" && env.SOLANA_MAINNET_RPC_URL
+      ? env.SOLANA_MAINNET_RPC_URL
+      : "";
+  if (!rpcUrl) {
+    return fail(origin, 502, "RPC_UNAVAILABLE");
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await context.request.json()) as Record<string, unknown>;
+  } catch {
+    return fail(origin, 400, "INVALID_JSON");
+  }
+  if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
+    return fail(origin, 400, "INVALID_BODY");
+  }
+
+  const paymentIntentId =
+    typeof body["paymentIntentId"] === "string" ? body["paymentIntentId"].trim() : "";
+  const signedTransactionB64 =
+    typeof body["signedTransaction"] === "string" ? body["signedTransaction"].trim() : "";
+  /**
+   * Candidate creator identity. This is a HINT, never authority: the
+   * endpoint independently requires the transaction's payer account to
+   * be the on-chain account of exactly this identity (resolved
+   * server-side), and the signature to verify against that account — so
+   * a forged hint can only produce a rejection.
+   */
+  const creatorIdentityIdHint =
+    typeof body["creatorIdentityId"] === "string" ? body["creatorIdentityId"].trim() : "";
+
+  if (!paymentIntentId || !signedTransactionB64 || !creatorIdentityIdHint) {
+    return fail(origin, 400, "INVALID_FIELDS");
+  }
+  // Bound the encoded payload BEFORE decoding anything.
+  if (signedTransactionB64.length > 1700) {
+    return fail(origin, 400, "TRANSACTION_TOO_LARGE");
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToUint8Array(signedTransactionB64);
+  } catch {
+    return fail(origin, 400, "INVALID_TRANSACTION_ENCODING");
+  }
+  if (bytes.length === 0 || bytes.length > MAX_TRANSACTION_BYTES) {
+    return fail(origin, 400, "TRANSACTION_TOO_LARGE");
+  }
+
+  /* ================= SERVER-SIDE IDENTITY RESOLUTION ================= */
+
+  const coordinatorBinding = env.CREDIT_OP_COORDINATOR;
+  if (!coordinatorBinding) {
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+  }
+
+  const postToCoordinator = async (
+    name: string,
+    payload: Record<string, unknown>
+  ): Promise<{ httpStatus: number; data: Record<string, unknown> | null }> => {
+    const stub = coordinatorBinding.get(coordinatorBinding.idFromName(name));
+    const res = await stub.fetch(
+      new Request("https://aeterna-credit-coordinator.invalid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    return { httpStatus: res.status, data };
+  };
+
+  // The attempt state comes from the identity coordinator — the same
+  // authority that reserved the purchase — never from the request body.
+  let intentResolution: { httpStatus: number; data: Record<string, unknown> | null };
+  try {
+    intentResolution = await postToCoordinator(`identity:${creatorIdentityIdHint}`, {
+      op: "identity-resolve-intent",
+      creatorIdentityId: creatorIdentityIdHint,
+      paymentIntentId,
+    });
+  } catch {
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+  }
+  if (!intentResolution.data?.["ok"]) {
+    return fail(
+      origin,
+      intentResolution.httpStatus === 503 ? 503 : 409,
+      typeof intentResolution.data?.["error"] === "string"
+        ? (intentResolution.data["error"] as string)
+        : "INTENT_UNKNOWN"
+    );
+  }
+
+  const creatorIdentityId = String(intentResolution.data["creatorIdentityId"] ?? "");
+  const attemptState = String(intentResolution.data["state"] ?? "");
+  if (!creatorIdentityId) {
+    return fail(origin, 409, "INTENT_UNKNOWN");
+  }
+  if (attemptState === "granting" || attemptState === "fulfilled") {
+    // A payment is already recorded for this attempt: continue the
+    // existing verification/grant instead of broadcasting anything.
+    return fail(origin, 409, "INTENT_ALREADY_PAID");
+  }
+  if (attemptState !== "reserved") {
+    return fail(origin, 409, "INTENT_NOT_PAYABLE");
+  }
+
+  /* ================= STRICT TRANSACTION VALIDATION ================= */
+
+  let parsed;
+  try {
+    parsed = parseLegacyTransaction(bytes);
+  } catch (err) {
+    return fail(
+      origin,
+      400,
+      err instanceof TransactionParseError ? err.message : "INVALID_TRANSACTION"
+    );
+  }
+
+  // Exactly ONE signer: the paying wallet.
+  if (parsed.numRequiredSignatures !== 1 || parsed.numReadonlySigned !== 0) {
+    return fail(origin, 400, "UNEXPECTED_SIGNER_SET");
+  }
+  const payerBytes = parsed.accountKeys[0]!;
+  const payerAddress = base58Encode(payerBytes);
+
+  // The payer must be the paying account of the resolved creator identity.
+  const identity = await getCreatorIdentity(
+    env as unknown as Parameters<typeof getCreatorIdentity>[0],
+    "solana",
+    payerAddress
+  ).catch(() => null);
+  if (!identity || identity.id !== creatorIdentityId) {
+    return fail(origin, 403, "IDENTITY_MISMATCH");
+  }
+
+  // The signature must verify over the message, from the payer's own key.
+  const signatureOk = await verifyTransactionSignature(
+    payerBytes,
+    parsed.signatures[0]!,
+    parsed.messageBytes
+  );
+  if (!signatureOk) {
+    return fail(origin, 400, "INVALID_TRANSACTION_SIGNATURE");
+  }
+  const transactionSignature = base58Encode(parsed.signatures[0]!);
+
+  const programIdOf = (index: number) => base58Encode(parsed.accountKeys[index]!);
+  const mintBytes = base58Decode(SOLANA_USDC_MINT);
+  const settlementBytes = base58Decode(SOLANA_SERVICE_SETTLEMENT_ADDRESS);
+  const expectedSourceAta = await deriveAssociatedTokenAddress(payerBytes, mintBytes);
+  const expectedDestinationAta = await deriveAssociatedTokenAddress(
+    settlementBytes,
+    mintBytes
+  );
+  const tokenProgramBytes = base58Decode(TOKEN_PROGRAM_ID);
+  const ataProgramBytes = base58Decode(ASSOCIATED_TOKEN_PROGRAM_ID);
+  const systemProgramBytes = base58Decode(SYSTEM_PROGRAM_ID);
+
+  const instructions = parsed.instructions;
+  if (instructions.length < 1 || instructions.length > 2) {
+    return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT");
+  }
+
+  const transferInstruction = instructions[instructions.length - 1]!;
+  const ataCreateInstruction = instructions.length === 2 ? instructions[0]! : null;
+
+  // ---- optional canonical ATA-create (only when the settlement ATA is absent)
+  if (ataCreateInstruction) {
+    if (!sameBytes(parsed.accountKeys[ataCreateInstruction.programIdIndex]!, ataProgramBytes)) {
+      return fail(origin, 400, "UNEXPECTED_PROGRAM");
+    }
+    /**
+     * The canonical ATA-create carries SIX account metas — payer,
+     * associated token account, owner, mint, System Program and the SPL
+     * Token program — and EMPTY data (both verified against the
+     * installed @solana/spl-token builder, not assumed).
+     */
+    const accounts = ataCreateInstruction.accountIndexes;
+    if (
+      accounts.length !== 6 ||
+      ataCreateInstruction.data.length !== ATA_CREATE_DATA_LENGTH
+    ) {
+      return fail(origin, 400, "UNEXPECTED_ATA_INSTRUCTION");
+    }
+    const [payerIdx, ataIdx, ownerIdx, mintIdx, systemIdx, tokenProgramIdx] =
+      accounts as [number, number, number, number, number, number];
+    if (
+      !sameBytes(parsed.accountKeys[payerIdx]!, payerBytes) ||
+      !sameBytes(parsed.accountKeys[ataIdx]!, expectedDestinationAta) ||
+      !sameBytes(parsed.accountKeys[ownerIdx]!, settlementBytes) ||
+      !sameBytes(parsed.accountKeys[mintIdx]!, mintBytes) ||
+      !sameBytes(parsed.accountKeys[systemIdx]!, systemProgramBytes) ||
+      !sameBytes(parsed.accountKeys[tokenProgramIdx]!, tokenProgramBytes)
+    ) {
+      return fail(origin, 400, "UNEXPECTED_ATA_ACCOUNTS");
+    }
+  }
+
+  // ---- the canonical SPL Token `Transfer`
+  if (!sameBytes(parsed.accountKeys[transferInstruction.programIdIndex]!, tokenProgramBytes)) {
+    return fail(origin, 400, "UNEXPECTED_PROGRAM");
+  }
+  /**
+   * The canonical SPL Token `Transfer` has FOUR account metas, not
+   * three: the payment builder passes the payer as the single
+   * multi-signer, so the compiled instruction is
+   * [source, destination, authority, signer] with authority and signer
+   * being the SAME paying account (verified against the installed
+   * @solana/spl-token builder).
+   */
+  const transferAccounts = transferInstruction.accountIndexes;
+  if (transferAccounts.length !== 4 || transferInstruction.data.length !== 9) {
+    return fail(origin, 400, "UNEXPECTED_TRANSFER_INSTRUCTION");
+  }
+  if (transferInstruction.data[0] !== SPL_TOKEN_TRANSFER) {
+    return fail(origin, 400, "UNEXPECTED_TRANSFER_INSTRUCTION");
+  }
+  if (readU64LE(transferInstruction.data, 1) !== SERVICE_PAYMENT_ATOMIC) {
+    return fail(origin, 400, "UNEXPECTED_AMOUNT");
+  }
+  const [sourceIdx, destinationIdx, authorityIdx, signerIdx] = transferAccounts as [
+    number,
+    number,
+    number,
+    number
+  ];
+  if (
+    !sameBytes(parsed.accountKeys[sourceIdx]!, expectedSourceAta) ||
+    !sameBytes(parsed.accountKeys[destinationIdx]!, expectedDestinationAta) ||
+    !sameBytes(parsed.accountKeys[authorityIdx]!, payerBytes) ||
+    !sameBytes(parsed.accountKeys[signerIdx]!, payerBytes)
+  ) {
+    return fail(origin, 400, "UNEXPECTED_TRANSFER_ACCOUNTS");
+  }
+
+  // ---- no unknown accounts may ride along
+  const allowedKeys: string[] = [
+    payerAddress,
+    base58Encode(expectedSourceAta),
+    base58Encode(expectedDestinationAta),
+    TOKEN_PROGRAM_ID,
+  ];
+  if (ataCreateInstruction) {
+    allowedKeys.push(
+      SOLANA_SERVICE_SETTLEMENT_ADDRESS,
+      SOLANA_USDC_MINT,
+      SYSTEM_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+  }
+  const allowed = new Set(allowedKeys);
+  for (const key of parsed.accountKeys) {
+    if (!allowed.has(base58Encode(key))) {
+      return fail(origin, 400, "UNEXPECTED_ACCOUNT");
+    }
+  }
+
+  /* ================= NETWORK GUARD ================= */
+
+  /**
+   * Prove the configured RPC is mainnet-beta BEFORE any state is
+   * written. A wrong or unverifiable network must not even bind a
+   * signature — binding is a side effect, and a payment attempt must
+   * never be poisoned by a misconfigured endpoint.
+   */
+  const networkRefusal = await requireMainnetBeta(rpcUrl, origin);
+  if (networkRefusal) {
+    return networkRefusal;
+  }
+
+  /* ================= ATOMIC SIGNATURE BINDING ================= */
+
+  let binding: { httpStatus: number; data: Record<string, unknown> | null };
+  try {
+    binding = await postToCoordinator(`identity:${creatorIdentityId}`, {
+      op: "identity-bind-broadcast-signature",
+      creatorIdentityId,
+      paymentIntentId,
+      transactionId: transactionSignature,
+    });
+  } catch {
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+  }
+  if (!binding.data?.["ok"]) {
+    const error =
+      typeof binding.data?.["error"] === "string"
+        ? (binding.data["error"] as string)
+        : "BROADCAST_NOT_AUTHORIZED";
+    return fail(origin, binding.httpStatus === 503 ? 503 : 409, error);
+  }
+
+  /* ================= BROADCAST ================= */
+
+  try {
+    const result = await solanaJsonRpc<string>(rpcUrl, "sendTransaction", [
+      signedTransactionB64,
+      {
+        encoding: "base64",
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+        maxRetries: 3,
+      },
+    ]);
+
+    if (typeof result !== "string" || result.length === 0) {
+      return fail(origin, 502, "RPC_ERROR");
+    }
+    if (result !== transactionSignature) {
+      // The network accepted a DIFFERENT transaction than the one we
+      // validated and bound: fail closed, never continue with it.
+      return fail(origin, 502, "RPC_SIGNATURE_MISMATCH");
+    }
+
+    return new Response(JSON.stringify({ ok: true, signature: result }), {
+      status: 200,
+      headers: baseHeaders(origin),
+    });
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : "RPC_ERROR";
+    // A transaction that was already accepted is an idempotent success:
+    // the signature is the same and the binding already exists.
+    if (/already been processed|AlreadyProcessed/i.test(raw)) {
+      return new Response(JSON.stringify({ ok: true, signature: transactionSignature }), {
+        status: 200,
+        headers: baseHeaders(origin),
+      });
+    }
+    // Never surface the upstream endpoint itself.
+    const message = raw.includes(rpcUrl) ? "RPC_ERROR" : raw;
+    return fail(origin, 502, message || "RPC_ERROR");
+  }
+}

@@ -25,7 +25,12 @@
 
 import type { Transaction, VersionedTransaction } from "@solana/web3.js"
 
-import { sendSolanaUSDCPayment } from "@/lib/wallet/solanaWallet"
+import { signSolanaUSDCPayment } from "@/lib/wallet/solanaWallet"
+import {
+  clearPendingPaymentAttempt,
+  readPendingPaymentAttempt,
+  writePendingPaymentAttempt,
+} from "@/lib/payment/pendingPaymentAttempt"
 
 /* ───────────────── TYPES ───────────────── */
 
@@ -44,9 +49,30 @@ export type ServicePaymentPhase =
 
 export interface ServicePaymentQuote {
   paymentIntentId: string
+  /**
+   * Authoritative state of the purchase attempt this quote belongs to
+   * (from the identity coordinator, via create-quote):
+   *  - "ready_to_pay"            — a transfer may be sent for this intent
+   *  - "verified_pending_grant"  — a payment is already recorded; resume
+   *                                its verification/grant, never re-send
+   *  - "granted"                 — the credit exists; go to creation
+   */
+  paymentState?: "ready_to_pay" | "verified_pending_grant" | "granted"
   expectedAmount: number
   currency: string
   expiresAt: number
+  /**
+   * DISCOVERY: the transaction signature ALREADY bound to this payment
+   * intent, when the server has one (read-only read-through of the
+   * identity coordinator's attempt record, returned only to the
+   * identity that proved ownership of the attempt).
+   *
+   * A non-null value means the client must VERIFY THIS transaction and
+   * must NOT sign a new one — it is what lets a browser that lost its
+   * local pending record resume the SAME payment instead of sending a
+   * second transfer.
+   */
+  resumeTransactionId?: string | null
 }
 
 /**
@@ -65,15 +91,54 @@ export interface ServicePaymentIdentityProof {
 }
 
 /**
+ * One unfinished lifecycle reported by the AUTHORITATIVE enumeration
+ * (server-side `unfinishedLifecycles`). The identifiers come from the
+ * server's own CreditRecord — the client never has to supply them, and a
+ * lost localStorage hint can no longer hide an existing right.
+ */
+export interface ServicePaymentUnfinishedLifecycle {
+  creatorCreditId: string;
+  lifecycleId: string | null;
+  capsuleId: string | null;
+}
+
+/**
  * PATCH-2J: server answer of the credit-status discovery performed with
  * the SAME proof that (may) later consume verify-proof. Carries only the
  * entitlement facts — never the raw signature/proof.
+ *
+ * D1 remediation: the authoritative server states are NO LONGER collapsed
+ * into one bucket. `"consuming"` means the creator already owns a right
+ * that is bound to an unfinished lifecycle — it must NEVER be treated as
+ * "no right" (that is what invited a duplicate $1). `summary` /
+ * `unfinishedLifecycles` are the authoritative enumeration result; an
+ * unreadable/unknown server answer is NOT represented here at all —
+ * `discoverCreditStatus` throws, so the caller fails closed rather than
+ * paying.
  */
 export interface ServicePaymentDiscoveryResult {
-  status: "available" | "none"
+  status: "available" | "consuming" | "none"
   creatorCreditId: string | null
   creatorIdentityId: string | null
   account: string | null
+  /**
+   * Authoritative summary of every right owned by the verified identity.
+   * Optional/additive: a binding that does not report one (an
+   * owner-scoped lookup) leaves it absent.
+   */
+  summary?: {
+    availableCount: number;
+    consumingCount: number;
+    consumedCount: number;
+    total: number;
+    /** True only when the server could vouch for a COMPLETE enumeration. */
+    enumerationComplete: boolean;
+  } | null
+  /**
+   * Authoritative unfinished lifecycles (empty array when there are none,
+   * absent when the binding does not report one). Optional/additive.
+   */
+  unfinishedLifecycles?: ReadonlyArray<ServicePaymentUnfinishedLifecycle> | null
 }
 
 export interface ServicePaymentState {
@@ -102,6 +167,13 @@ export interface ServicePaymentWalletApi {
   signAndSendTransaction: (
     transaction: Transaction | VersionedTransaction
   ) => Promise<{ signature: string }>
+  /**
+   * Signs WITHOUT sending. Required for the two-phase payment: the
+   * signature must exist before the network does.
+   */
+  signTransaction?: (
+    transaction: Transaction | VersionedTransaction
+  ) => Promise<Transaction | VersionedTransaction>
 }
 
 export interface ServicePaymentCreditResult {
@@ -162,6 +234,14 @@ export interface ServicePaymentController {
   connectWallet: () => Promise<void>
   verifyIdentity: () => Promise<void>
   confirmAndVerify: () => Promise<void>
+  /**
+   * Fresh authoritative entitlement re-check for the pre-payment decision
+   * (D1/KV lag). Re-signs ONE challenge, then repeats the READ-ONLY
+   * enumeration on a bounded schedule. Creates no quote, no payment and no
+   * entitlement; throws on any unreadable/unknown answer so the caller
+   * fails closed instead of paying.
+   */
+  recheckEntitlement: () => Promise<ServicePaymentDiscoveryResult>
   /** Full reset — mirrors the modal's close effect. */
   reset: () => void
 }
@@ -241,6 +321,48 @@ async function verifyProof(
  * server-side identity, no credit can exist for this account — the
  * answer is a deterministic "none" and the unconsumed proof proceeds to
  * verify-proof.
+ *
+ * D1 remediation — STRICT status mapping:
+ *  - "available"  → available (an unused right exists)
+ *  - "none"       → none (the server authoritatively reports no usable
+ *                   right; CONSUMED is deliberately reported as "none" by
+ *                   the endpoint and means the same thing here: nothing
+ *                   usable remains)
+ *  - "consuming"  → consuming (a right bound to an unfinished lifecycle —
+ *                   NEVER an invitation to pay again)
+ *  - anything else (missing/unknown status, malformed body) → THROW. An
+ *    unreadable answer must never be interpreted as "no right", because
+ *    that is exactly what would enable a duplicate $1.
+ */
+/**
+ * PATCH-2J: authenticated credit-status discovery with an ALREADY-SIGNED
+ * proof (same challengeId/network/account/signature that verify-proof
+ * will consume afterwards). The endpoint is read-only and does not
+ * consume the challenge, so the proof stays alive for verify-proof AND
+ * for the bounded pre-payment re-check.
+ *
+ * The endpoint performs an AUTHORITATIVE enumeration of every right owned
+ * by the server-verified creator identity (no client-supplied credit id or
+ * lifecycle id is needed or trusted), so AVAILABLE and CONSUMING are
+ * detected even with an empty localStorage or a different device.
+ *
+ * A brand-new creator has no server-side identity yet
+ * (CREATOR_IDENTITY_NOT_FOUND): because Creator Credits are bound to a
+ * server-side identity, no credit can exist for this account — the
+ * answer is a deterministic "none" and the unconsumed proof proceeds to
+ * verify-proof.
+ *
+ * D1 remediation — STRICT status mapping:
+ *  - "available"  → available (an unused right exists)
+ *  - "none"       → none (the server authoritatively reports no usable
+ *                   right; CONSUMED is deliberately reported as "none" by
+ *                   the endpoint and means the same thing here: nothing
+ *                   usable remains)
+ *  - "consuming"  → consuming (a right bound to an unfinished lifecycle —
+ *                   NEVER an invitation to pay again)
+ *  - anything else (missing/unknown status, malformed body) → THROW. An
+ *    unreadable answer must never be interpreted as "no right", because
+ *    that is exactly what would enable a duplicate $1.
  */
 async function discoverCreditStatus(
   proof: ServicePaymentIdentityProof,
@@ -262,6 +384,8 @@ async function discoverCreditStatus(
     status?: unknown
     creatorCreditId?: unknown
     creatorIdentityId?: unknown
+    summary?: unknown
+    unfinishedLifecycles?: unknown
     error?: string
   } | null
 
@@ -272,20 +396,161 @@ async function discoverCreditStatus(
         creatorCreditId: null,
         creatorIdentityId: null,
         account: proof.account,
+        summary: null,
+        unfinishedLifecycles: null,
       }
     }
     throw new Error(data?.error || "CREDIT_DISCOVERY_FAILED")
   }
 
-  const available =
-    data.status === "available" && typeof data.creatorCreditId === "string"
+  const rawStatus = typeof data.status === "string" ? data.status : ""
 
-  return {
-    status: available ? "available" : "none",
-    creatorCreditId: available ? (data.creatorCreditId as string) : null,
-    creatorIdentityId:
-      typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null,
-    account: proof.account,
+  // Authoritative enumeration result (null when the binding does not report
+  // one, e.g. an owner-scoped lookup).
+  const summary =
+    data.summary && typeof data.summary === "object"
+      ? (data.summary as Record<string, unknown>)
+      : null
+  const normalizedSummary =
+    summary &&
+    typeof summary["availableCount"] === "number" &&
+    typeof summary["consumingCount"] === "number" &&
+    typeof summary["consumedCount"] === "number" &&
+    typeof summary["total"] === "number"
+      ? {
+          availableCount: summary["availableCount"] as number,
+          consumingCount: summary["consumingCount"] as number,
+          consumedCount: summary["consumedCount"] as number,
+          total: summary["total"] as number,
+          enumerationComplete: summary["enumerationComplete"] === true,
+        }
+      : null
+
+  const rawUnfinished = Array.isArray(data.unfinishedLifecycles)
+    ? data.unfinishedLifecycles
+    : null
+  const unfinishedLifecycles = rawUnfinished
+    ? rawUnfinished
+        .map((entry): ServicePaymentUnfinishedLifecycle | null => {
+          if (!entry || typeof entry !== "object") return null
+          const record = entry as Record<string, unknown>
+          if (typeof record["creatorCreditId"] !== "string") return null
+          const lifecycleId = record["lifecycleId"]
+          const capsuleId = record["capsuleId"]
+          return {
+            creatorCreditId: record["creatorCreditId"] as string,
+            lifecycleId: typeof lifecycleId === "string" ? lifecycleId : null,
+            capsuleId: typeof capsuleId === "string" ? capsuleId : null,
+          }
+        })
+        .filter(
+          (entry): entry is ServicePaymentUnfinishedLifecycle => entry !== null
+        )
+    : null
+
+  if (rawStatus === "consuming") {
+    return {
+      status: "consuming",
+      creatorCreditId:
+        typeof data.creatorCreditId === "string" ? data.creatorCreditId : null,
+      creatorIdentityId:
+        typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null,
+      account: proof.account,
+      summary: normalizedSummary,
+      unfinishedLifecycles,
+    }
+  }
+
+  if (rawStatus === "none") {
+    return {
+      status: "none",
+      creatorCreditId: null,
+      creatorIdentityId:
+        typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null,
+      account: proof.account,
+      summary: normalizedSummary,
+      unfinishedLifecycles,
+    }
+  }
+
+  if (rawStatus === "available" && typeof data.creatorCreditId === "string") {
+    return {
+      status: "available",
+      creatorCreditId: data.creatorCreditId,
+      creatorIdentityId:
+        typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null,
+      account: proof.account,
+      summary: normalizedSummary,
+      unfinishedLifecycles,
+    }
+  }
+
+  // Fail closed: an answer this controller cannot interpret must never be
+  // downgraded to "no right" (that would enable a duplicate $1).
+  throw new Error("CREDIT_DISCOVERY_UNREADABLE_STATUS")
+}
+
+/* ───────────────── PRE-PAYMENT ENTITLEMENT RE-CHECK ───────────────── */
+
+/**
+ * Bounded re-check of the creator's entitlement BEFORE any money moves.
+ *
+ * WHY: KV is eventually consistent (documented audit hazard). A right that
+ * was granted seconds ago can be invisible to a single enumeration, and a
+ * single "no rights" answer is NOT sufficient authority for a new $1.
+ *
+ * HOW: read-only repeats of the SAME authoritative enumeration with the
+ * same already-signed proof (credit-status never consumes the challenge,
+ * so one signature covers the whole window). NO quote, NO payment, NO
+ * grant, NO entitlement is created here — those happen only after this
+ * check finishes.
+ *
+ * LIMIT (explicit): this narrows, and does not eliminate, the window. A
+ * KV lag longer than the window, or a listing that never converges, can
+ * still yield an unconfirmed absence — which the caller must NOT treat as
+ * authority to pay.
+ */
+const RECHECK_WINDOW_MS = 60_000;
+const RECHECK_DELAYS_MS = [2_000, 3_000, 5_000, 8_000, 12_000, 15_000, 15_000];
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+async function recheckEntitlementWithProof(
+  proof: ServicePaymentIdentityProof,
+  fetchImpl: typeof fetch,
+  isCancelled?: (() => boolean) | undefined
+): Promise<ServicePaymentDiscoveryResult> {
+  const deadline = Date.now() + RECHECK_WINDOW_MS;
+  let attempt = 0;
+
+  for (;;) {
+    // Throws on any unreadable / unknown / failed answer — a caller can
+    // never mistake an error for "no rights".
+    const result = await discoverCreditStatus(proof, fetchImpl);
+
+    if (result.status !== "none") return result; // available | consuming
+
+    // A COMPLETE enumeration with zero available and zero consuming rights
+    // is the only answer that authorises continuing to payment.
+    if (result.summary?.enumerationComplete === true) return result;
+
+    if (Date.now() >= deadline) {
+      // Unconfirmed absence after the bounded window: report it as "none"
+      // WITHOUT completeness, so the caller refuses to pay.
+      return result;
+    }
+
+    const delay = RECHECK_DELAYS_MS[Math.min(attempt, RECHECK_DELAYS_MS.length - 1)];
+    attempt += 1;
+    if (!delay || delay <= 0) return result;
+
+    await sleep(delay);
+    if (isCancelled?.()) {
+      throw new Error("ENTITLEMENT_RECHECK_CANCELLED");
+    }
   }
 }
 
@@ -325,6 +590,65 @@ type ServicePaymentVerificationPollResult =
  *
  * The window is finite: expiry yields a recoverable error, never a payment.
  */
+/**
+ * Classifies a wallet failure as a DEFINITE pre-send rejection.
+ *
+ * `signAndSendTransaction` both signs AND sends, so in general a thrown
+ * error does not prove that no transaction was submitted. A user
+ * rejection, however, is the wallet refusing to sign at all — the one
+ * failure the client can safely treat as "nothing was sent" and retry.
+ * Every OTHER failure is treated as an UNKNOWN OUTCOME: a transaction
+ * may exist on-chain, so the client must not send another one.
+ */
+function isDefiniteWalletRejection(err: unknown): boolean {
+  if (!err) return false
+  const code = (err as { code?: unknown }).code
+  if (code === 4001) return true
+  const message =
+    err instanceof Error ? err.message : typeof err === "string" ? err : ""
+  return /user rejected|rejected by user|user denied|declined by user|user cancelled|user canceled|request rejected/i.test(
+    message
+  )
+}
+
+/**
+ * Binds + broadcasts a signed payment through the validated endpoint.
+ * Never throws: the caller keeps the pending record on any failure.
+ */
+async function broadcastSignedPayment(
+  fetchImpl: typeof fetch,
+  input: {
+    paymentIntentId: string
+    creatorIdentityId: string
+    signedTransaction: string
+  }
+): Promise<{ ok: true; signature: string } | { ok: false; error: string }> {
+  try {
+    const res = await fetchImpl("/api/solana/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    })
+    const data = (await res.json().catch(() => null)) as {
+      ok?: boolean
+      signature?: string
+      error?: string
+    } | null
+    if (!res.ok || !data?.ok || typeof data.signature !== "string") {
+      return {
+        ok: false,
+        error:
+          typeof data?.error === "string" && data.error
+            ? data.error
+            : "PAYMENT_BROADCAST_FAILED",
+      }
+    }
+    return { ok: true, signature: data.signature }
+  } catch {
+    return { ok: false, error: "PAYMENT_BROADCAST_FAILED" }
+  }
+}
+
 async function pollServicePaymentVerification(
   fetchImpl: typeof fetch,
   body: ServicePaymentVerificationPollBody
@@ -449,6 +773,9 @@ export function createServicePaymentController(
   }
 
   const resetVerificationState = () => {
+    // The purchase-guard proof is account-bound too: a disconnect or an
+    // account switch must not leave it reusable.
+    retainedPurchaseProof = null
     patch({
       verifiedCreatorIdentityId: null,
       verifiedCreatorAccount: null,
@@ -464,6 +791,7 @@ export function createServicePaymentController(
   }
 
   const reset = () => {
+    retainedPurchaseProof = null
     patch({
       phase: "idle",
       quote: null,
@@ -476,6 +804,39 @@ export function createServicePaymentController(
       discovery: null,
     })
   }
+
+  /**
+   * Fresh, AUTHORITATIVE entitlement re-check (D1 / KV lag).
+   *
+   * Signs exactly ONE new challenge and then repeats the read-only
+   * enumeration with the same proof — one wallet prompt per explicit pay
+   * attempt, never one per retry. Creates no quote, no payment and no
+   * entitlement.
+   */
+  const recheckEntitlement = async (): Promise<ServicePaymentDiscoveryResult> => {
+    const currentWallet = wallet;
+    const account = currentWallet?.account ?? null;
+    if (!currentWallet?.connected || !account) {
+      throw new Error("WALLET_ACCOUNT_UNAVAILABLE");
+    }
+
+    const challenge = await issueChallenge(account, fetchImpl);
+    const encoded =
+      typeof challenge.message === "string"
+        ? new TextEncoder().encode(challenge.message)
+        : challenge.message;
+
+    const { signature } = await currentWallet.signMessage(encoded);
+    const proof: ServicePaymentIdentityProof = {
+      challengeId: challenge.challengeId,
+      network: "solana",
+      account,
+      signature: btoa(String.fromCharCode(...new Uint8Array(signature))),
+      expiresAt: challenge.expiresAt,
+    };
+
+    return recheckEntitlementWithProof(proof, fetchImpl, deps.isCancelled);
+  };
 
   const syncWallet = (next: ServicePaymentWalletApi) => {
     wallet = next
@@ -495,34 +856,173 @@ export function createServicePaymentController(
 
   /* ───────────────── CANONICAL FLOW ───────────────── */
 
+  /**
+   * The identity proof the purchase guard is currently using.
+   *
+   * RETAINED in a closure (deliberately NOT in `state`) so an
+   * authoritative re-read before a payment can reuse it: `create-quote`
+   * VERIFIES the challenge but does not consume it (only verify-proof
+   * consumes), so re-asking costs the creator NO extra wallet prompt
+   * while the challenge is alive. Dropped on disconnect / account
+   * switch, exactly like `state.identityProof`.
+   */
+  let retainedPurchaseProof: ServicePaymentIdentityProof | null = null
+
+  /**
+   * A LIVE identity proof for the purchase guard.
+   *
+   * Deliberately NOT reused from `state.identityProof`: verify-proof
+   * consumes (deletes) the server-side challenge, so that retained proof
+   * may already be dead. The purchase guard keeps its OWN challenge,
+   * which create-quote never consumes — so the pre-payment authoritative
+   * re-read can reuse it without a second wallet prompt.
+   */
+  const buildPurchaseProof = async (): Promise<{
+    challengeId: string
+    network: string
+    account: string
+    signature: string
+  }> => {
+    const currentAccount = wallet?.account ?? null
+    if (!currentAccount) {
+      throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
+    }
+
+    const retained = retainedPurchaseProof
+    if (
+      retained &&
+      retained.account === currentAccount &&
+      retained.expiresAt > Date.now()
+    ) {
+      return {
+        challengeId: retained.challengeId,
+        network: retained.network,
+        account: retained.account,
+        signature: retained.signature,
+      }
+    }
+
+    const { challengeId, message, expiresAt } = await issueChallenge(currentAccount, fetchImpl)
+    const encoded =
+      typeof message === "string" ? new TextEncoder().encode(message) : message
+    if (!wallet?.account) {
+      throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
+    }
+    const { signature } = await wallet.signMessage(encoded)
+    if (!wallet?.account) {
+      throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
+    }
+
+    const proof: ServicePaymentIdentityProof = {
+      challengeId,
+      network: "solana",
+      account: currentAccount,
+      signature: btoa(String.fromCharCode(...new Uint8Array(signature))),
+      expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 600_000,
+    }
+    retainedPurchaseProof = proof
+
+    // The wire shape is unchanged: the extra expiresAt stays local.
+    return {
+      challengeId: proof.challengeId,
+      network: proof.network,
+      account: proof.account,
+      signature: proof.signature,
+    }
+  }
+
+  /**
+   * Calls the purchase-guard endpoint with a proof and parses its
+   * AUTHORITATIVE answer. Throws on refusal and patches NO state, so the
+   * same call serves both the initial quote and the pre-payment re-read.
+   *
+   * `continued: true` means the server resumed an EXISTING purchase
+   * attempt (this creator already had one in flight) and returned THAT
+   * intent's quote — a second, independent purchase intent is never
+   * created.
+   */
+  const fetchQuoteState = async (proof: {
+    challengeId: string
+    network: string
+    account: string
+    signature: string
+  }): Promise<ServicePaymentQuote> => {
+    const paymentIntentId = crypto.randomUUID()
+
+    /**
+     * The quote endpoint requires a cryptographically proven creator
+     * identity AND atomically reserves the purchase attempt against the
+     * identity-scoped Durable Object before minting any payment intent.
+     * A live right or an unfinished purchase makes it answer with the
+     * existing state instead of a new quote.
+     */
+    const res = await fetchImpl("/api/service-payment/create-quote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paymentIntentId, ...proof }),
+    })
+
+    const data = await res.json()
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || "QUOTE_REQUEST_FAILED")
+    }
+
+    return {
+      paymentIntentId: typeof data.paymentIntentId === "string" ? data.paymentIntentId : paymentIntentId,
+      expectedAmount: Number(data.expectedAmount ?? 1),
+      currency: typeof data.currency === "string" ? data.currency : "",
+      expiresAt: Number(data.expiresAt),
+      paymentState:
+        data.paymentState === "granted" ||
+        data.paymentState === "verified_pending_grant"
+          ? data.paymentState
+          : "ready_to_pay",
+      // Server-side discovery of an already-bound signature for this
+      // SAME intent (read-only; only ever the caller's own attempt).
+      resumeTransactionId:
+        typeof data.resumeTransactionId === "string" && data.resumeTransactionId
+          ? data.resumeTransactionId
+          : null,
+    }
+  }
+
   const requestQuote = async () => {
     patch({ phase: "quoting", error: null, isProcessing: true })
 
     try {
-      const paymentIntentId = crypto.randomUUID()
-
-      const res = await fetchImpl("/api/service-payment/create-quote", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paymentIntentId }),
-      })
-
-      const data = await res.json()
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "QUOTE_REQUEST_FAILED")
-      }
-
-      const q: ServicePaymentQuote = {
-        paymentIntentId: typeof data.paymentIntentId === "string" ? data.paymentIntentId : paymentIntentId,
-        expectedAmount: Number(data.expectedAmount ?? 1),
-        currency: typeof data.currency === "string" ? data.currency : "",
-        expiresAt: Number(data.expiresAt),
-      }
+      const proof = await buildPurchaseProof()
+      const q = await fetchQuoteState(proof)
       patch({ quote: q, phase: "quote_ready", isProcessing: false })
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "QUOTE_REQUEST_FAILED"
       patch({ error: message, phase: "error", isProcessing: false })
+    }
+  }
+
+  /**
+   * AUTHORITATIVE RE-READ of this creator identity's purchase attempt,
+   * performed BEFORE any new transaction signature.
+   *
+   * The in-memory quote is only a SNAPSHOT and must never be treated as
+   * proof that no signature exists — another tab or device can have
+   * bound one (or completed the purchase) since it was fetched. This
+   * re-asks the EXISTING proof-backed purchase-guard endpoint, which
+   * resolves the identity server-side and returns the CURRENT attempt
+   * state plus any already-bound transaction signature.
+   *
+   * Never throws: an unreadable / refused answer is `ok: false`, so the
+   * caller fails closed instead of signing.
+   */
+  const recheckAttemptState = async (): Promise<
+    { ok: true; quote: ServicePaymentQuote } | { ok: false }
+  > => {
+    try {
+      const proof = await buildPurchaseProof()
+      const quote = await fetchQuoteState(proof)
+      return { ok: true, quote }
+    } catch {
+      return { ok: false }
     }
   }
 
@@ -572,7 +1072,13 @@ export function createServicePaymentController(
       // PATCH-2J: credit-status discovery runs BEFORE verify-proof —
       // verify-proof consumes (deletes) the server-side challenge, so
       // discovery can only reuse the same proof while it is alive.
+      //
+      // The endpoint performs an AUTHORITATIVE enumeration of every right
+      // the verified creator identity owns, so CONSUMING is detected from
+      // server data alone — no localStorage hint, no client-supplied
+      // lifecycle id, same-device assumption.
       const discovery = await discoverCreditStatus(proof, fetchImpl)
+
       patch({ discovery })
       callbacks.onCreditDiscovered?.(discovery)
 
@@ -581,6 +1087,14 @@ export function createServicePaymentController(
         // paid workspace with NO verify-proof, NO payment, NO grant and
         // NO reserve. The flow is complete — the proof is dropped.
         patch({ phase: "available", isProcessing: false, identityProof: null })
+        return
+      }
+
+      if (discovery.status === "consuming") {
+        // A right already exists and is bound to an unfinished lifecycle:
+        // STOP here. No verify-proof consumption, no quote, no payment —
+        // the gate offers recovery instead.
+        patch({ phase: "quote_ready", isProcessing: false, identityProof: null })
         return
       }
 
@@ -737,6 +1251,126 @@ export function createServicePaymentController(
       return
     }
 
+    const quote = state.quote
+
+    /**
+     * QUOTE EXPIRY GUARD (client side).
+     *
+     * A payment must never be sent against an expired quote: the server
+     * rejects an expired quote at verification time, so such a transfer
+     * could be spent and never credited. The caller re-requests the
+     * SAME payment intent (renewed window) instead.
+     */
+    if (quote.expiresAt <= Date.now()) {
+      patch({
+        error: "QUOTE_EXPIRED_REFRESH_REQUIRED",
+        phase: "error",
+        isProcessing: false,
+      })
+      return
+    }
+
+    /**
+     * PENDING-ATTEMPT RESOLUTION.
+     *
+     * If THIS intent already produced a transaction signature, that SAME
+     * transaction is verified — a second transfer is never sent. If the
+     * outcome of the previous send is UNKNOWN (no signature, and the
+     * failure did not provably happen before sending), no transfer is
+     * sent at all: a transaction may exist on-chain.
+     */
+    const pending = readPendingPaymentAttempt()
+    const pendingForThisIntent =
+      pending && pending.paymentIntentId === quote.paymentIntentId ? pending : null
+    let resumableTransactionId: string | null = null
+    if (pendingForThisIntent) {
+      if (pendingForThisIntent.transactionId) {
+        resumableTransactionId = pendingForThisIntent.transactionId
+      } else if (pendingForThisIntent.outcome === "unknown") {
+        patch({
+          error: "PAYMENT_OUTCOME_UNKNOWN",
+          phase: "error",
+          isProcessing: false,
+        })
+        return
+      }
+    } else if (quote.resumeTransactionId) {
+      /**
+       * LOCAL POINTER LOST, SERVER SIGNATURE KNOWN.
+       *
+       * The local pending record for this intent is gone (cleared
+       * storage, a different profile), but the server — which resolved
+       * the attempt from the cryptographic identity proof and its OWN
+       * record, never from anything the client claimed — already has a
+       * signature bound to it. That signature is all verification
+       * needs, so THIS transaction is resumed and no new transaction is
+       * ever signed.
+       */
+      resumableTransactionId = quote.resumeTransactionId
+    }
+
+    /**
+     * AUTHORITATIVE RE-READ BEFORE ANY NEW SIGNATURE.
+     *
+     * Everything above reads the in-memory quote and the local pointer —
+     * both are SNAPSHOTS. A second tab or device can have bound a
+     * signature (or completed the purchase) since they were taken, so
+     * before a new transaction is signed the CURRENT attempt state is
+     * re-read from the existing proof-backed endpoint. A signature bound
+     * in another tab is then resumed instead of signing a doomed
+     * transaction; an already-recorded payment continues the existing
+     * grant/access flow; anything unreadable fails closed.
+     */
+    if (!resumableTransactionId) {
+      patch({ isProcessing: true })
+      const authoritative = await recheckAttemptState()
+      if (!authoritative.ok) {
+        // Unknown / unreadable state is NOT permission to sign.
+        patch({
+          error: "PAYMENT_STATE_UNVERIFIED",
+          phase: "error",
+          isProcessing: false,
+        })
+        return
+      }
+      const current = authoritative.quote
+      if (current.paymentIntentId !== quote.paymentIntentId) {
+        // The server no longer associates this purchase with the intent
+        // this client holds: never sign against a mismatched attempt.
+        patch({
+          error: "PAYMENT_INTENT_CHANGED",
+          phase: "error",
+          isProcessing: false,
+        })
+        return
+      }
+      if (current.resumeTransactionId) {
+        // Bound by another tab/device: verify THAT transaction, never
+        // sign a new one.
+        resumableTransactionId = current.resumeTransactionId
+      } else if (current.paymentState === "granted") {
+        // The purchase already produced a Creator Credit: continue the
+        // existing access flow (re-discovery), no signature, no transfer.
+        patch({
+          error: "PAYMENT_ALREADY_GRANTED_REFRESH_REQUIRED",
+          phase: "error",
+          isProcessing: false,
+        })
+        return
+      } else if (current.paymentState === "verified_pending_grant") {
+        // A verified payment is already recorded and its grant is
+        // unfinished: fail closed — nothing new is signed or sent.
+        patch({
+          error: "PAYMENT_ALREADY_RECORDED_CHECK_REQUIRED",
+          phase: "error",
+          isProcessing: false,
+        })
+        return
+      }
+      // Otherwise the server confirmed `ready_to_pay` with NO bound
+      // signature — the only state in which a new signature is allowed.
+    }
+
     patch({ phase: "verifying", error: null, isProcessing: true })
 
     try {
@@ -745,20 +1379,136 @@ export function createServicePaymentController(
         throw new Error("Wallet account is required for payment.")
       }
 
-      const txHash = await sendSolanaUSDCPayment({
-        destination: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
-        amountAtomic: "1000000",
-        publicKey: paymentWallet.account,
-        signAndSendTransaction: paymentWallet.signAndSendTransaction,
-      })
+      let txHash: string
+      if (resumableTransactionId) {
+        // Resume the EXISTING transaction: verify it, never sign or send
+        // a new one.
+        txHash = resumableTransactionId
+      } else {
+        /**
+         * TWO-PHASE PAYMENT: sign locally → persist → bind + broadcast.
+         *
+         * The wallet SIGNS WITHOUT SENDING, so the transaction signature
+         * is known BEFORE the network can see the transaction. It is
+         * persisted first, then bound atomically to this payment intent
+         * by the validated broadcast endpoint. A lost response can
+         * therefore only ever resume the SAME transaction.
+         */
+        const signTransaction = paymentWallet.signTransaction
+        if (typeof signTransaction !== "function") {
+          patch({
+            error: "WALLET_SIGN_TRANSACTION_UNAVAILABLE",
+            phase: "error",
+            isProcessing: false,
+          })
+          return
+        }
 
-      if (!txHash) {
-        throw new Error("No transaction signature from wallet.")
-      }
+        let signed: {
+          signature: string
+          signedTransactionBase64: string
+          blockhash: string
+          lastValidBlockHeight: number | null
+        }
+        try {
+          signed = await signSolanaUSDCPayment({
+            destination: "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu",
+            amountAtomic: "1000000",
+            publicKey: paymentWallet.account,
+            signTransaction,
+          })
+        } catch (signErr) {
+          if (isDefiniteWalletRejection(signErr)) {
+            // The wallet refused to sign: nothing was signed, nothing was
+            // sent, so the same intent may safely be retried.
+            clearPendingPaymentAttempt()
+            patch({
+              error: "PAYMENT_REJECTED_BY_WALLET",
+              phase: "error",
+              isProcessing: false,
+            })
+            return
+          }
+          // The signing step failed in a way that is not a user
+          // rejection: no transaction exists (signing happens before any
+          // network call), but the state is still recorded so nothing is
+          // silently retried.
+          writePendingPaymentAttempt({
+            version: 2,
+            paymentIntentId: quote.paymentIntentId,
+            creatorIdentityId: effectiveCreatorIdentityId,
+            network: "solana",
+            account: currentAccount,
+            transactionId: null,
+            signedTransaction: null,
+            blockhash: null,
+            lastValidBlockHeight: null,
+            outcome: "unknown",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          })
+          patch({
+            error: "PAYMENT_SIGNING_FAILED",
+            phase: "error",
+            isProcessing: false,
+          })
+          return
+        }
 
-      const quote = state.quote
-      if (!quote) {
-        throw new Error("QUOTE_REQUEST_FAILED")
+        /**
+         * Persist BEFORE any network call. If the record cannot be
+         * written, the payment must NOT be broadcast: a lost response
+         * would then be unrecoverable.
+         */
+        const persisted = writePendingPaymentAttempt({
+          version: 2,
+          paymentIntentId: quote.paymentIntentId,
+          creatorIdentityId: effectiveCreatorIdentityId,
+          network: "solana",
+          account: currentAccount,
+          transactionId: signed.signature,
+          signedTransaction: signed.signedTransactionBase64,
+          blockhash: signed.blockhash,
+          lastValidBlockHeight: signed.lastValidBlockHeight,
+          outcome: "submitted",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })
+        if (!persisted) {
+          patch({
+            error: "PAYMENT_ATTEMPT_NOT_PERSISTED",
+            phase: "error",
+            isProcessing: false,
+          })
+          return
+        }
+
+        // Bind the signature to the intent atomically, then broadcast the
+        // SAME bytes through the strict endpoint.
+        const broadcast = await broadcastSignedPayment(fetchImpl, {
+          paymentIntentId: quote.paymentIntentId,
+          creatorIdentityId: effectiveCreatorIdentityId,
+          signedTransaction: signed.signedTransactionBase64,
+        })
+        if (!broadcast.ok) {
+          // The pending record is deliberately KEPT: the outcome may be
+          // unknown, and a retry resumes the same signature.
+          patch({
+            error: broadcast.error,
+            phase: "error",
+            isProcessing: false,
+          })
+          return
+        }
+        if (broadcast.signature !== signed.signature) {
+          patch({
+            error: "RPC_SIGNATURE_MISMATCH",
+            phase: "error",
+            isProcessing: false,
+          })
+          return
+        }
+        txHash = signed.signature
       }
 
       const evidenceId = `payment-modal-${quote.paymentIntentId}-${Date.now()}`
@@ -773,7 +1523,7 @@ export function createServicePaymentController(
       if (!verifyOutcome.ok) {
         throw new Error(
           verifyOutcome.pending
-            ? "PAYMENT_NOT_OBSERVED_ON_CHAIN: the transaction was not observed on Solana. No payment was recorded and nothing was charged — you can safely retry."
+            ? "PAYMENT_NOT_OBSERVED_ON_CHAIN: this transaction has not been observed on Solana yet. That is NOT proof that it was not sent — it may still confirm. No new payment is offered; the SAME transaction will be checked again."
             : verifyOutcome.error
         )
       }
@@ -799,6 +1549,12 @@ export function createServicePaymentController(
       }
 
       const status = normalizeGrantCreditStatus(grantData.status)
+      /**
+       * The payment is now settled server-side (a Creator Credit exists
+       * for this intent): the local pending-attempt pointer has served
+       * its purpose and must not block a FUTURE, separate purchase.
+       */
+      clearPendingPaymentAttempt()
       patch({ phase: status === "available" ? "available" : "verifying", isProcessing: false })
       callbacks.onCreditReady?.({
         status,
@@ -858,6 +1614,7 @@ export function createServicePaymentController(
     connectWallet,
     verifyIdentity,
     confirmAndVerify,
+    recheckEntitlement,
     reset,
   }
 }

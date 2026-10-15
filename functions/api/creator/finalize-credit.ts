@@ -13,6 +13,7 @@
 
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
+import { noteIdentityTransition } from "../../lib/identityIndexMaintenance";
 
 /* ================= ENV ================= */
 
@@ -146,6 +147,18 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
       }),
     })
   );
+
+  // Identity index maintenance (after the authoritative finalize).
+  const finalizeOutcome = await response
+    .clone()
+    .json()
+    .catch(() => null) as { ok?: boolean; status?: string } | null;
+  if (finalizeOutcome?.ok) {
+    await noteIdentityTransition(bindings, "finalize", {
+      creatorIdentityId,
+      creatorCreditId: lifecycle.id,
+    });
+  }
 
   return response;
 }

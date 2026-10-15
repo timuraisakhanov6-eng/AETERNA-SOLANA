@@ -129,6 +129,10 @@ function createKvWiredCreditCoordinatorBinding(
             get: (key: string) => creditsKv.get(key),
             put: (key: string, value: string) => creditsKv.put(key, value),
             delete: (key: string) => creditsKv.delete(key),
+            // The identity coordinator's one-time backfill enumerates the
+            // existing KV projections; the completeness flag mirrors
+            // Cloudflare KV.
+            list: (options: { prefix?: string }) => creditsKv.list(options),
           },
           PUBLICATION_VERIFICATIONS: { get: async () => null },
           SEAL_VERIFICATIONS: { get: async () => null },

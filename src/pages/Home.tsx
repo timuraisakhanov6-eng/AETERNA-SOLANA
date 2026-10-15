@@ -1,10 +1,8 @@
 import { motion } from "framer-motion"
-import { Button } from "@/components/ui/button"
-import { Link, useNavigate } from "react-router-dom"
+import { Link } from "react-router-dom"
+import CreateAccessGate from "@/components/access/CreateAccessGate"
 
 const Home = () => {
-  const navigate = useNavigate()
-
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 pb-28 sm:pb-24 md:pb-20 relative overflow-hidden">
 
@@ -153,45 +151,13 @@ const Home = () => {
               Time decides. Not people. Not servers.
             </motion.p>
 
-            {/* Button */}
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.8, delay: 0.7 }
-              }
-              className="w-full max-w-[220px] sm:max-w-[240px] xl:max-w-[260px]"
-            >
-              <Button
-                type="button"
-                className="
-                  w-full
-                  h-11
-                  sm:h-12
-                  xl:h-12
-                  bg-[hsl(220,35%,9%)]
-                  text-amber-300
-                  border
-                  border-amber-400/50
-                  text-[11px]
-                  sm:text-[12px]
-                  xl:text-[13px]
-                  font-medium
-                  tracking-[0.18em]
-                  shadow-[0_0_18px_rgba(255,180,90,0.25),inset_0_0_12px_rgba(255,180,90,0.06)]
-                  transition-all
-                  duration-300
-                  ease-out
-                  hover:bg-[hsl(220,35%,11%)]
-                  hover:text-amber-200
-                  hover:border-amber-300/70
-                  hover:scale-x-[1.04]
-                  hover:shadow-[0_0_32px_rgba(255,180,90,0.45),inset_0_0_16px_rgba(255,180,90,0.1)]
-                "
-                onClick={() => navigate("/create")}
-              >
-                CREATE CAPSULE
-              </Button>
-            </motion.div>
+            {/* Access gate: wallet → entitlement → $1 creation right.
+                The button, the Phantom fallbacks and the $1 confirm all
+                live inside the gate — /create renders only after the
+                server has verified an unused creation right. */}
+            <div className="w-full max-w-[220px] sm:max-w-[240px] xl:max-w-[260px]">
+              <CreateAccessGate />
+            </div>
 
             {/* Small text */}
             <motion.p
