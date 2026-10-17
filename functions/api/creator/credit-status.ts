@@ -10,6 +10,10 @@ import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
 import { verifyIdentityProof } from "../../lib/creatorIdentityProof";
+import {
+  validateCreatorSession,
+  type CreatorSessionBinding,
+} from "../../lib/creatorSession";
 
 interface CreditStatusEnv {
   CREATOR_CREDITS: {
@@ -19,12 +23,7 @@ interface CreditStatusEnv {
   CREATOR_IDENTITIES: {
     get(key: string): Promise<string | null>;
   };
-  CREDIT_OP_COORDINATOR?: {
-    idFromName(name: string): { id: string };
-    get(binding: { id: string }): {
-      fetch(request: Request): Promise<Response>;
-    };
-  };
+  CREDIT_OP_COORDINATOR?: CreatorSessionBinding;
 }
 
 const ALLOWED_ORIGINS = [
@@ -159,14 +158,32 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   const network = typeof body.network === "string" ? body.network.trim() : "";
   const account = typeof body.account === "string" ? body.account.trim() : "";
   const signature = typeof body.signature === "string" ? body.signature.trim() : "";
+  const sessionToken = typeof body.sessionToken === "string" ? body.sessionToken.trim() : "";
   const creatorCreditId = typeof body.creatorCreditId === "string" ? body.creatorCreditId.trim() : "";
   const lifecycleId = typeof body.lifecycleId === "string" ? body.lifecycleId.trim() : "";
 
+  /**
+   * Two mutually exclusive authorization modes:
+   *
+   *   - a short-lived creator session (verify-proof has already proven the
+   *     identity), used to avoid a fresh challenge + wallet signature;
+   *   - the legacy challenge/proof, kept for recovery when no session
+   *     exists or it has expired.
+   *
+   * The session only substitutes the AUTHORIZATION step. Every credit
+   * decision below still re-derives the identity server-side from the
+   * session's strongly consistent record, exactly as the proof path
+   * derives it from the signature — a client-supplied identity is never
+   * trusted.
+   */
+  const hasSession = sessionToken.length > 0;
+
   if (
-    typeof challengeId !== "string" ||
     typeof network !== "string" ||
     typeof account !== "string" ||
-    typeof signature !== "string"
+    !network ||
+    !account ||
+    (!hasSession && (typeof challengeId !== "string" || typeof signature !== "string" || !challengeId || !signature))
   ) {
     return fail(origin, 400, "INVALID_FIELDS");
   }
@@ -181,16 +198,30 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   const nowSource = await getTrustedTime().catch(() => ({ nowUtc: Date.now() }));
   const now = typeof nowSource.nowUtc === "number" ? nowSource.nowUtc : Date.now();
 
-  const proofResult = await verifyIdentityProof(
-    context.env,
-    { challengeId, network, account, signature },
-    now
-  );
-  if (!proofResult.ok) {
-    return fail(origin, proofResult.status, proofResult.error);
+  let authenticatedCreatorIdentityId: string;
+  if (hasSession) {
+    const sessionResult = await validateCreatorSession(
+      { CREDIT_OP_COORDINATOR: context.env.CREDIT_OP_COORDINATOR },
+      { sessionToken, network, account },
+      now
+    );
+    if (!sessionResult.ok) {
+      // Distinguishes "session no longer usable" (fall back to a proof)
+      // from "server temporarily unavailable" (do not spin).
+      return fail(origin, sessionResult.status, sessionResult.error);
+    }
+    authenticatedCreatorIdentityId = sessionResult.creatorIdentityId;
+  } else {
+    const proofResult = await verifyIdentityProof(
+      context.env,
+      { challengeId, network, account, signature },
+      now
+    );
+    if (!proofResult.ok) {
+      return fail(origin, proofResult.status, proofResult.error);
+    }
+    authenticatedCreatorIdentityId = proofResult.creatorIdentityId;
   }
-
-  const authenticatedCreatorIdentityId = proofResult.creatorIdentityId;
 
   /* ================= Creator Credit lookup ================= */
 

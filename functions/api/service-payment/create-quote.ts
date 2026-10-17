@@ -21,6 +21,10 @@ import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
 import { verifyIdentityProof } from "../../lib/creatorIdentityProof";
 import {
+  validateCreatorSession,
+  type CreatorSessionBinding,
+} from "../../lib/creatorSession";
+import {
   createBusinessQuote,
   getBusinessQuote,
   renewBusinessQuote,
@@ -32,12 +36,7 @@ interface ServicePaymentCreateQuoteEnv {
   CREATOR_IDENTITIES: {
     get(key: string): Promise<string | null>;
   };
-  CREDIT_OP_COORDINATOR?: {
-    idFromName(name: string): { id: string };
-    get(binding: { id: string }): {
-      fetch(request: Request): Promise<Response>;
-    };
-  };
+  CREDIT_OP_COORDINATOR?: CreatorSessionBinding;
 }
 
 interface PurchaseGuardResult {
@@ -176,26 +175,47 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   /* ================= CREATOR IDENTITY (cryptographic) ================= */
 
   /**
-   * The purchase guard is keyed by the SERVER-DERIVED creator identity:
-   * a fresh challenge/signature proof is verified here exactly like the
-   * credit-status endpoint, and the identity is resolved from
-   * (network, account) server-side. A client-supplied creatorIdentityId
-   * is never read by this endpoint.
+   * The purchase guard is keyed by the SERVER-DERIVED creator identity.
+   *
+   * Authorization is either a short-lived creator session (verified against
+   * the identity's strongly consistent Durable Object record) or the
+   * legacy fresh challenge/signature proof kept for recovery. In BOTH
+   * cases the identity is resolved server-side; a client-supplied
+   * creatorIdentityId is never read by this endpoint.
    */
-  const proofResult = await verifyIdentityProof(
-    bindings,
-    {
-      challengeId: typeof body.challengeId === "string" ? body.challengeId : "",
-      network: typeof body.network === "string" ? body.network : "",
-      account: typeof body.account === "string" ? body.account : "",
-      signature: typeof body.signature === "string" ? body.signature : "",
-    },
-    now
-  );
-  if (!proofResult.ok) {
-    return fail(origin, proofResult.status, proofResult.error);
+  const sessionToken = typeof body.sessionToken === "string" ? body.sessionToken.trim() : "";
+  const sessionNetwork = typeof body.network === "string" ? body.network.trim() : "";
+  const sessionAccount = typeof body.account === "string" ? body.account.trim() : "";
+
+  let authenticatedCreatorIdentityId: string;
+  if (sessionToken) {
+    const sessionResult = await validateCreatorSession(
+      bindings,
+      { sessionToken, network: sessionNetwork, account: sessionAccount },
+      now
+    );
+    if (!sessionResult.ok) {
+      // SESSION_INVALID / SESSION_EXPIRED / SESSION_UNAVAILABLE — the
+      // caller falls back to the proof path exactly once.
+      return fail(origin, sessionResult.status, sessionResult.error);
+    }
+    authenticatedCreatorIdentityId = sessionResult.creatorIdentityId;
+  } else {
+    const proofResult = await verifyIdentityProof(
+      bindings,
+      {
+        challengeId: typeof body.challengeId === "string" ? body.challengeId : "",
+        network: typeof body.network === "string" ? body.network : "",
+        account: typeof body.account === "string" ? body.account : "",
+        signature: typeof body.signature === "string" ? body.signature : "",
+      },
+      now
+    );
+    if (!proofResult.ok) {
+      return fail(origin, proofResult.status, proofResult.error);
+    }
+    authenticatedCreatorIdentityId = proofResult.creatorIdentityId;
   }
-  const authenticatedCreatorIdentityId = proofResult.creatorIdentityId;
 
   /* ================= ATOMIC PURCHASE GUARD ================= */
 

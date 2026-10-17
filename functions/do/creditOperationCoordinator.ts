@@ -208,6 +208,47 @@ creatorCreditId?: string;
   creatorCreditId: string;
   creatorIdentityId: string;
   quoteId: string;
+}
+| {
+  /**
+   * Stores ONE creator authorization session for this identity.
+   *
+   * The caller (verify-proof, after a successful challenge + signature)
+   * generates the token and sends only its SHA-256 digest: the Durable
+   * Object never sees the bearer token. Expired records are pruned and the
+   * oldest sessions are evicted once the per-identity bound is reached, so
+   * concurrent tabs cannot grow the record without limit.
+   */
+  op: "session-issue";
+  creatorIdentityId: string;
+  network: string;
+  account: string;
+  digest: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+| {
+  /**
+   * READ-ONLY validation of a presented session token digest against the
+   * strongly consistent per-identity store. Checks TTL, identity, network
+   * and account. No storage write: credit-status stays read-only.
+   */
+  op: "session-validate";
+  creatorIdentityId: string;
+  network: string;
+  account: string;
+  digest: string;
+  now: number;
+}
+| {
+  /**
+   * Revokes EXACTLY the session whose digest is given, leaving every other
+   * session of the same identity untouched (separate tabs/devices must not
+   * invalidate one another).
+   */
+  op: "session-revoke";
+  creatorIdentityId: string;
+  digest: string;
 };
 
 /**
@@ -2513,6 +2554,63 @@ function backfillKey(creatorIdentityId: string): string {
   return `backfill:${creatorIdentityId}`;
 }
 
+/**
+ * AETERNA — creator authorization session record (identity DO storage).
+ *
+ * Stores ONLY the SHA-256 digest of the bearer token, never the token
+ * itself. `network`/`account` are bound at issuance and re-checked on every
+ * use, so a token minted for one wallet can never authorise another.
+ */
+interface CreatorSessionRecord {
+  digest: string;
+  creatorIdentityId: string;
+  network: string;
+  account: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+function creatorSessionsKey(creatorIdentityId: string): string {
+  return `sessions:${creatorIdentityId}`;
+}
+
+/**
+ * Bounded number of live sessions per identity. Several tabs of ONE
+ * creator hold independent sessions; the cap is enforced by evicting the
+ * OLDEST after expired records have been pruned.
+ */
+const CREATOR_SESSION_MAX_PER_IDENTITY = 8;
+
+/**
+ * Defensive upper bound on a requested TTL. The caller sets the real TTL
+ * (8 minutes); this only prevents a malformed caller from minting an
+ * effectively eternal session.
+ */
+const CREATOR_SESSION_MAX_TTL_MS = 30 * 60 * 1000;
+
+const CREATOR_SESSION_DIGEST_REGEX = /^[0-9a-f]{64}$/;
+
+async function readCreatorSessions(
+  state: DurableObjectState,
+  creatorIdentityId: string
+): Promise<CreatorSessionRecord[]> {
+  const stored = (await state.storage.get<CreatorSessionRecord[]>(
+    creatorSessionsKey(creatorIdentityId)
+  )) ?? [];
+  if (!Array.isArray(stored)) return [];
+  return stored.filter(
+    (record) =>
+      record &&
+      typeof record === "object" &&
+      typeof record.digest === "string" &&
+      typeof record.creatorIdentityId === "string" &&
+      typeof record.network === "string" &&
+      typeof record.account === "string" &&
+      typeof record.issuedAt === "number" &&
+      typeof record.expiresAt === "number"
+  );
+}
+
 function isLiveStatus(status: string): boolean {
   return status === "AVAILABLE" || status === "CONSUMING";
 }
@@ -3361,6 +3459,133 @@ async function handleIdentityBindBroadcastSignature(
   return identitySuccess({ outcome: "BOUND", transactionId });
 }
 
+/**
+ * Stores one creator authorization session for this identity.
+ *
+ * The token never reaches the Durable Object — only its SHA-256 digest.
+ * Under the input gate the read -> prune -> append -> write sequence is
+ * atomic for this identity, so concurrent issuance of two tabs cannot
+ * interleave into a lost or duplicated record.
+ */
+async function handleSessionIssue(
+  state: DurableObjectState,
+  request: Operation & { op: "session-issue" }
+): Promise<Response> {
+  const { creatorIdentityId, network, account, digest, issuedAt, expiresAt } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof network !== "string" || !network ||
+    typeof account !== "string" || !account ||
+    typeof digest !== "string" || !CREATOR_SESSION_DIGEST_REGEX.test(digest) ||
+    !Number.isFinite(issuedAt) ||
+    !Number.isFinite(expiresAt)
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+
+  const now = issuedAt;
+  const cappedExpiresAt = Math.min(expiresAt, issuedAt + CREATOR_SESSION_MAX_TTL_MS);
+
+  const existing = await readCreatorSessions(state, creatorIdentityId);
+  // Prune expired records and any record that does not belong to this
+  // identity (defensive: the key already scopes by identity).
+  const pruned = existing.filter(
+    (record) => record.expiresAt > now && record.creatorIdentityId === creatorIdentityId
+  );
+  // Re-issuing the same digest (practically impossible) replaces, never
+  // duplicates.
+  const withoutDuplicate = pruned.filter((record) => record.digest !== digest);
+
+  const next = [
+    ...withoutDuplicate,
+    { digest, creatorIdentityId, network, account, issuedAt, expiresAt: cappedExpiresAt },
+  ];
+
+  if (next.length > CREATOR_SESSION_MAX_PER_IDENTITY) {
+    next.sort((a, b) => a.issuedAt - b.issuedAt);
+    next.splice(0, next.length - CREATOR_SESSION_MAX_PER_IDENTITY);
+  }
+
+  await state.storage.put(creatorSessionsKey(creatorIdentityId), next);
+
+  return identitySuccess({ sessionCount: next.length });
+}
+
+/**
+ * READ-ONLY validation of a presented session token digest.
+ *
+ * Every dimension is checked independently: existence of the digest, TTL,
+ * and the identity / network / account binding. A miss is reported as
+ * SESSION_INVALID (never as a generic success), and an expired record as
+ * SESSION_EXPIRED, so the caller can distinguish "session no longer
+ * usable" from a transport failure.
+ */
+async function handleSessionValidate(
+  state: DurableObjectState,
+  request: Operation & { op: "session-validate" }
+): Promise<Response> {
+  const { creatorIdentityId, network, account, digest, now } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof network !== "string" || !network ||
+    typeof account !== "string" || !account ||
+    typeof digest !== "string" || !CREATOR_SESSION_DIGEST_REGEX.test(digest) ||
+    !Number.isFinite(now)
+  ) {
+    return identityFailure("SESSION_INVALID", 401);
+  }
+
+  const sessions = await readCreatorSessions(state, creatorIdentityId);
+  const record = sessions.find((candidate) => candidate.digest === digest);
+  if (!record) {
+    return identityFailure("SESSION_INVALID", 401);
+  }
+  if (record.expiresAt <= now) {
+    return identityFailure("SESSION_EXPIRED", 401);
+  }
+  if (
+    record.creatorIdentityId !== creatorIdentityId ||
+    record.network !== network ||
+    record.account !== account
+  ) {
+    return identityFailure("SESSION_INVALID", 401);
+  }
+
+  return identitySuccess({
+    creatorIdentityId: record.creatorIdentityId,
+    network: record.network,
+    account: record.account,
+    expiresAt: record.expiresAt,
+  });
+}
+
+/**
+ * Revokes exactly one session (by digest). Other sessions of the same
+ * identity are preserved, so one tab's sign-out/timeout cannot sign out
+ * another tab.
+ */
+async function handleSessionRevoke(
+  state: DurableObjectState,
+  request: Operation & { op: "session-revoke" }
+): Promise<Response> {
+  const { creatorIdentityId, digest } = request;
+  if (
+    typeof creatorIdentityId !== "string" || !creatorIdentityId ||
+    typeof digest !== "string" || !CREATOR_SESSION_DIGEST_REGEX.test(digest)
+  ) {
+    return identityFailure("INVALID_FIELDS", 400);
+  }
+
+  const existing = await readCreatorSessions(state, creatorIdentityId);
+  const next = existing.filter((record) => record.digest !== digest);
+  const revoked = next.length !== existing.length;
+  if (revoked) {
+    await state.storage.put(creatorSessionsKey(creatorIdentityId), next);
+  }
+
+  return identitySuccess({ revoked, sessionCount: next.length });
+}
+
 export class CreditOperationCoordinator {
   constructor(private state: DurableObjectState, private env: CoordinatorEnv) {}
 
@@ -3415,6 +3640,12 @@ export class CreditOperationCoordinator {
         return handleIdentityResolveIntent(this.state, body);
       case "identity-bind-broadcast-signature":
         return handleIdentityBindBroadcastSignature(this.state, body);
+      case "session-issue":
+        return handleSessionIssue(this.state, body);
+      case "session-validate":
+        return handleSessionValidate(this.state, body);
+      case "session-revoke":
+        return handleSessionRevoke(this.state, body);
       case "read": {
         const credit = await getCreditRecord(this.state, body.creatorCreditId);
         if (!credit) {

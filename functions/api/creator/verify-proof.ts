@@ -25,6 +25,10 @@ import {
   buildSolanaMessage,
   verifySolanaSignature,
 } from "../../lib/solanaIdentityProof";
+import {
+  issueCreatorSession,
+  type CreatorSessionBinding,
+} from "../../lib/creatorSession";
 
 interface VerifyProofEnv {
   CREATOR_IDENTITIES: {
@@ -32,6 +36,13 @@ interface VerifyProofEnv {
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
     delete(key: string): Promise<void>;
   };
+  /**
+   * Existing identity Durable Object binding. Optional: identity
+   * verification itself does NOT depend on it. When present, a successful
+   * verification additionally mints a short-lived creator session so the
+   * follow-up authorization calls need no new signature.
+   */
+  CREDIT_OP_COORDINATOR?: CreatorSessionBinding;
 }
 
 const ALLOWED_ORIGINS = [
@@ -201,10 +212,34 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     await putCreatorIdentityIndex(env, identity);
   }
 
-  return new Response(
-    JSON.stringify({ ok: true, creatorIdentityId: identity.id, network, account: identity.account }),
-    { status: 200, headers: baseHeaders(origin) }
+  /**
+   * Best-effort session issuance. Identity verification has ALREADY
+   * succeeded, so a session that cannot be minted must not fail the
+   * request: the response simply omits `sessionToken` and the client keeps
+   * using the legacy challenge/proof path. No invalid token is ever
+   * returned, and no token/digest/signature is logged.
+   */
+  const session = await issueCreatorSession(
+    { CREDIT_OP_COORDINATOR: env.CREDIT_OP_COORDINATOR },
+    { creatorIdentityId: identity.id, network, account: identity.account },
+    now
   );
+
+  const payload: Record<string, unknown> = {
+    ok: true,
+    creatorIdentityId: identity.id,
+    network,
+    account: identity.account,
+  };
+  if (session.ok) {
+    payload.sessionToken = session.token;
+    payload.sessionExpiresAt = session.expiresAt;
+  }
+
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: baseHeaders(origin),
+  });
 }
 
 async function recoverPersonalSignAddress(signature: string, message: string): Promise<string> {

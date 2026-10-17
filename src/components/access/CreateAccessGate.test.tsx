@@ -239,6 +239,20 @@ const VERIFY_PROOF = () =>
     account: WALLET_ACCOUNT,
   });
 
+/**
+ * The same successful verification, plus the short-lived creator session the
+ * server now mints. With a live session the following credit-status
+ * re-check and create-quote calls need NO new wallet signature.
+ */
+const VERIFY_PROOF_WITH_SESSION = () =>
+  json({
+    ok: true,
+    creatorIdentityId: CREATOR_IDENTITY_ID,
+    account: WALLET_ACCOUNT,
+    sessionToken: `aets.${CREATOR_IDENTITY_ID}.c2VjcmV0LXNlc3Npb24tc2VjcmV0`,
+    sessionExpiresAt: Date.now() + 8 * 60 * 1000,
+  });
+
 const CREATE_QUOTE = () =>
   json({
     ok: true,
@@ -627,6 +641,48 @@ describe("Home Access Gate", () => {
     // taken when the quote is requested. The authoritative re-read adds
     // NO fourth prompt (it reuses the retained challenge).
     expect(signMessageMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("7b. with a live session a fresh $1 needs only ONE identity signature (re-check + quote reuse it)", async () => {
+    setPhantom(true);
+    connectWallet();
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF_WITH_SESSION },
+      { match: "/api/service-payment/create-quote", respond: CREATE_QUOTE },
+      { match: "/api/service-payment/verify", respond: VERIFY_VERIFIED },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    render(tree());
+
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    await waitFor(
+      () =>
+        expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+    // Verification alone: exactly one signature so far.
+    expect(signMessageMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("create-route")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+
+    await waitFor(
+      () => expect(screen.getByTestId("create-route")).toBeTruthy(),
+      { timeout: 5000 }
+    );
+
+    // ONE identity signature for the WHOLE fresh purchase: the pre-payment
+    // re-check and the purchase-guard proof both reused the session. The
+    // financial transaction is still a single $1 (one transfer, one
+    // verification, one grant).
+    expect(signMessageMock).toHaveBeenCalledTimes(1);
+    expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
+    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(1);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1);
   });
 
   it("8. a failed verification stays on Home and only an EXPLICIT retry can charge again (never automatic)", async () => {

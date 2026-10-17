@@ -435,7 +435,14 @@ async function verifyProof(
     body: JSON.stringify(input),
   })
 
-  const data = await res.json() as { ok: boolean; creatorIdentityId?: string; account?: string; error?: string }
+  const data = await res.json() as {
+    ok: boolean
+    creatorIdentityId?: string
+    account?: string
+    sessionToken?: string
+    sessionExpiresAt?: number
+    error?: string
+  }
   if (!res.ok || !data?.ok || !data.creatorIdentityId) {
     throw new Error(data?.error || "IDENTITY_VERIFICATION_FAILED")
   }
@@ -443,7 +450,62 @@ async function verifyProof(
   return {
     creatorIdentityId: data.creatorIdentityId,
     account: data.account ?? input.account,
+    /**
+     * Optional short-lived session handed back by the server. When absent
+     * (issuance unavailable, or an older deployment) the client simply
+     * keeps using the legacy challenge/proof path — identity verification
+     * is unaffected.
+     */
+    sessionToken:
+      typeof data.sessionToken === "string" && data.sessionToken
+        ? data.sessionToken
+        : null,
+    sessionExpiresAt:
+      typeof data.sessionExpiresAt === "number" &&
+      Number.isFinite(data.sessionExpiresAt)
+        ? data.sessionExpiresAt
+        : 0,
   }
+}
+
+/**
+ * A failed endpoint response that carries the EXACT error code the server
+ * returned.
+ *
+ * Session classification is an EQUALITY check on this code. The
+ * human-readable message is NEVER substring-searched, so unrelated text that
+ * merely CONTAINS "SESSION_INVALID" (e.g. an upstream code such as
+ * `NOT_A_SESSION_INVALID_MARKER`) can never be mistaken for a session
+ * verdict. Unknown/unclassifiable errors keep the safe default: they are
+ * rethrown as-is and never authorize anything.
+ */
+class ServicePaymentServerError extends Error {
+  readonly code: string
+  constructor(code: string | undefined | null, fallbackCode: string) {
+    super(code || fallbackCode)
+    this.name = "ServicePaymentServerError"
+    this.code = code || fallbackCode
+  }
+}
+
+/** The confirmed server code of a failed response, or "" when there is none. */
+function serverErrorCode(err: unknown): string {
+  return err instanceof ServicePaymentServerError ? err.code : ""
+}
+
+/**
+ * SESSION_INVALID / SESSION_EXPIRED — the session is PROVABLY no longer
+ * usable. Only THESE codes let the client drop the token and make EXACTLY
+ * ONE controlled transition to the legacy challenge/proof path (never a loop
+ * of automatic signatures, never an automatic new payment).
+ *
+ * SESSION_UNAVAILABLE is deliberately NOT included: a transient 503 is a
+ * statement about the SERVER, not about the session, so the token is kept
+ * and no signature is requested.
+ */
+function isSessionInvalidationError(err: unknown): boolean {
+  const code = serverErrorCode(err)
+  return code === "SESSION_INVALID" || code === "SESSION_EXPIRED"
 }
 
 /**
@@ -500,19 +562,15 @@ async function verifyProof(
  *    unreadable answer must never be interpreted as "no right", because
  *    that is exactly what would enable a duplicate $1.
  */
-async function discoverCreditStatus(
-  proof: ServicePaymentIdentityProof,
+async function requestCreditStatus(
+  body: Record<string, unknown>,
+  fallbackAccount: string | null,
   fetchImpl: typeof fetch
 ): Promise<ServicePaymentDiscoveryResult> {
   const res = await fetchImpl("/api/creator/credit-status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      challengeId: proof.challengeId,
-      network: proof.network,
-      account: proof.account,
-      signature: proof.signature,
-    }),
+    body: JSON.stringify(body),
   })
 
   const data = await res.json().catch(() => null) as {
@@ -531,12 +589,12 @@ async function discoverCreditStatus(
         status: "none",
         creatorCreditId: null,
         creatorIdentityId: null,
-        account: proof.account,
+        account: fallbackAccount,
         summary: null,
         unfinishedLifecycles: null,
       }
     }
-    throw new Error(data?.error || "CREDIT_DISCOVERY_FAILED")
+    throw new ServicePaymentServerError(data?.error, "CREDIT_DISCOVERY_FAILED")
   }
 
   const rawStatus = typeof data.status === "string" ? data.status : ""
@@ -591,7 +649,7 @@ async function discoverCreditStatus(
         typeof data.creatorCreditId === "string" ? data.creatorCreditId : null,
       creatorIdentityId:
         typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null,
-      account: proof.account,
+      account: fallbackAccount,
       summary: normalizedSummary,
       unfinishedLifecycles,
     }
@@ -603,7 +661,7 @@ async function discoverCreditStatus(
       creatorCreditId: null,
       creatorIdentityId:
         typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null,
-      account: proof.account,
+      account: fallbackAccount,
       summary: normalizedSummary,
       unfinishedLifecycles,
     }
@@ -615,7 +673,7 @@ async function discoverCreditStatus(
       creatorCreditId: data.creatorCreditId,
       creatorIdentityId:
         typeof data.creatorIdentityId === "string" ? data.creatorIdentityId : null,
-      account: proof.account,
+      account: fallbackAccount,
       summary: normalizedSummary,
       unfinishedLifecycles,
     }
@@ -624,6 +682,47 @@ async function discoverCreditStatus(
   // Fail closed: an answer this controller cannot interpret must never be
   // downgraded to "no right" (that would enable a duplicate $1).
   throw new Error("CREDIT_DISCOVERY_UNREADABLE_STATUS")
+}
+
+/**
+ * Legacy challenge/proof discovery (unchanged contract). Used for the
+ * initial verification proof and as the ONE fallback when a session is
+ * missing, expired or rejected.
+ */
+async function discoverCreditStatus(
+  proof: ServicePaymentIdentityProof,
+  fetchImpl: typeof fetch
+): Promise<ServicePaymentDiscoveryResult> {
+  return requestCreditStatus(
+    {
+      challengeId: proof.challengeId,
+      network: proof.network,
+      account: proof.account,
+      signature: proof.signature,
+    },
+    proof.account,
+    fetchImpl
+  )
+}
+
+/**
+ * Session-authorized discovery: no challenge, no wallet signature. The
+ * server resolves the identity from the session record itself, so a
+ * client-supplied identity is never trusted here either.
+ */
+async function discoverCreditStatusWithSession(
+  session: { token: string; network: string; account: string },
+  fetchImpl: typeof fetch
+): Promise<ServicePaymentDiscoveryResult> {
+  return requestCreditStatus(
+    {
+      sessionToken: session.token,
+      network: session.network,
+      account: session.account,
+    },
+    session.account,
+    fetchImpl
+  )
 }
 
 /* ───────────────── PRE-PAYMENT ENTITLEMENT RE-CHECK ───────────────── */
@@ -654,9 +753,8 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-async function recheckEntitlementWithProof(
-  proof: ServicePaymentIdentityProof,
-  fetchImpl: typeof fetch,
+async function recheckEntitlementWithProbe(
+  probe: () => Promise<ServicePaymentDiscoveryResult>,
   isCancelled?: (() => boolean) | undefined
 ): Promise<ServicePaymentDiscoveryResult> {
   const deadline = Date.now() + RECHECK_WINDOW_MS;
@@ -665,7 +763,7 @@ async function recheckEntitlementWithProof(
   for (;;) {
     // Throws on any unreadable / unknown / failed answer — a caller can
     // never mistake an error for "no rights".
-    const result = await discoverCreditStatus(proof, fetchImpl);
+    const result = await probe();
 
     if (result.status !== "none") return result; // available | consuming
 
@@ -1010,6 +1108,53 @@ export function createServicePaymentController(
   let wallet: ServicePaymentWalletApi | null = null
   let previousAccount: string | null = null
 
+  /**
+   * Short-lived creator session (bearer token), kept in OPERATING MEMORY
+   * ONLY — never localStorage, sessionStorage, IndexedDB, the URL or any
+   * log. It authorizes the read-only credit-status re-check and the
+   * create-quote purchase guard so neither needs a fresh wallet signature.
+   *
+   * It is minted by a successful verify-proof and cleared on disconnect,
+   * account switch, reset, or observed rejection/expiry. Losing it (page
+   * reload) simply means one fresh identity proof — never a second charge,
+   * because payment verification remains entirely server-side.
+   */
+  let creatorSession: {
+    token: string
+    creatorIdentityId: string
+    network: string
+    account: string
+    expiresAt: number
+  } | null = null
+
+  /** Treat a session as unusable slightly before its real TTL expires. */
+  const CREATOR_SESSION_EXPIRY_SKEW_MS = 5_000
+
+  const currentCreatorSession = () => {
+    if (!creatorSession) return null
+    if (creatorSession.expiresAt - CREATOR_SESSION_EXPIRY_SKEW_MS <= Date.now()) {
+      // Locally expired: stop retrying the dead token instead of letting
+      // the server reject it (which would cost a round trip).
+      creatorSession = null
+      return null
+    }
+    return creatorSession
+  }
+
+  const dropCreatorSession = () => {
+    creatorSession = null
+  }
+
+  const rememberCreatorSession = (session: {
+    token: string
+    creatorIdentityId: string
+    network: string
+    account: string
+    expiresAt: number
+  }) => {
+    creatorSession = session
+  }
+
   let params: ServicePaymentParams = {
     creatorIdentityId: null,
     protocolAccepted: false,
@@ -1034,6 +1179,9 @@ export function createServicePaymentController(
     // The purchase-guard proof is account-bound too: a disconnect or an
     // account switch must not leave it reusable.
     retainedPurchaseProof = null
+    // The session is bound to (identity, network, account) server-side, but
+    // there is no reason to keep it once the wallet context changed.
+    creatorSession = null
     patch({
       verifiedCreatorIdentityId: null,
       verifiedCreatorAccount: null,
@@ -1050,6 +1198,7 @@ export function createServicePaymentController(
 
   const reset = () => {
     retainedPurchaseProof = null
+    creatorSession = null
     patch({
       phase: "idle",
       quote: null,
@@ -1066,20 +1215,49 @@ export function createServicePaymentController(
   /**
    * Fresh, AUTHORITATIVE entitlement re-check (D1 / KV lag).
    *
-   * Signs exactly ONE new challenge and then repeats the read-only
+   * With a live session this costs NO wallet signature: the session
+   * authorizes the same read-only enumeration. Without one (or when the
+   * session is PROVEN invalid/expired) it falls back to the legacy path,
+   * which signs exactly ONE new challenge and then repeats the read-only
    * enumeration with the same proof — one wallet prompt per explicit pay
    * attempt, never one per retry. Creates no quote, no payment and no
    * entitlement.
+   *
+   * The fallback to the legacy path happens AT MOST ONCE, and ONLY for a
+   * proven invalidation (SESSION_INVALID / SESSION_EXPIRED): once the token
+   * is dropped there is nothing left to retry, so a rejected/expired session
+   * can never produce a loop of automatic signatures. A transient
+   * SESSION_UNAVAILABLE instead PROPAGATES (the token is kept, no signature
+   * is requested) so the creator can retry later with the SAME session.
    */
   const recheckEntitlement = async (): Promise<ServicePaymentDiscoveryResult> => {
     /**
      * One overlapping re-check JOINS the running one: the entitlement
      * question is the same and the answer is already being computed, so a
      * second challenge + signature window would add nothing but a prompt.
-     * The guard covers the WHOLE operation (challenge → signature →
-     * bounded re-read), so it can never release mid-flight.
+     * The guard covers the WHOLE operation (session/proof → bounded
+     * re-read), so it can never release mid-flight.
      */
     const runRecheck = async (): Promise<ServicePaymentDiscoveryResult> => {
+      const session = currentCreatorSession()
+      if (session) {
+        try {
+          return await recheckEntitlementWithProbe(
+            () => discoverCreditStatusWithSession(session, fetchImpl),
+            deps.isCancelled
+          )
+        } catch (err) {
+          // ONLY a proven session invalidation (SESSION_INVALID /
+          // SESSION_EXPIRED) drops the token and makes the single legacy
+          // transition below, which may ask for ONE identity signature.
+          // SESSION_UNAVAILABLE and every other failure PROPAGATE as the
+          // existing retryable error: the session is kept, no challenge is
+          // requested and no signature is triggered.
+          if (!isSessionInvalidationError(err)) throw err
+          dropCreatorSession()
+        }
+      }
+
       const currentWallet = wallet;
       const account = currentWallet?.account ?? null;
       if (!currentWallet?.connected || !account) {
@@ -1101,7 +1279,10 @@ export function createServicePaymentController(
         expiresAt: challenge.expiresAt,
       };
 
-      return recheckEntitlementWithProof(proof, fetchImpl, deps.isCancelled);
+      return recheckEntitlementWithProbe(
+        () => discoverCreditStatus(proof, fetchImpl),
+        deps.isCancelled
+      );
     };
 
     return entitlementRecheckGuard.run(
@@ -1229,6 +1410,25 @@ export function createServicePaymentController(
   }
 
   /**
+   * Authorization for the purchase-guard endpoint: either a live session
+   * (no signature) or a legacy proof built from a wallet signature.
+   */
+  type PurchaseAuth =
+    | {
+        kind: "session"
+        sessionToken: string
+        network: string
+        account: string
+      }
+    | {
+        kind: "proof"
+        challengeId: string
+        network: string
+        account: string
+        signature: string
+      }
+
+  /**
    * Calls the purchase-guard endpoint with a proof and parses its
    * AUTHORITATIVE answer. Throws on refusal and patches NO state, so the
    * same call serves both the initial quote and the pre-payment re-read.
@@ -1238,12 +1438,7 @@ export function createServicePaymentController(
    * intent's quote — a second, independent purchase intent is never
    * created.
    */
-  const fetchQuoteState = async (proof: {
-    challengeId: string
-    network: string
-    account: string
-    signature: string
-  }): Promise<ServicePaymentQuote> => {
+  const fetchQuoteState = async (auth: PurchaseAuth): Promise<ServicePaymentQuote> => {
     const paymentIntentId = crypto.randomUUID()
 
     /**
@@ -1253,15 +1448,31 @@ export function createServicePaymentController(
      * A live right or an unfinished purchase makes it answer with the
      * existing state instead of a new quote.
      */
+    const body =
+      auth.kind === "session"
+        ? {
+            paymentIntentId,
+            sessionToken: auth.sessionToken,
+            network: auth.network,
+            account: auth.account,
+          }
+        : {
+            paymentIntentId,
+            challengeId: auth.challengeId,
+            network: auth.network,
+            account: auth.account,
+            signature: auth.signature,
+          }
+
     const res = await fetchImpl("/api/service-payment/create-quote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paymentIntentId, ...proof }),
+      body: JSON.stringify(body),
     })
 
     const data = await res.json()
     if (!res.ok || !data?.ok) {
-      throw new Error(data?.error || "QUOTE_REQUEST_FAILED")
+      throw new ServicePaymentServerError(data?.error, "QUOTE_REQUEST_FAILED")
     }
 
     return {
@@ -1283,12 +1494,55 @@ export function createServicePaymentController(
     }
   }
 
+  /**
+   * Authorization for the purchase guard: the live session when one
+   * exists, otherwise the legacy proof (which signs at most one challenge
+   * and RETAINS it).
+   */
+  const acquirePurchaseAuth = async (): Promise<PurchaseAuth> => {
+    const session = currentCreatorSession()
+    if (session) {
+      return {
+        kind: "session",
+        sessionToken: session.token,
+        network: session.network,
+        account: session.account,
+      }
+    }
+    const proof = await buildPurchaseProof()
+    return { kind: "proof", ...proof }
+  }
+
+  /**
+   * Purchase-guard call with the SINGLE controlled legacy transition: if a
+   * live session is PROVEN invalid or expired, the token is dropped and the
+   * request is retried ONCE with a fresh proof.
+   *
+   * SESSION_UNAVAILABLE (transient 503) is NOT a session verdict: the token
+   * is kept and the failure PROPAGATES as the existing retryable error. No
+   * challenge is requested, no signature is triggered and no payment is
+   * started — the creator simply retries later with the SAME session.
+   *
+   * Never loops: once the session is gone, `acquirePurchaseAuth` builds a
+   * proof, and a second failure simply propagates.
+   */
+  const fetchQuoteStateWithSessionFallback = async (): Promise<ServicePaymentQuote> => {
+    const auth = await acquirePurchaseAuth()
+    try {
+      return await fetchQuoteState(auth)
+    } catch (err) {
+      if (auth.kind !== "session" || !isSessionInvalidationError(err)) throw err
+      dropCreatorSession()
+      const proof = await buildPurchaseProof()
+      return fetchQuoteState({ kind: "proof", ...proof })
+    }
+  }
+
   const requestQuote = async () => {
     patch({ phase: "quoting", error: null, isProcessing: true })
 
     try {
-      const proof = await buildPurchaseProof()
-      const q = await fetchQuoteState(proof)
+      const q = await fetchQuoteStateWithSessionFallback()
       patch({ quote: q, phase: "quote_ready", isProcessing: false })
     } catch (err) {
       const message =
@@ -1315,8 +1569,7 @@ export function createServicePaymentController(
     { ok: true; quote: ServicePaymentQuote } | { ok: false }
   > => {
     try {
-      const proof = await buildPurchaseProof()
-      const quote = await fetchQuoteState(proof)
+      const quote = await fetchQuoteStateWithSessionFallback()
       return { ok: true, quote }
     } catch {
       return { ok: false }
@@ -1405,7 +1658,7 @@ export function createServicePaymentController(
 
       // PATCH-2J NO CREDIT: consume the SAME proof via verify-proof; the
       // canonical $1 payment path then proceeds unchanged.
-      const { creatorIdentityId, account } = await verifyProof(
+      const verified = await verifyProof(
         {
           challengeId: proof.challengeId,
           network: proof.network,
@@ -1415,9 +1668,26 @@ export function createServicePaymentController(
         fetchImpl
       )
 
+      /**
+       * Keep the freshly minted session in OPERATING MEMORY only. It
+       * authorizes the pre-payment re-check and the quote request without
+       * further wallet signatures. It is absent when issuance was
+       * temporarily unavailable — the flow then uses the legacy proof path
+       * with no loss of security.
+       */
+      if (verified.sessionToken) {
+        rememberCreatorSession({
+          token: verified.sessionToken,
+          creatorIdentityId: verified.creatorIdentityId,
+          network: proof.network,
+          account: verified.account,
+          expiresAt: verified.sessionExpiresAt,
+        })
+      }
+
       patch({
-        verifiedCreatorIdentityId: creatorIdentityId,
-        verifiedCreatorAccount: account,
+        verifiedCreatorIdentityId: verified.creatorIdentityId,
+        verifiedCreatorAccount: verified.account,
         phase: "wallet_verified",
         // The challenge was consumed server-side on success — nothing to
         // reuse.
