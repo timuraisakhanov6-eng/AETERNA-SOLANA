@@ -21,6 +21,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   SystemProgram,
@@ -711,5 +712,167 @@ describe("strict broadcast — network guard", () => {
     expect(((await res.json()) as Record<string, unknown>)["signature"]).toBe(signature);
     expect(rpcCalls.map(methodOf)).toEqual(["getGenesisHash", "sendTransaction"]);
     expect(rpcCalls.every((c) => c.url === RPC_URL)).toBe(true);
+  });
+});
+
+/**
+ * The endpoint classifies EVERY refusal with the structured
+ * `broadcastAttempted` field, and the client relies on it to tell a proven
+ * pre-send refusal (nothing of ours can be on chain) apart from an unknown
+ * outcome (a transaction may exist on chain).
+ *
+ * These invariants pin both halves of that contract plus the safety
+ * property they depend on: a pre-send refusal must never reach the RPC and
+ * must never create a signature binding.
+ */
+describe("broadcast refusal classification (broadcastAttempted)", () => {
+  /** A parse-level refusal: MORE instructions than the parser accepts (5). */
+  function overInstructionTransaction() {
+    const tx = new Transaction().add(
+      createAssociatedTokenAccountInstruction(
+        payer.publicKey,
+        destinationAta,
+        settlement,
+        mint,
+        TOKEN_PROGRAM_ID
+      ),
+      createTransferInstruction(
+        sourceAta,
+        destinationAta,
+        payer.publicKey,
+        1_000_000n,
+        [payer],
+        TOKEN_PROGRAM_ID
+      ),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 500 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 2 })
+    );
+    tx.feePayer = payer.publicKey;
+    tx.recentBlockhash = BLOCKHASH;
+    tx.sign(payer);
+    return tx.serialize().toString("base64");
+  }
+
+  /** A shape-level refusal: 3 instructions (parseable, above the canonical 2). */
+  function threeInstructionTransaction() {
+    const tx = new Transaction().add(
+      createAssociatedTokenAccountInstruction(
+        payer.publicKey,
+        destinationAta,
+        settlement,
+        mint,
+        TOKEN_PROGRAM_ID
+      ),
+      createTransferInstruction(
+        sourceAta,
+        destinationAta,
+        payer.publicKey,
+        1_000_000n,
+        [payer],
+        TOKEN_PROGRAM_ID
+      ),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 500 })
+    );
+    tx.feePayer = payer.publicKey;
+    tx.recentBlockhash = BLOCKHASH;
+    tx.sign(payer);
+    return tx.serialize().toString("base64");
+  }
+
+  /** The attempt's own record: is a transaction signature bound to it? */
+  async function boundSignature(env: Env): Promise<unknown> {
+    const resolved = await call(env.CREDIT_OP_COORDINATOR, `identity:${IDENTITY}`, {
+      op: "identity-resolve-intent",
+      creatorIdentityId: IDENTITY,
+      paymentIntentId: INTENT,
+    });
+    return resolved.data["broadcastSignature"];
+  }
+
+  /** The refusal envelope of a POST, parsed once. */
+  async function refusal(env: Env, body: Record<string, unknown>) {
+    const res = await post(env, body);
+    const data = (await res.json()) as Record<string, unknown>;
+    return { status: res.status, data };
+  }
+
+  it("a parser refusal answers INVALID_INSTRUCTION_COUNT with broadcastAttempted:false, before any RPC and any binding", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await refusal(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: overInstructionTransaction(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data["error"]).toBe("INVALID_INSTRUCTION_COUNT");
+    expect(res.data["broadcastAttempted"]).toBe(false);
+    // The endpoint never even probed the network...
+    expect(rpcCalls).toHaveLength(0);
+    // ...and never bound a signature: the attempt is still payable, so a
+    // corrected transaction can be broadcast for the SAME intent.
+    expect(await boundSignature(env)).toBeNull();
+  });
+
+  it("a canonical-shape refusal answers UNEXPECTED_INSTRUCTION_COUNT with broadcastAttempted:false, before any RPC and any binding", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await refusal(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: threeInstructionTransaction(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(res.data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+    expect(await boundSignature(env)).toBeNull();
+  });
+
+  it("a content refusal (wrong amount) is also classified as pre-send", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await refusal(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: canonicalSignedTransaction({ amount: 999_999n }).base64,
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data["error"]).toBe("UNEXPECTED_AMOUNT");
+    expect(res.data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("an RPC failure is classified as broadcastAttempted:true and keeps the binding (unknown outcome)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64, signature } = canonicalSignedTransaction();
+    // The submission is attempted and fails: the on-chain outcome is NOT
+    // provable from this answer.
+    rpcResponder = (body) =>
+      body["method"] === "getGenesisHash"
+        ? genesisAnswer(body, MAINNET_GENESIS)
+        : { jsonrpc: "2.0", id: body["id"], error: { message: "Transaction simulation failed" } };
+
+    const res = await refusal(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(502);
+    expect(res.data["broadcastAttempted"]).toBe(true);
+    // The transaction really was submitted exactly once...
+    expect(sendCalls()).toHaveLength(1);
+    // ...and the signature stays bound, so a retry can only ever resume
+    // THIS transaction instead of sending a second transfer.
+    expect(await boundSignature(env)).toBe(signature);
   });
 });

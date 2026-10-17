@@ -216,6 +216,21 @@ export interface ServicePaymentControllerDeps extends ServicePaymentCallbacks {
   isCancelled?: (() => boolean) | undefined
   /** Test seam only — defaults to globalThis.fetch. */
   fetchImpl?: typeof fetch | undefined
+  /**
+   * Test seam ONLY — the wallet's SIGN-WITHOUT-SENDING capability.
+   *
+   * The local pending-payment record may only be released automatically
+   * after a proven pre-broadcast refusal when the payment path never
+   * handed the transaction to a sending wallet primitive. Production
+   * always uses the canonical path (`signTransaction` only, see
+   * `confirmAndVerify`), which is what makes the release safe; a caller
+   * that could NOT prove it (no sign-only capability, or the deprecated
+   * send-and-sign path) must leave the record untouched so a possibly
+   * submitted transaction is still resumed by verification.
+   *
+   * Defaults to `signTransaction` (the production capability).
+   */
+  safePreBroadcastRelease?: (() => boolean) | undefined
 }
 
 export interface ServicePaymentController {
@@ -263,6 +278,96 @@ export function normalizeGrantCreditStatus(raw: unknown): string {
 }
 
 /* ───────────────── HELPERS ───────────────── */
+
+/**
+ * SAME-SHAPE CALL SERIALIZATION (in-flight guard).
+ *
+ * WHY THIS EXISTS
+ *
+ * Each identity-proof stage writes its result into controller state only
+ * AFTER the wallet answers (`state.identityProof` in `verifyIdentity`,
+ * `retainedPurchaseProof` in `buildPurchaseProof`, the proof local in
+ * `recheckEntitlement`). Two OVERLAPPING calls of the SAME stage
+ * therefore both observe "no proof yet", both request a challenge and
+ * both open a wallet signature window — the repeated Phantom prompt seen
+ * in production. `isProcessing` does NOT prevent this, because the guard
+ * it feeds is reset by a re-render of an outer phase.
+ *
+ * This guard coalesces only calls of the SAME stage: the second caller
+ * JOINS the first operation instead of starting a second one, so one
+ * stage = at most one challenge and at most one signature window.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO
+ *
+ * The O(1) replay of the last result is NOT reuse across stages: it
+ * happens while `active` is still non-null, i.e. only for an overlapping
+ * caller of the same stage, and the wrapped function replaces the record
+ * before it ever settles (every stage writes its record before its final
+ * await resolves). Stages whose server semantics differ are therefore
+ * never served by another stage's record — in particular the consumed
+ * `verify-proof` proof is never replayed into the purchase guard, and the
+ * purchase-guard proof is never replayed into the discovery stage.
+ *
+ * `markActive` / `markIdle` / `isActive` are provided so the visible
+ * phase is already up to date BEFORE the wrapper hands the caller back
+ * its replayed result — a joining caller must never observe a stale
+ * "ready" phase while this stage is still open.
+ *
+ * FAILURE SEMANTICS: a rejection clears the in-flight slot and every
+ * joined caller sees the same failure; nothing is cached across
+ * operations, so a retry always re-opens the stage normally.
+ */
+function createSameShapeCallGuard(): {
+  isActive: () => boolean
+  run: <T>(markActive: () => void, markIdle: () => void, operation: () => Promise<T>) => Promise<T>
+} {
+  let active: { promise: Promise<unknown> } | null = null
+
+  return {
+    isActive: () => active !== null,
+    run<T>(
+      markActive: () => void,
+      markIdle: () => void,
+      operation: () => Promise<T>
+    ): Promise<T> {
+      if (active) {
+        // A caller of the SAME stage is already running: adopt the phase
+        // this stage sets, then await the SAME operation — never a second
+        // one. It receives exactly the same result (or the same failure).
+        markActive()
+        return active.promise as Promise<T>
+      }
+
+      const record: { promise: Promise<unknown> } = { promise: Promise.resolve() }
+      const pending = operation()
+      record.promise = pending
+      active = record
+
+      /**
+       * Release the slot when the operation settles. The derived promise
+       * deliberately does NOT rethrow: the ORIGINAL promise is what the
+       * callers receive, so a failure still reaches them and can never
+       * surface as an unhandled rejection through this cleanup chain.
+       */
+      pending.then(
+        () => {
+          if (active === record) {
+            active = null
+            // The stage may have ended by parking the flow in a transient
+            // state (e.g. `verifying`) that is only final once nothing is
+            // in flight; normalise it for the callers being released.
+            markIdle()
+          }
+        },
+        () => {
+          if (active === record) active = null
+        }
+      )
+
+      return pending
+    },
+  }
+}
 
 async function issueChallenge(
   publicKey: string,
@@ -613,7 +718,23 @@ function isDefiniteWalletRejection(err: unknown): boolean {
 
 /**
  * Binds + broadcasts a signed payment through the validated endpoint.
- * Never throws: the caller keeps the pending record on any failure.
+ *
+ * Never throws. On a failure it reports the SERVER's own structured
+ * classification (`broadcastAttempted`) alongside the error code, so the
+ * caller can tell a proven pre-send refusal apart from an unknown
+ * on-chain outcome. The flag is never derived from the error text.
+ *
+ * `safePreBroadcastRelease` decides whether the local pending record may
+ * be released for a pre-send refusal. It is REQUIRED to be true for the
+ * release to happen, because `broadcastAttempted: false` describes only
+ * what THIS endpoint did — it is not proof that no on-chain operation
+ * happened anywhere else. The production payment path proves the
+ * stronger precondition statically: it signs WITHOUT sending
+ * (`signTransaction`), and NO production code path calls the
+ * send-and-sign wallet primitive (`signAndSendTransaction`) — verified by
+ * the whole-repository audit recorded in this file's tests (the only
+ * production callers of `sendSolanaUSDCPayment`, the send-and-sign
+ * helper, are the tests themselves).
  */
 async function broadcastSignedPayment(
   fetchImpl: typeof fetch,
@@ -621,8 +742,12 @@ async function broadcastSignedPayment(
     paymentIntentId: string
     creatorIdentityId: string
     signedTransaction: string
-  }
-): Promise<{ ok: true; signature: string } | { ok: false; error: string }> {
+  },
+  safePreBroadcastRelease: boolean
+): Promise<
+  | { ok: true; signature: string }
+  | { ok: false; error: string; broadcastAttempted?: boolean }
+> {
   try {
     const res = await fetchImpl("/api/solana/broadcast", {
       method: "POST",
@@ -633,15 +758,45 @@ async function broadcastSignedPayment(
       ok?: boolean
       signature?: string
       error?: string
+      broadcastAttempted?: unknown
     } | null
     if (!res.ok || !data?.ok || typeof data.signature !== "string") {
-      return {
+      /**
+       * Only an EXPLICIT `broadcastAttempted: false` is a proven pre-send
+       * refusal. An absent / non-boolean field (older endpoint, proxy,
+       * truncated body) is UNKNOWN and therefore keeps the protective
+       * behaviour of resuming the possibly-sent transaction.
+       */
+      const preSendRefusal = data?.broadcastAttempted === false
+      if (preSendRefusal && safePreBroadcastRelease) {
+        /**
+         * Proven pre-send refusal AND the transaction was only ever
+         * signed: no transaction of ours can exist for this attempt, so
+         * the local pointer must be released. Otherwise the next explicit
+         * retry would resume-verify a transaction that was never
+         * submitted and the creator would be stuck in a verification
+         * loop for a payment that cannot be observed.
+         *
+         * Scoped to THIS intent on purpose: every other pending attempt is
+         * left untouched.
+         */
+        const current = readPendingPaymentAttempt()
+        if (current && current.paymentIntentId === input.paymentIntentId) {
+          clearPendingPaymentAttempt()
+        }
+      }
+      const failure: { ok: false; error: string; broadcastAttempted?: boolean } = {
         ok: false,
         error:
           typeof data?.error === "string" && data.error
             ? data.error
             : "PAYMENT_BROADCAST_FAILED",
       }
+      // Omitted entirely when the server did not classify the refusal.
+      if (typeof data?.broadcastAttempted === "boolean") {
+        failure.broadcastAttempted = data.broadcastAttempted
+      }
+      return failure
     }
     return { ok: true, signature: data.signature }
   } catch {
@@ -711,6 +866,33 @@ export function createServicePaymentController(
   deps: ServicePaymentControllerDeps = {}
 ): ServicePaymentController {
   const fetchImpl = deps.fetchImpl ?? ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => fetch(input, init))
+
+  /**
+   * In-flight guards: at most ONE operation per identity-proof stage, so
+   * an overlapping caller joins the running operation instead of opening
+   * a second challenge / a second wallet signature window.
+   *
+   * The stages stay SEPARATE on purpose — they are different protocol
+   * steps with different server semantics (verify-proof CONSUMES the
+   * challenge, credit-status and create-quote only read it), so one
+   * stage's proof must never be substituted for another's.
+   */
+  const identityVerificationGuard = createSameShapeCallGuard()
+  const purchaseProofGuard = createSameShapeCallGuard()
+  const entitlementRecheckGuard = createSameShapeCallGuard()
+
+  /**
+   * May a proven pre-broadcast refusal release the local pending record?
+   *
+   * Defaults to the production capability — the wallet API exposes the
+   * SIGN-WITHOUT-SENDING primitive, which the payment path uses
+   * exclusively. A caller that cannot vouch for it (test seam) keeps the
+   * protective "resume the possibly-sent transaction" behaviour.
+   */
+  const isSafePreBroadcastRelease = () => {
+    if (deps.safePreBroadcastRelease) return deps.safePreBroadcastRelease()
+    return typeof wallet?.signTransaction === "function"
+  }
 
   let state: ServicePaymentState = {
     phase: "idle",
@@ -814,28 +996,43 @@ export function createServicePaymentController(
    * entitlement.
    */
   const recheckEntitlement = async (): Promise<ServicePaymentDiscoveryResult> => {
-    const currentWallet = wallet;
-    const account = currentWallet?.account ?? null;
-    if (!currentWallet?.connected || !account) {
-      throw new Error("WALLET_ACCOUNT_UNAVAILABLE");
-    }
+    /**
+     * One overlapping re-check JOINS the running one: the entitlement
+     * question is the same and the answer is already being computed, so a
+     * second challenge + signature window would add nothing but a prompt.
+     * The guard covers the WHOLE operation (challenge → signature →
+     * bounded re-read), so it can never release mid-flight.
+     */
+    const runRecheck = async (): Promise<ServicePaymentDiscoveryResult> => {
+      const currentWallet = wallet;
+      const account = currentWallet?.account ?? null;
+      if (!currentWallet?.connected || !account) {
+        throw new Error("WALLET_ACCOUNT_UNAVAILABLE");
+      }
 
-    const challenge = await issueChallenge(account, fetchImpl);
-    const encoded =
-      typeof challenge.message === "string"
-        ? new TextEncoder().encode(challenge.message)
-        : challenge.message;
+      const challenge = await issueChallenge(account, fetchImpl);
+      const encoded =
+        typeof challenge.message === "string"
+          ? new TextEncoder().encode(challenge.message)
+          : challenge.message;
 
-    const { signature } = await currentWallet.signMessage(encoded);
-    const proof: ServicePaymentIdentityProof = {
-      challengeId: challenge.challengeId,
-      network: "solana",
-      account,
-      signature: btoa(String.fromCharCode(...new Uint8Array(signature))),
-      expiresAt: challenge.expiresAt,
+      const { signature } = await currentWallet.signMessage(encoded);
+      const proof: ServicePaymentIdentityProof = {
+        challengeId: challenge.challengeId,
+        network: "solana",
+        account,
+        signature: btoa(String.fromCharCode(...new Uint8Array(signature))),
+        expiresAt: challenge.expiresAt,
+      };
+
+      return recheckEntitlementWithProof(proof, fetchImpl, deps.isCancelled);
     };
 
-    return recheckEntitlementWithProof(proof, fetchImpl, deps.isCancelled);
+    return entitlementRecheckGuard.run(
+      () => patch({ phase: "verifying_identity", error: null, isProcessing: true }),
+      () => patch({ isProcessing: false }),
+      runRecheck
+    );
   };
 
   const syncWallet = (next: ServicePaymentWalletApi) => {
@@ -883,52 +1080,76 @@ export function createServicePaymentController(
     account: string
     signature: string
   }> => {
-    const currentAccount = wallet?.account ?? null
-    if (!currentAccount) {
-      throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
-    }
+    /**
+     * The proof itself is built in a non-guarded helper: it CREATES the
+     * challenge + signature once and RETAINS it. Two overlapping callers
+     * must not each create one, so the guard below serialises them.
+     */
+    const runPurchaseProof = async (): Promise<{
+      challengeId: string
+      network: string
+      account: string
+      signature: string
+    }> => {
+      const currentAccount = wallet?.account ?? null
+      if (!currentAccount) {
+        throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
+      }
 
-    const retained = retainedPurchaseProof
-    if (
-      retained &&
-      retained.account === currentAccount &&
-      retained.expiresAt > Date.now()
-    ) {
+      const retained = retainedPurchaseProof
+      if (
+        retained &&
+        retained.account === currentAccount &&
+        retained.expiresAt > Date.now()
+      ) {
+        return {
+          challengeId: retained.challengeId,
+          network: retained.network,
+          account: retained.account,
+          signature: retained.signature,
+        }
+      }
+
+      const { challengeId, message, expiresAt } = await issueChallenge(currentAccount, fetchImpl)
+      const encoded =
+        typeof message === "string" ? new TextEncoder().encode(message) : message
+      if (!wallet?.account) {
+        throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
+      }
+      const { signature } = await wallet.signMessage(encoded)
+      if (!wallet?.account) {
+        throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
+      }
+
+      const proof: ServicePaymentIdentityProof = {
+        challengeId,
+        network: "solana",
+        account: currentAccount,
+        signature: btoa(String.fromCharCode(...new Uint8Array(signature))),
+        expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 600_000,
+      }
+      retainedPurchaseProof = proof
+
+      // The wire shape is unchanged: the extra expiresAt stays local.
       return {
-        challengeId: retained.challengeId,
-        network: retained.network,
-        account: retained.account,
-        signature: retained.signature,
+        challengeId: proof.challengeId,
+        network: proof.network,
+        account: proof.account,
+        signature: proof.signature,
       }
     }
 
-    const { challengeId, message, expiresAt } = await issueChallenge(currentAccount, fetchImpl)
-    const encoded =
-      typeof message === "string" ? new TextEncoder().encode(message) : message
-    if (!wallet?.account) {
-      throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
-    }
-    const { signature } = await wallet.signMessage(encoded)
-    if (!wallet?.account) {
-      throw new Error("WALLET_ACCOUNT_UNAVAILABLE")
-    }
-
-    const proof: ServicePaymentIdentityProof = {
-      challengeId,
-      network: "solana",
-      account: currentAccount,
-      signature: btoa(String.fromCharCode(...new Uint8Array(signature))),
-      expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 600_000,
-    }
-    retainedPurchaseProof = proof
-
-    // The wire shape is unchanged: the extra expiresAt stays local.
-    return {
-      challengeId: proof.challengeId,
-      network: proof.network,
-      account: proof.account,
-      signature: proof.signature,
-    }
+    /**
+     * The purchase guard does NOT own a visible phase of its own, so the
+     * phase markers are no-ops here — only the in-flight coalescing
+     * matters. Overlapping callers share the SAME retained challenge, so
+     * at most one signature window is opened for this stage.
+     */
+    return purchaseProofGuard.run(
+      () => {},
+      () => {},
+      runPurchaseProof
+    )
   }
 
   /**
@@ -1035,7 +1256,15 @@ export function createServicePaymentController(
 
     patch({ phase: "verifying_identity", error: null, verificationError: null, isProcessing: true })
 
-    try {
+    /**
+     * The VERIFICATION OPERATION itself: challenge (unless a live proof is
+     * retained) → wallet signature → authoritative credit-status discovery
+     * → verify-proof consumption. Wrapped by the in-flight guard below so
+     * an overlapping caller joins THIS operation instead of opening a
+     * second wallet signature window.
+     */
+    const runIdentityVerification = async (): Promise<void> => {
+      try {
       // PATCH-2J: ONE identity challenge per verification flow. A retained
       // proof still bound to the current account and unexpired is reused
       // as-is — an explicit retry after a transient failure must not ask
@@ -1119,15 +1348,51 @@ export function createServicePaymentController(
         identityProof: null,
       })
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "WALLET_VERIFICATION_FAILED"
-      // A retained proof (if any) survives the failure so an explicit
-      // retry reuses it without a second signature; syncWallet (account
-      // switch / disconnect) and reset() invalidate it.
-      patch({ verificationError: message, error: message, phase: "error" })
-    } finally {
-      patch({ isProcessing: false })
+        const message =
+          err instanceof Error ? err.message : "WALLET_VERIFICATION_FAILED"
+        // A retained proof (if any) survives the failure so an explicit
+        // retry reuses it without a second signature; syncWallet (account
+        // switch / disconnect) and reset() invalidate it.
+        patch({ verificationError: message, error: message, phase: "error" })
+      } finally {
+        patch({ isProcessing: false })
+      }
     }
+
+    /**
+     * Phase markers for a JOINING caller and for the moment this stage
+     * releases its in-flight slot.
+     *
+     * `verifying` and `available` are states of COMPLETED work and are
+     * deliberately left alone. Only a still-transient `verifying_identity`
+     * is normalised once nothing is in flight: the gate must be able to
+     * act on a settled phase (identity + discovery are either established
+     * or reported through `error`), so it can never be left spinning
+     * forever on a dead in-flight flag.
+     */
+    const markStageActive = () =>
+      patch({ error: null, isProcessing: true })
+
+    const markStageIdle = () => {
+      const transient = state.phase === "verifying_identity"
+      patch({
+        ...(transient
+          ? {
+              phase:
+                state.discovery && state.verifiedCreatorIdentityId
+                  ? "wallet_verified"
+                  : "quote_ready",
+            }
+          : {}),
+        isProcessing: false,
+      })
+    }
+
+    return identityVerificationGuard.run(
+      markStageActive,
+      markStageIdle,
+      runIdentityVerification
+    )
   }
 
   const connectWallet = async () => {
@@ -1485,14 +1750,27 @@ export function createServicePaymentController(
 
         // Bind the signature to the intent atomically, then broadcast the
         // SAME bytes through the strict endpoint.
-        const broadcast = await broadcastSignedPayment(fetchImpl, {
-          paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId: effectiveCreatorIdentityId,
-          signedTransaction: signed.signedTransactionBase64,
-        })
+        const broadcast = await broadcastSignedPayment(
+          fetchImpl,
+          {
+            paymentIntentId: quote.paymentIntentId,
+            creatorIdentityId: effectiveCreatorIdentityId,
+            signedTransaction: signed.signedTransactionBase64,
+          },
+          isSafePreBroadcastRelease()
+        )
         if (!broadcast.ok) {
-          // The pending record is deliberately KEPT: the outcome may be
-          // unknown, and a retry resumes the same signature.
+          /**
+           * The pending record is deliberately KEPT for every UNKNOWN
+           * outcome (RPC error / timeout / unclassified refusal): a
+           * transaction may exist on chain, and a retry must resume the
+           * SAME signature instead of sending a second transfer.
+           *
+           * It is released ONLY when the server explicitly proved it never
+           * called `sendTransaction` (`broadcastAttempted: false`) AND the
+           * payment path was proven sign-only — done inside
+           * `broadcastSignedPayment`, never here from the error text.
+           */
           patch({
             error: broadcast.error,
             phase: "error",

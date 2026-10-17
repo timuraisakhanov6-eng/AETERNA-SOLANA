@@ -1324,3 +1324,142 @@ describe("pre-payment entitlement re-check", () => {
     await expect(controller.recheckEntitlement()).rejects.toThrow();
   });
 });
+/* ================= CONCURRENT IDENTITY-PROOF STAGES =================
+ *
+ * Production symptom: Phantom asked for the SAME challenge message several
+ * times. Root cause (audit): each proof stage publishes its result only
+ * AFTER the wallet answers, so two OVERLAPPING calls of the same stage both
+ * saw "no proof yet", both requested a challenge and both opened a wallet
+ * window. `isProcessing` could not prevent it, because the gate's guard is
+ * derived from an outer flow state that a re-render can reset.
+ *
+ * These invariants pin the fix AND the property it must not break: the
+ * three identity-proof stages are DIFFERENT protocol steps (verify-proof
+ * consumes the challenge; credit-status and create-quote only read it), so
+ * they stay separate stages — only calls of the SAME stage coalesce.
+ */
+describe("concurrent identity-proof stages", () => {
+  const countCalls = (calls: { url: string }[], fragment: string) =>
+    calls.filter((c) => c.url.includes(fragment)).length;
+
+  const bodiesTo = (calls: { url: string; body?: unknown }[], fragment: string) =>
+    calls
+      .filter((c) => c.url.includes(fragment))
+      .map((c) => c.body as Record<string, unknown>);
+
+  /** A COMPLETE absence: the re-check window ends immediately. */
+  const COMPLETE_NONE = {
+    ok: true,
+    status: "none",
+    creatorCreditId: null,
+    creatorIdentityId: "identity-1",
+    account: ACCOUNT,
+    summary: {
+      availableCount: 0,
+      consumingCount: 0,
+      consumedCount: 0,
+      total: 0,
+      enumerationComplete: true,
+    },
+    unfinishedLifecycles: [],
+  };
+
+  it("overlapping verifyIdentity calls coalesce into ONE challenge and ONE signMessage window", async () => {
+    const wallet = createWalletStub();
+    const { controller, calls } = setup({
+      routes: [
+        { match: (u) => u.includes("issue-challenge"), body: ISSUE_BODY },
+        { match: (u) => u.includes("credit-status"), body: COMPLETE_NONE },
+        { match: (u) => u.includes("verify-proof"), body: PROOF_BODY },
+      ],
+    });
+    controller.syncWallet(wallet);
+
+    // Two callers starting in the SAME tick — the production hazard (a
+    // second click, or a phase-driven restart while the first is running).
+    await Promise.all([
+      controller.verifyIdentity(),
+      controller.verifyIdentity(),
+    ]);
+
+    // ONE wallet prompt, not two.
+    expect(wallet.signMessage).toHaveBeenCalledTimes(1);
+    expect(countCalls(calls, "issue-challenge")).toBe(1);
+    // The joining caller receives the SAME verified outcome.
+    expect(countCalls(calls, "credit-status")).toBe(1);
+    expect(countCalls(calls, "verify-proof")).toBe(1);
+    expect(controller.getState().verifiedCreatorIdentityId).toBe("identity-1");
+    expect(controller.getState().phase).toBe("wallet_verified");
+  });
+
+  it("parallel purchase-proof and re-check calls open exactly ONE window per stage (not one per caller)", async () => {
+    const wallet = createWalletStub();
+    const { controller, calls } = setup({
+      routes: [
+        { match: (u) => u.includes("create-quote"), body: QUOTE_BODY },
+        { match: (u) => u.includes("issue-challenge"), body: ISSUE_BODY },
+        { match: (u) => u.includes("credit-status"), body: COMPLETE_NONE },
+      ],
+    });
+    controller.syncWallet(wallet);
+
+    await Promise.all([
+      controller.requestQuote(),
+      controller.recheckEntitlement(),
+      controller.requestQuote(),
+      controller.recheckEntitlement(),
+    ]);
+
+    /**
+     * TWO windows total: one for the purchase-guard stage and one for the
+     * re-check stage. Four callers, two prompts — the joined callers share
+     * the running operation instead of each opening their own.
+     */
+    expect(wallet.signMessage).toHaveBeenCalledTimes(2);
+    expect(countCalls(calls, "issue-challenge")).toBe(2);
+    // The joined re-check caller did not enumerate a second time.
+    expect(countCalls(calls, "credit-status")).toBe(1);
+  });
+
+  it("keeps the three identity-proof stages distinct: the consumed discovery challenge is never reused by the purchase guard", async () => {
+    const wallet = createWalletStub();
+    let challengeSeq = 0;
+    const { controller, calls } = setup({
+      routes: [
+        {
+          match: (u) => u.includes("issue-challenge"),
+          // A UNIQUE challenge per issuance, so the stage that produced
+          // each proof is observable.
+          get body() {
+            challengeSeq += 1;
+            const id = `challenge-stage-${challengeSeq}`;
+            return { ...ISSUE_BODY, id, challengeId: id };
+          },
+        },
+        { match: (u) => u.includes("create-quote"), body: QUOTE_BODY },
+        { match: (u) => u.includes("credit-status"), body: COMPLETE_NONE },
+        { match: (u) => u.includes("verify-proof"), body: PROOF_BODY },
+      ],
+    });
+    controller.syncWallet(wallet);
+
+    // Purchase-guard stage first (requestQuote builds its OWN proof), then
+    // the discovery stage (connectWallet → verifyIdentity).
+    await controller.requestQuote();
+    await controller.connectWallet();
+
+    // One challenge per stage — no stage borrowed another's proof.
+    expect(countCalls(calls, "issue-challenge")).toBe(2);
+    expect(wallet.signMessage).toHaveBeenCalledTimes(2);
+
+    // The purchase guard proved itself with the FIRST challenge; the
+    // discovery + verify-proof pair worked with the SECOND one.
+    const quoteBody = bodiesTo(calls, "create-quote")[0]!;
+    const discoveryBody = bodiesTo(calls, "credit-status")[0]!;
+    const proofBody = bodiesTo(calls, "verify-proof")[0]!;
+    expect(quoteBody["challengeId"]).toBe("challenge-stage-1");
+    expect(discoveryBody["challengeId"]).toBe("challenge-stage-2");
+    expect(proofBody["challengeId"]).toBe("challenge-stage-2");
+    expect(quoteBody["challengeId"]).not.toBe(proofBody["challengeId"]);
+  });
+});

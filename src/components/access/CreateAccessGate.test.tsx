@@ -168,22 +168,23 @@ const AVAILABLE_DISCOVERY = () =>
   });
 
 /** A CONFIRMED absence: complete enumeration, zero active rights. */
-const NO_CREDIT_DISCOVERY = () =>
-  json({
-    ok: true,
-    status: "none",
-    creatorCreditId: null,
-    creatorIdentityId: null,
-    account: WALLET_ACCOUNT,
-    summary: {
-      availableCount: 0,
-      consumingCount: 0,
-      consumedCount: 0,
-      total: 0,
-      enumerationComplete: true,
-    },
-    unfinishedLifecycles: [],
-  });
+const NO_CREDIT_DISCOVERY_BODY = {
+  ok: true,
+  status: "none",
+  creatorCreditId: null,
+  creatorIdentityId: null,
+  account: WALLET_ACCOUNT,
+  summary: {
+    availableCount: 0,
+    consumingCount: 0,
+    consumedCount: 0,
+    total: 0,
+    enumerationComplete: true,
+  },
+  unfinishedLifecycles: [],
+};
+
+const NO_CREDIT_DISCOVERY = () => json(NO_CREDIT_DISCOVERY_BODY);
 
 /** An UNCONFIRMED absence: the enumeration could not be vouched for. */
 const UNCONFIRMED_NONE_DISCOVERY = () =>
@@ -272,7 +273,14 @@ function installFetchRoutes(
   routes: Array<{
     match: string;
     respond: (init?: RequestInit) => ReturnType<typeof json>;
-  }>
+  }>,
+  /**
+   * Optional override for the validated broadcast endpoint. Defaults to the
+   * canonical success echo; a scenario that must exercise a REFUSAL passes
+   * its own response here instead of adding a magic route.
+   */
+  broadcastRespond: (init?: RequestInit) => ReturnType<typeof json> = () =>
+    json({ ok: true, signature: "tx-sig-access-gate" })
 ) {
   // Cast through the hoisted mock's own signature: per-test routes replace
   // the implementation, so the exact response shape varies by scenario.
@@ -284,14 +292,11 @@ function installFetchRoutes(
     const url = String(input);
     /**
      * The validated broadcast endpoint is always available: the payment
-     * signs locally, persists, then binds + broadcasts through it. It
-     * echoes the signature the mocked signing produced.
+     * signs locally, persists, then binds + broadcasts through it. By
+     * default it echoes the signature the mocked signing produced.
      */
     if (url.includes("/api/solana/broadcast")) {
-      return {
-        ok: true,
-        json: async () => ({ ok: true, signature: "tx-sig-access-gate" }),
-      };
+      return broadcastRespond(init);
     }
     const route = routes.find((r) => url.includes(r.match));
     if (!route) throw new Error(`unexpected fetch in test: ${url}`);
@@ -1420,5 +1425,203 @@ describe("Home Access Gate", () => {
     expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
     expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(0);
     expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+  });
+});
+
+/**
+ * PRODUCTION REGRESSIONS (INVALID_INSTRUCTION_COUNT + repeated signatures)
+ *
+ * The server refused a signed transaction and the gate showed the generic
+ * "Something went wrong. Please try again." copy, inviting an immediate
+ * retry. Two invariants are pinned here:
+ *
+ *  - a KNOWN server-side transaction-format refusal gets its own
+ *    explanation and never the generic fallback;
+ *  - while a wallet request is in flight, an extra click opens NO second
+ *    signature window.
+ */
+describe("Home Access Gate — server refusal and in-flight protection", () => {
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+    signMessageMock.mockClear();
+    signSolanaUSDCPaymentMock.mockClear();
+    isMobileMock.mockReset();
+    isMobileMock.mockReturnValue(false);
+    mobileDeeplinkMock.mockReset();
+    stableWallet.connected = false;
+    stableWallet.account = null;
+    stableWallet.walletName = null;
+    setPhantom(false);
+    try {
+      localStorage.clear();
+    } catch {
+      /* jsdom always provides localStorage */
+    }
+    if (typeof globalThis.crypto?.randomUUID !== "function") {
+      Object.defineProperty(globalThis.crypto, "randomUUID", {
+        value: () => "00000000-0000-4000-8000-000000000000",
+        configurable: true,
+      });
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    clearPendingPaymentAttempt();
+    setPhantom(false);
+  });
+
+  it("16. a server-side transaction-format refusal shows a specific explanation, never the generic failure", async () => {
+    setPhantom(true);
+    connectWallet();
+    installFetchRoutes(
+      [
+        { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+        { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+        { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+        { match: "/api/service-payment/create-quote", respond: CREATE_QUOTE },
+        { match: "/api/service-payment/verify", respond: VERIFY_VERIFIED },
+        { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+      ],
+      /**
+       * The endpoint refuses the transaction format BEFORE submitting it.
+       * No classification field is present on purpose: an envelope the
+       * client cannot vouch for must NOT be treated as a proven pre-send
+       * refusal.
+       */
+      () => json({ ok: false, error: "INVALID_INSTRUCTION_COUNT" }, false)
+    );
+
+    render(tree());
+
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toContain(
+          "rejected by our server"
+        ),
+      { timeout: 5000 }
+    );
+
+    const statusText = screen.getByRole("status").textContent ?? "";
+    // The specific reason is surfaced, never the generic fallback...
+    expect(statusText).not.toContain("Something went wrong");
+    // ...and it makes no claim about the user's funds.
+    expect(statusText).not.toMatch(/not charged|nothing was charged|no money/i);
+    // Nothing beyond the single refused attempt was ever attempted.
+    expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
+    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(screen.queryByTestId("create-route")).toBeNull();
+  });
+});
+
+/**
+ * IN-FLIGHT CLICK PROTECTION
+ *
+ * A second click while a wallet request is running must not start a second
+ * flow — that is what used to open a second Phantom signature window.
+ */
+describe("Home Access Gate — in-flight click protection", () => {
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+    signMessageMock.mockClear();
+    signSolanaUSDCPaymentMock.mockClear();
+    isMobileMock.mockReset();
+    isMobileMock.mockReturnValue(false);
+    mobileDeeplinkMock.mockReset();
+    stableWallet.connected = false;
+    stableWallet.account = null;
+    stableWallet.walletName = null;
+    setPhantom(false);
+    try {
+      localStorage.clear();
+    } catch {
+      /* jsdom always provides localStorage */
+    }
+    if (typeof globalThis.crypto?.randomUUID !== "function") {
+      Object.defineProperty(globalThis.crypto, "randomUUID", {
+        value: () => "00000000-0000-4000-8000-000000000000",
+        configurable: true,
+      });
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    clearPendingPaymentAttempt();
+    setPhantom(false);
+  });
+
+  it("17. an extra click while a wallet request is in flight opens NO second signature window", async () => {
+    setPhantom(true);
+    connectWallet();
+
+    // The discovery answer is withheld until this test releases it, so the
+    // gate is genuinely MID-FLIGHT when the extra click happens.
+    // (Initialised to a no-op: the resolver is assigned inside the promise
+    // executor, which the compiler cannot observe.)
+    let releaseDiscovery: () => void = () => {};
+    const discoveryGate = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      {
+        match: "/api/creator/credit-status",
+        respond: () => ({
+          ok: true,
+          json: async () => {
+            await discoveryGate;
+            return NO_CREDIT_DISCOVERY_BODY;
+          },
+        }),
+      },
+    ]);
+
+    render(tree());
+
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    // The signature window is open: exactly one challenge, one signature.
+    await waitFor(() => expect(signMessageMock).toHaveBeenCalledTimes(1), {
+      timeout: 5000,
+    });
+    expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(1);
+
+    // The primary action is blocked for the whole in-flight window...
+    const primary = screen.getByRole("button") as HTMLButtonElement;
+    await waitFor(() => expect(primary.disabled).toBe(true));
+
+    // ...so repeated clicks start nothing new.
+    fireEvent.click(primary);
+    fireEvent.click(primary);
+
+    expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(1);
+    expect(signMessageMock).toHaveBeenCalledTimes(1);
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+
+    releaseDiscovery();
+
+    // The withheld answer lands and the flow continues normally, still with
+    // exactly ONE identity signature for the whole discovery.
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+    expect(signMessageMock).toHaveBeenCalledTimes(1);
+    expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(1);
   });
 });

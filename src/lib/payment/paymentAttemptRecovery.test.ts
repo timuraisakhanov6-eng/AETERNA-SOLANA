@@ -105,7 +105,23 @@ interface Stub {
 function createStub(options: {
   expiresAt?: number;
   verifyBehaviour?: "verified" | "transport-error" | "not-found";
+  /** Legacy flat failure: 502 RPC_ERROR with NO classification field. */
   broadcastFails?: boolean;
+  /**
+   * What /api/solana/broadcast answers. Models the endpoint's structured
+   * `broadcastAttempted` classification:
+   *  - "pre-send-refusal": 400 + `broadcastAttempted:false` (proved by the
+   *    server that it never called sendTransaction);
+   *  - "unclassified-refusal": 400 WITHOUT the field (older endpoint / any
+   *    envelope the client cannot vouch for);
+   *  - "rpc-unknown": 502 + `broadcastAttempted:true` (submission attempted);
+   *  - "transport-error": the request itself fails.
+   */
+  broadcastBehaviour?:
+    | "pre-send-refusal"
+    | "unclassified-refusal"
+    | "rpc-unknown"
+    | "transport-error";
   /**
    * The signature create-quote reports as ALREADY bound to this attempt
    * (the server-side discovery of a lost local pointer).
@@ -153,6 +169,35 @@ function createStub(options: {
     // (mocked) signing produced, otherwise the controller fails closed.
     if (url.includes("/api/solana/broadcast")) {
       broadcastBodies.push(body);
+      const behaviour = options.broadcastBehaviour;
+      if (behaviour === "transport-error") {
+        throw new Error("network down");
+      }
+      if (behaviour === "pre-send-refusal") {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({
+            ok: false,
+            error: "INVALID_INSTRUCTION_COUNT",
+            broadcastAttempted: false,
+          }),
+        } as unknown as Response;
+      }
+      if (behaviour === "unclassified-refusal") {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ ok: false, error: "INVALID_INSTRUCTION_COUNT" }),
+        } as unknown as Response;
+      }
+      if (behaviour === "rpc-unknown") {
+        return {
+          ok: false,
+          status: 502,
+          json: async () => ({ ok: false, error: "RPC_ERROR", broadcastAttempted: true }),
+        } as unknown as Response;
+      }
       if (options.broadcastFails) {
         return {
           ok: false,
@@ -621,5 +666,112 @@ describe("client payment recovery", () => {
     expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
     expect(stub.broadcastCalls()).toHaveLength(1);
     expect(stub.grantCalls()).toHaveLength(1);
+  });
+});
+/**
+ * PRE-BROADCAST REFUSAL vs UNKNOWN OUTCOME.
+ *
+ * The endpoint classifies every refusal with the structured
+ * `broadcastAttempted` field. The client may release the local pending
+ * pointer ONLY for an explicit `false` (the server proved it never called
+ * `sendTransaction`) AND only when the payment path is proven sign-only.
+ * Everything else — an RPC failure, a transport error, or an envelope with
+ * no classification at all — must keep the pointer, because a transaction
+ * may exist on chain and a retry may only ever resume it.
+ *
+ * These invariants are what stop a rejected-format attempt from looping
+ * forever on a signature the server never submitted, WITHOUT ever risking a
+ * second transfer for a transaction that might have landed.
+ */
+describe("pre-broadcast refusal handling", () => {
+  it("releases the pointer on a PROVEN pre-send refusal, so the retry signs a NEW transaction instead of verifying a phantom signature", async () => {
+    const stub = createStub({ broadcastBehaviour: "pre-send-refusal" });
+    const controller = await driveToPayable(stub);
+
+    await controller.confirmAndVerify();
+
+    // The server's own reason reaches the caller unchanged.
+    expect(controller.getState().error).toBe("INVALID_INSTRUCTION_COUNT");
+    expect(stub.broadcastCalls()).toHaveLength(1);
+    // Proven pre-send: nothing of ours can exist for this attempt, so the
+    // pointer is gone and no verification is attempted.
+    expect(readPendingPaymentAttempt()).toBeNull();
+    expect(stub.verifyCalls()).toHaveLength(0);
+
+    // The retry starts a NEW, complete payment attempt (signed AND
+    // broadcast again) — it never falls back to verifying the phantom
+    // signature of the refused transaction.
+    await controller.confirmAndVerify();
+
+    expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledTimes(2);
+    expect(stub.broadcastCalls()).toHaveLength(2);
+    // This stub refuses EVERY broadcast, so the second attempt is refused
+    // too and no verification is ever reached — precisely the loop the
+    // release is meant to prevent.
+    expect(stub.verifyCalls()).toHaveLength(0);
+    expect(controller.getState().error).toBe("INVALID_INSTRUCTION_COUNT");
+  });
+
+  it("KEEPS the pointer when the refusal carries no classification (unknown semantics)", async () => {
+    const stub = createStub({ broadcastBehaviour: "unclassified-refusal" });
+    const controller = await driveToPayable(stub);
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("INVALID_INSTRUCTION_COUNT");
+    const record = readPendingPaymentAttempt();
+    expect(record).not.toBeNull();
+    expect(record?.transactionId).toBe(TX);
+    expect(stub.verifyCalls()).toHaveLength(0);
+
+    // A retry RESUMES that same transaction instead of signing a new one.
+    await controller.confirmAndVerify();
+
+    expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
+    expect(stub.verifyCalls()).toEqual([{ transactionId: TX }]);
+  });
+
+  it("KEEPS the pointer on an RPC failure classified as broadcastAttempted:true (unknown on-chain outcome)", async () => {
+    const stub = createStub({ broadcastBehaviour: "rpc-unknown" });
+    const controller = await driveToPayable(stub);
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("RPC_ERROR");
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+    expect(stub.verifyCalls()).toHaveLength(0);
+  });
+
+  it("KEEPS the pointer when the broadcast request itself fails (transport)", async () => {
+    const stub = createStub({ broadcastBehaviour: "transport-error" });
+    const controller = await driveToPayable(stub);
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("PAYMENT_BROADCAST_FAILED");
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+  });
+
+  it("does NOT release the pointer when the sign-only capability cannot be vouched for", async () => {
+    const stub = createStub({ broadcastBehaviour: "pre-send-refusal" });
+    const controller = createServicePaymentController({
+      fetchImpl: stub.fetchImpl,
+      // The safety seam: without proof that the payment path can only
+      // SIGN, a pre-send refusal may not release the pointer.
+      safePreBroadcastRelease: () => false,
+    });
+    controller.setParams({
+      creatorIdentityId: null,
+      protocolAccepted: true,
+      stopAfterCredit: true,
+    });
+    controller.syncWallet(createWalletStub());
+    await controller.requestQuote();
+    await controller.connectWallet();
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("INVALID_INSTRUCTION_COUNT");
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
   });
 });

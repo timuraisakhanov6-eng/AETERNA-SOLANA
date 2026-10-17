@@ -114,6 +114,24 @@ function describeGateError(raw: string | null): string {
   if (code.includes("PAYMENT_ATTEMPT_ACTIVE")) {
     return "An earlier purchase attempt is still open. Resuming it instead of starting a new one.";
   }
+  /**
+   * SERVER-SIDE TRANSACTION-FORMAT REFUSAL.
+   *
+   * `INVALID_INSTRUCTION_COUNT` (the strict parser) and
+   * `UNEXPECTED_INSTRUCTION_COUNT` (the canonical-shape validator) mean
+   * the server refused the SIGNED TRANSACTION before it submitted
+   * anything — not that the wallet or the verification failed. This must
+   * never fall through to the generic "Something went wrong" copy, and it
+   * must not invite an immediate retry while a previous payment attempt
+   * may still be under verification: the copy states the server-side fact
+   * and nothing about the user's funds.
+   */
+  if (
+    code.includes("INVALID_INSTRUCTION_COUNT") ||
+    code.includes("UNEXPECTED_INSTRUCTION_COUNT")
+  ) {
+    return "Your wallet's transaction was rejected by our server before it was submitted — the transaction format did not match what this payment expects. If a payment is still being checked, wait for that result before paying again.";
+  }
   if (code.includes("SIGNATURE") || code.includes("CHALLENGE")) {
     return "Wallet verification was not completed. Please try again.";
   }
@@ -737,7 +755,20 @@ export default function CreateAccessGate() {
   const busy =
     createFlowState === "discovering" ||
     createFlowState === "payment-in-progress" ||
-    rechecking;
+    rechecking ||
+    /**
+     * Controller phases in which a WALLET REQUEST IS IN FLIGHT (connect /
+     * identity verification / transaction confirmation). The reducer alone
+     * is not enough: a phase-driven re-render can put the flow back into
+     * "ready" while the controller is still working, which is exactly how
+     * a second click used to open a second signature window. Disabling the
+     * primary action for the whole in-flight phase closes that hole; the
+     * controller's own in-flight guards remain the authoritative
+     * protection.
+     */
+    servicePaymentRuntime.phase === "connecting_wallet" ||
+    servicePaymentRuntime.phase === "verifying_identity" ||
+    servicePaymentRuntime.phase === "confirming";
 
   const primaryLabel =
     createFlowState === "needs-payment"

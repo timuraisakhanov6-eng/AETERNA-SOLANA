@@ -134,8 +134,32 @@ function baseHeaders(origin: string): Record<string, string> {
   return headers;
 }
 
-function fail(origin: string, status: number, error: string): Response {
-  return new Response(JSON.stringify({ ok: false, error }), {
+/**
+ * Refusal envelope.
+ *
+ * `broadcastAttempted` is an EXPLICIT, structured part of the contract —
+ * never something a client may infer from the error text:
+ *
+ *   - false: this request was refused BEFORE `sendTransaction` was ever
+ *     called (origin/rate-limit/body checks, intent resolution, strict
+ *     transaction parsing and every content validation, the mainnet-beta
+ *     network guard, or the atomic signature binding). The endpoint
+ *     provably did not submit these bytes.
+ *   - true: the refusal happened AT or AFTER the RPC call, so the outcome
+ *     on chain is UNKNOWN (the transaction may or may not have landed).
+ *
+ * The parameter is REQUIRED so a refusal can never be published without
+ * an explicit classification. It describes THIS server-side endpoint
+ * only; it is NOT a statement about any on-chain operation performed by
+ * anyone else (e.g. a wallet), and the client must not treat it as one.
+ */
+function fail(
+  origin: string,
+  status: number,
+  error: string,
+  broadcastAttempted: boolean
+): Response {
+  return new Response(JSON.stringify({ ok: false, error, broadcastAttempted }), {
     status,
     headers: baseHeaders(origin),
   });
@@ -185,13 +209,14 @@ async function requireMainnetBeta(
     genesis = await solanaJsonRpc<unknown>(rpcUrl, "getGenesisHash", []);
   } catch {
     // A failed / timed-out / erroring probe is NOT proof of network.
-    return fail(origin, 503, "RPC_NETWORK_UNAVAILABLE");
+    // (Nothing was bound and nothing was broadcast: pre-send refusal.)
+    return fail(origin, 503, "RPC_NETWORK_UNAVAILABLE", false);
   }
   if (typeof genesis !== "string" || genesis.length === 0) {
-    return fail(origin, 502, "RPC_NETWORK_UNDETERMINED");
+    return fail(origin, 502, "RPC_NETWORK_UNDETERMINED", false);
   }
   if (genesis !== SOLANA_MAINNET_BETA_GENESIS_HASH) {
-    return fail(origin, 502, "RPC_NETWORK_MISMATCH");
+    return fail(origin, 502, "RPC_NETWORK_MISMATCH", false);
   }
   return null;
 }
@@ -211,17 +236,17 @@ export async function onRequestPost(
 ): Promise<Response> {
   const origin = context.request.headers.get("origin") ?? "";
   if (!isAllowedOrigin(origin)) {
-    return fail(origin, 403, "INVALID_ORIGIN");
+    return fail(origin, 403, "INVALID_ORIGIN", false);
   }
 
   const ip = getClientIp(context.request);
   if (!ip || !rateLimit(ip)) {
-    return fail(origin, 429, "TOO_MANY_REQUESTS");
+    return fail(origin, 429, "TOO_MANY_REQUESTS", false);
   }
 
   const contentType = context.request.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return fail(origin, 415, "UNSUPPORTED_MEDIA_TYPE");
+    return fail(origin, 415, "UNSUPPORTED_MEDIA_TYPE", false);
   }
 
   const env = context.env as SolanaBroadcastEnv;
@@ -232,17 +257,17 @@ export async function onRequestPost(
       ? env.SOLANA_MAINNET_RPC_URL
       : "";
   if (!rpcUrl) {
-    return fail(origin, 502, "RPC_UNAVAILABLE");
+    return fail(origin, 502, "RPC_UNAVAILABLE", false);
   }
 
   let body: Record<string, unknown>;
   try {
     body = (await context.request.json()) as Record<string, unknown>;
   } catch {
-    return fail(origin, 400, "INVALID_JSON");
+    return fail(origin, 400, "INVALID_JSON", false);
   }
   if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) {
-    return fail(origin, 400, "INVALID_BODY");
+    return fail(origin, 400, "INVALID_BODY", false);
   }
 
   const paymentIntentId =
@@ -260,28 +285,28 @@ export async function onRequestPost(
     typeof body["creatorIdentityId"] === "string" ? body["creatorIdentityId"].trim() : "";
 
   if (!paymentIntentId || !signedTransactionB64 || !creatorIdentityIdHint) {
-    return fail(origin, 400, "INVALID_FIELDS");
+    return fail(origin, 400, "INVALID_FIELDS", false);
   }
   // Bound the encoded payload BEFORE decoding anything.
   if (signedTransactionB64.length > 1700) {
-    return fail(origin, 400, "TRANSACTION_TOO_LARGE");
+    return fail(origin, 400, "TRANSACTION_TOO_LARGE", false);
   }
 
   let bytes: Uint8Array;
   try {
     bytes = base64ToUint8Array(signedTransactionB64);
   } catch {
-    return fail(origin, 400, "INVALID_TRANSACTION_ENCODING");
+    return fail(origin, 400, "INVALID_TRANSACTION_ENCODING", false);
   }
   if (bytes.length === 0 || bytes.length > MAX_TRANSACTION_BYTES) {
-    return fail(origin, 400, "TRANSACTION_TOO_LARGE");
+    return fail(origin, 400, "TRANSACTION_TOO_LARGE", false);
   }
 
   /* ================= SERVER-SIDE IDENTITY RESOLUTION ================= */
 
   const coordinatorBinding = env.CREDIT_OP_COORDINATOR;
   if (!coordinatorBinding) {
-    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE", false);
   }
 
   const postToCoordinator = async (
@@ -310,7 +335,7 @@ export async function onRequestPost(
       paymentIntentId,
     });
   } catch {
-    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE", false);
   }
   if (!intentResolution.data?.["ok"]) {
     return fail(
@@ -318,22 +343,23 @@ export async function onRequestPost(
       intentResolution.httpStatus === 503 ? 503 : 409,
       typeof intentResolution.data?.["error"] === "string"
         ? (intentResolution.data["error"] as string)
-        : "INTENT_UNKNOWN"
+        : "INTENT_UNKNOWN",
+      false
     );
   }
 
   const creatorIdentityId = String(intentResolution.data["creatorIdentityId"] ?? "");
   const attemptState = String(intentResolution.data["state"] ?? "");
   if (!creatorIdentityId) {
-    return fail(origin, 409, "INTENT_UNKNOWN");
+    return fail(origin, 409, "INTENT_UNKNOWN", false);
   }
   if (attemptState === "granting" || attemptState === "fulfilled") {
     // A payment is already recorded for this attempt: continue the
     // existing verification/grant instead of broadcasting anything.
-    return fail(origin, 409, "INTENT_ALREADY_PAID");
+    return fail(origin, 409, "INTENT_ALREADY_PAID", false);
   }
   if (attemptState !== "reserved") {
-    return fail(origin, 409, "INTENT_NOT_PAYABLE");
+    return fail(origin, 409, "INTENT_NOT_PAYABLE", false);
   }
 
   /* ================= STRICT TRANSACTION VALIDATION ================= */
@@ -345,13 +371,14 @@ export async function onRequestPost(
     return fail(
       origin,
       400,
-      err instanceof TransactionParseError ? err.message : "INVALID_TRANSACTION"
+      err instanceof TransactionParseError ? err.message : "INVALID_TRANSACTION",
+      false
     );
   }
 
   // Exactly ONE signer: the paying wallet.
   if (parsed.numRequiredSignatures !== 1 || parsed.numReadonlySigned !== 0) {
-    return fail(origin, 400, "UNEXPECTED_SIGNER_SET");
+    return fail(origin, 400, "UNEXPECTED_SIGNER_SET", false);
   }
   const payerBytes = parsed.accountKeys[0]!;
   const payerAddress = base58Encode(payerBytes);
@@ -363,7 +390,7 @@ export async function onRequestPost(
     payerAddress
   ).catch(() => null);
   if (!identity || identity.id !== creatorIdentityId) {
-    return fail(origin, 403, "IDENTITY_MISMATCH");
+    return fail(origin, 403, "IDENTITY_MISMATCH", false);
   }
 
   // The signature must verify over the message, from the payer's own key.
@@ -373,7 +400,7 @@ export async function onRequestPost(
     parsed.messageBytes
   );
   if (!signatureOk) {
-    return fail(origin, 400, "INVALID_TRANSACTION_SIGNATURE");
+    return fail(origin, 400, "INVALID_TRANSACTION_SIGNATURE", false);
   }
   const transactionSignature = base58Encode(parsed.signatures[0]!);
 
@@ -391,7 +418,7 @@ export async function onRequestPost(
 
   const instructions = parsed.instructions;
   if (instructions.length < 1 || instructions.length > 2) {
-    return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT");
+    return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
   }
 
   const transferInstruction = instructions[instructions.length - 1]!;
@@ -400,7 +427,7 @@ export async function onRequestPost(
   // ---- optional canonical ATA-create (only when the settlement ATA is absent)
   if (ataCreateInstruction) {
     if (!sameBytes(parsed.accountKeys[ataCreateInstruction.programIdIndex]!, ataProgramBytes)) {
-      return fail(origin, 400, "UNEXPECTED_PROGRAM");
+      return fail(origin, 400, "UNEXPECTED_PROGRAM", false);
     }
     /**
      * The canonical ATA-create carries SIX account metas — payer,
@@ -413,7 +440,7 @@ export async function onRequestPost(
       accounts.length !== 6 ||
       ataCreateInstruction.data.length !== ATA_CREATE_DATA_LENGTH
     ) {
-      return fail(origin, 400, "UNEXPECTED_ATA_INSTRUCTION");
+      return fail(origin, 400, "UNEXPECTED_ATA_INSTRUCTION", false);
     }
     const [payerIdx, ataIdx, ownerIdx, mintIdx, systemIdx, tokenProgramIdx] =
       accounts as [number, number, number, number, number, number];
@@ -425,13 +452,13 @@ export async function onRequestPost(
       !sameBytes(parsed.accountKeys[systemIdx]!, systemProgramBytes) ||
       !sameBytes(parsed.accountKeys[tokenProgramIdx]!, tokenProgramBytes)
     ) {
-      return fail(origin, 400, "UNEXPECTED_ATA_ACCOUNTS");
+      return fail(origin, 400, "UNEXPECTED_ATA_ACCOUNTS", false);
     }
   }
 
   // ---- the canonical SPL Token `Transfer`
   if (!sameBytes(parsed.accountKeys[transferInstruction.programIdIndex]!, tokenProgramBytes)) {
-    return fail(origin, 400, "UNEXPECTED_PROGRAM");
+    return fail(origin, 400, "UNEXPECTED_PROGRAM", false);
   }
   /**
    * The canonical SPL Token `Transfer` has FOUR account metas, not
@@ -443,13 +470,13 @@ export async function onRequestPost(
    */
   const transferAccounts = transferInstruction.accountIndexes;
   if (transferAccounts.length !== 4 || transferInstruction.data.length !== 9) {
-    return fail(origin, 400, "UNEXPECTED_TRANSFER_INSTRUCTION");
+    return fail(origin, 400, "UNEXPECTED_TRANSFER_INSTRUCTION", false);
   }
   if (transferInstruction.data[0] !== SPL_TOKEN_TRANSFER) {
-    return fail(origin, 400, "UNEXPECTED_TRANSFER_INSTRUCTION");
+    return fail(origin, 400, "UNEXPECTED_TRANSFER_INSTRUCTION", false);
   }
   if (readU64LE(transferInstruction.data, 1) !== SERVICE_PAYMENT_ATOMIC) {
-    return fail(origin, 400, "UNEXPECTED_AMOUNT");
+    return fail(origin, 400, "UNEXPECTED_AMOUNT", false);
   }
   const [sourceIdx, destinationIdx, authorityIdx, signerIdx] = transferAccounts as [
     number,
@@ -463,7 +490,7 @@ export async function onRequestPost(
     !sameBytes(parsed.accountKeys[authorityIdx]!, payerBytes) ||
     !sameBytes(parsed.accountKeys[signerIdx]!, payerBytes)
   ) {
-    return fail(origin, 400, "UNEXPECTED_TRANSFER_ACCOUNTS");
+    return fail(origin, 400, "UNEXPECTED_TRANSFER_ACCOUNTS", false);
   }
 
   // ---- no unknown accounts may ride along
@@ -484,7 +511,7 @@ export async function onRequestPost(
   const allowed = new Set(allowedKeys);
   for (const key of parsed.accountKeys) {
     if (!allowed.has(base58Encode(key))) {
-      return fail(origin, 400, "UNEXPECTED_ACCOUNT");
+      return fail(origin, 400, "UNEXPECTED_ACCOUNT", false);
     }
   }
 
@@ -512,14 +539,16 @@ export async function onRequestPost(
       transactionId: transactionSignature,
     });
   } catch {
-    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+    // The coordinator never received the bind: nothing was submitted.
+    return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE", false);
   }
   if (!binding.data?.["ok"]) {
     const error =
       typeof binding.data?.["error"] === "string"
         ? (binding.data["error"] as string)
         : "BROADCAST_NOT_AUTHORIZED";
-    return fail(origin, binding.httpStatus === 503 ? 503 : 409, error);
+    // A refused binding means sendTransaction is NOT called (fail closed).
+    return fail(origin, binding.httpStatus === 503 ? 503 : 409, error, false);
   }
 
   /* ================= BROADCAST ================= */
@@ -536,12 +565,14 @@ export async function onRequestPost(
     ]);
 
     if (typeof result !== "string" || result.length === 0) {
-      return fail(origin, 502, "RPC_ERROR");
+      // sendTransaction WAS called: an unusable answer does not prove the
+      // transaction was rejected on chain.
+      return fail(origin, 502, "RPC_ERROR", true);
     }
     if (result !== transactionSignature) {
       // The network accepted a DIFFERENT transaction than the one we
       // validated and bound: fail closed, never continue with it.
-      return fail(origin, 502, "RPC_SIGNATURE_MISMATCH");
+      return fail(origin, 502, "RPC_SIGNATURE_MISMATCH", true);
     }
 
     return new Response(JSON.stringify({ ok: true, signature: result }), {
@@ -560,6 +591,7 @@ export async function onRequestPost(
     }
     // Never surface the upstream endpoint itself.
     const message = raw.includes(rpcUrl) ? "RPC_ERROR" : raw;
-    return fail(origin, 502, message || "RPC_ERROR");
+    // The submission was attempted: its outcome is UNKNOWN.
+    return fail(origin, 502, message || "RPC_ERROR", true);
   }
 }
