@@ -17,7 +17,7 @@
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { getTrustedTime } from "../time";
-import { getSolanaTransaction } from "../../lib/solana/rpc";
+import { getSolanaTransaction, isTransientSolanaRpcError } from "../../lib/solana/rpc";
 import {
   getBusinessQuote,
 } from "../../lib/business/businessQuoteStore";
@@ -913,7 +913,40 @@ async function resolveCreatorIdentity(
   }
 
   if (isSolanaSignature) {
-    const solanaVerification = await verifySolanaPayment(env, txHash, expectedPayer);
+    /**
+     * TRANSPORT vs VERDICT.
+     *
+     * `verifySolanaPayment` returns `TX_NOT_FOUND` ONLY when the RPC
+     * lookup COMPLETED and reported that the transaction is not (yet)
+     * observable. A transport / RPC EXCEPTION is a different fact: the
+     * chain was never successfully asked, so nothing may be concluded
+     * about the transaction. Such a failure is mapped to its own status
+     * (`503 VERIFICATION_UNAVAILABLE` when temporary, `502
+     * VERIFICATION_FAILED` otherwise) and is NEVER downgraded to
+     * `TX_NOT_FOUND`, so the caller can keep the payment attempt and
+     * retry instead of treating absence as proven. No amount, mint,
+     * destination, payer or identity check is affected.
+     */
+    let solanaVerification:
+      | Awaited<ReturnType<typeof verifySolanaPayment>>
+      | undefined;
+    try {
+      solanaVerification = await verifySolanaPayment(env, txHash, expectedPayer);
+    } catch (err) {
+      const transient = isTransientSolanaRpcError(err);
+      /**
+       * SAFE DIAGNOSTIC: only the failure CLASS and the error TYPE name
+       * are recorded. The transaction payload, base64, signatures, RPC
+       * URLs and credentials are never logged.
+       */
+      console.error("[service-payment/verify] solana verification unavailable", {
+        kind: transient ? "transient" : "unexpected",
+        name: err instanceof Error ? err.name : "unknown",
+      });
+      return transient
+        ? fail(origin, 503, "VERIFICATION_UNAVAILABLE")
+        : fail(origin, 502, "VERIFICATION_FAILED");
+    }
     if (!solanaVerification.ok) {
       return fail(
         origin,

@@ -391,3 +391,146 @@ describe("pending-attempt reconciliation — untouched records", () => {
     expect(remaining?.transactionId).toBeNull();
   });
 });
+
+describe("pending-attempt reconciliation — bounded transient retries", () => {
+  it("retries a TRANSIENT height failure ONCE, then proceeds with the safe checks", async () => {
+    seedPendingRecord({ lastValidBlockHeight: EXPIRED_HEIGHT });
+
+    let heightCalls = 0;
+    const outcome = await reconcileStalePendingPaymentAttempt({
+      retryDelayMs: 0,
+      rpcTransport: async (method) => {
+        if (method === "getBlockHeight") {
+          heightCalls += 1;
+          if (heightCalls === 1) {
+            // Exactly the proxy's transient edge signal.
+            throw new Error("SOLANA_RPC_HTTP_502");
+          }
+          return (
+            EXPIRED_HEIGHT + PENDING_ATTEMPT_RECONCILE_MARGIN_BLOCKS + 1
+          );
+        }
+        if (method === "getSignatureStatuses") return SILENT_HISTORY;
+        return null; // getTransaction
+      },
+    });
+
+    expect(outcome.status).toBe("released");
+    expect(outcome.releaseReason).toBe("EXPIRED_AND_ABSENT");
+    // The transient blip consumed exactly one extra attempt — no more.
+    expect(heightCalls).toBe(2);
+  });
+
+  it("keeps the record and reports a transport outage after the retries are exhausted (HTTP 429)", async () => {
+    seedPendingRecord();
+
+    let heightCalls = 0;
+    const outcome = await reconcileStalePendingPaymentAttempt({
+      retryDelayMs: 0,
+      rpcTransport: async (method) => {
+        if (method === "getBlockHeight") {
+          heightCalls += 1;
+          throw new Error("SOLANA_RPC_HTTP_429");
+        }
+        throw new Error(`UNEXPECTED_RPC_METHOD: ${method}`);
+      },
+    });
+
+    expect(outcome.status).toBe("kept");
+    expect(outcome.reason).toBe("BLOCK_HEIGHT_UNAVAILABLE");
+    expect(outcome.transportUnavailable).toBe(true);
+    // Bounded: one initial read plus one retry, then STOP.
+    expect(heightCalls).toBe(2);
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+  });
+
+  it("bounds the retries for a transient 5xx on the status lookup", async () => {
+    seedPendingRecord({ lastValidBlockHeight: EXPIRED_HEIGHT });
+
+    let statusCalls = 0;
+    const outcome = await reconcileStalePendingPaymentAttempt({
+      retryDelayMs: 0,
+      rpcTransport: async (method) => {
+        if (method === "getBlockHeight") return 999999999;
+        if (method === "getSignatureStatuses") {
+          statusCalls += 1;
+          throw new Error("SOLANA_RPC_HTTP_503");
+        }
+        throw new Error(`UNEXPECTED_RPC_METHOD: ${method}`);
+      },
+    });
+
+    expect(outcome.status).toBe("kept");
+    expect(outcome.reason).toBe("SIGNATURE_STATUS_UNAVAILABLE");
+    expect(outcome.transportUnavailable).toBe(true);
+    expect(statusCalls).toBe(2);
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+  });
+
+  it("does NOT retry a NON-transient refusal and never calls it a network outage", async () => {
+    seedPendingRecord();
+
+    let heightCalls = 0;
+    const outcome = await reconcileStalePendingPaymentAttempt({
+      retryDelayMs: 0,
+      rpcTransport: async (method) => {
+        if (method === "getBlockHeight") {
+          heightCalls += 1;
+          // A 4xx other than 429 is a configuration/bug signal.
+          throw new Error("SOLANA_RPC_HTTP_400");
+        }
+        throw new Error(`UNEXPECTED_RPC_METHOD: ${method}`);
+      },
+    });
+
+    expect(outcome.status).toBe("kept");
+    expect(outcome.reason).toBe("BLOCK_HEIGHT_UNAVAILABLE");
+    expect(outcome.transportUnavailable).toBeFalsy();
+    expect(heightCalls).toBe(1);
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+  });
+
+  it("never retries a SUCCESSFUL `null` answer — absence is an observation, not an error", async () => {
+    seedPendingRecord({ lastValidBlockHeight: EXPIRED_HEIGHT });
+
+    const calls: string[] = [];
+    const outcome = await reconcileStalePendingPaymentAttempt({
+      retryDelayMs: 0,
+      rpcTransport: async (method) => {
+        calls.push(method);
+        if (method === "getBlockHeight") {
+          return EXPIRED_HEIGHT + PENDING_ATTEMPT_RECONCILE_MARGIN_BLOCKS + 1;
+        }
+        if (method === "getSignatureStatuses") return SILENT_HISTORY;
+        return null;
+      },
+    });
+
+    expect(outcome.status).toBe("released");
+    // Each read happened exactly once: a definitive `null` is never re-read.
+    expect(calls).toEqual([
+      "getBlockHeight",
+      "getSignatureStatuses",
+      "getTransaction",
+    ]);
+  });
+
+  it("a transient transport outage can only DELAY a release, never cause one", async () => {
+    seedPendingRecord({ lastValidBlockHeight: EXPIRED_HEIGHT });
+
+    const outcome = await reconcileStalePendingPaymentAttempt({
+      retryDelayMs: 0,
+      rpcTransport: async (method) => {
+        if (method === "getBlockHeight") return 999999999;
+        if (method === "getSignatureStatuses") return SILENT_HISTORY;
+        throw new Error("SOLANA_RPC_HTTP_504"); // getTransaction blocked
+      },
+    });
+
+    expect(outcome.status).toBe("kept");
+    expect(outcome.reason).toBe("TRANSACTION_LOOKUP_UNAVAILABLE");
+    expect(outcome.transportUnavailable).toBe(true);
+    // Both proof checks were blocked, so the pointer survives.
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+  });
+});

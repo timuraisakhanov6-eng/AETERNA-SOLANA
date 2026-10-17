@@ -50,7 +50,11 @@ import {
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
 import { CreateAccessProvider, useCreateAccess } from "@/context/CreateAccessContext";
 import CreateAccessGate from "@/components/access/CreateAccessGate";
-import { clearPendingPaymentAttempt } from "@/lib/payment/pendingPaymentAttempt";
+import {
+  clearPendingPaymentAttempt,
+  readPendingPaymentAttempt,
+  writePendingPaymentAttempt,
+} from "@/lib/payment/pendingPaymentAttempt";
 import {
   PHANTOM_EXPLORER_ID,
   PHANTOM_INSTALL_URL,
@@ -1425,6 +1429,108 @@ describe("Home Access Gate", () => {
     expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
     expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(0);
     expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+  });
+
+  /**
+   * READ-ONLY "Check again" (Stage B).
+   *
+   * A locally held payment attempt may be re-checked without ANY wallet
+   * request: the reconciliation reads the chain directly and the
+   * verification of the SAME transaction is signature-free.
+   */
+  function seedStalePointerForGate(): void {
+    const tx = "MockRecheckTransactionSignatureForGate".padEnd(64, "A");
+    const seeded = writePendingPaymentAttempt({
+      version: 2,
+      paymentIntentId: "intent-gate-recheck",
+      creatorIdentityId: CREATOR_IDENTITY_ID,
+      network: "solana",
+      account: WALLET_ACCOUNT,
+      transactionId: tx,
+      signedTransaction: "bW9jay1zaWduZWQ=",
+      blockhash: "mock-blockhash",
+      lastValidBlockHeight: 12345,
+      outcome: "submitted",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    expect(seeded).toBe(true);
+  }
+
+  const SOLANA_RPC_ROUTES = [
+    {
+      match: "/api/solana/rpc",
+      respond: (init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          id?: unknown;
+          method?: string;
+        };
+        if (body.method === "getBlockHeight") {
+          return json({ jsonrpc: "2.0", id: body.id, result: 999999999 });
+        }
+        if (body.method === "getSignatureStatuses") {
+          return json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: { context: { slot: 1 }, value: [null] },
+          });
+        }
+        return json({ jsonrpc: "2.0", id: body.id, result: null });
+      },
+    },
+  ];
+
+  it("offers a read-only Check again that opens NO wallet window and sends NO payment", async () => {
+    connectWallet();
+    setPhantom(true);
+    seedStalePointerForGate();
+    installFetchRoutes(SOLANA_RPC_ROUTES);
+
+    render(tree());
+
+    const checkAgain = await screen.findByRole("button", {
+      name: "Check again (no payment)",
+    });
+    fireEvent.click(checkAgain);
+
+    await waitFor(() => {
+      expect(screen.getByText(/provably absent on Solana/i)).toBeTruthy();
+    });
+
+    // Read-only: no identity signature, no transaction signature, no
+    // broadcast, no new quote/intent.
+    expect(signMessageMock).not.toHaveBeenCalled();
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    // The provably stale pointer was released.
+    expect(readPendingPaymentAttempt()).toBeNull();
+  });
+
+  it("a repeated click never starts a concurrent check", async () => {
+    connectWallet();
+    setPhantom(true);
+    seedStalePointerForGate();
+    installFetchRoutes(SOLANA_RPC_ROUTES);
+
+    render(tree());
+
+    const checkAgain = await screen.findByRole("button", {
+      name: "Check again (no payment)",
+    });
+    // Two clicks in the SAME tick, before the first check settles.
+    fireEvent.click(checkAgain);
+    fireEvent.click(checkAgain);
+
+    await waitFor(() => {
+      expect(screen.getByText(/provably absent on Solana/i)).toBeTruthy();
+    });
+
+    // ONE reconciliation = exactly three read-only RPC calls; a second
+    // concurrent check would have doubled them.
+    expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(3);
+    expect(signMessageMock).not.toHaveBeenCalled();
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
   });
 });
 

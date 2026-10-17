@@ -140,4 +140,42 @@ describe("getSolanaTransaction — commitment and bounded lookup", () => {
     expect(outcome).toBeInstanceOf(Error);
     expect((outcome as Error).message).toBe("RPC_DOWN");
   });
+
+  it("5. a TRANSIENT failure is retried within the window, then the transaction is returned", async () => {
+    let attempt = 0;
+    const { calls } = stubRpc(() => {
+      attempt += 1;
+      if (attempt === 1) {
+        // Provider "try again later" signal.
+        return { jsonrpc: "2.0", id: 1, error: { message: "-32429 too many requests" } };
+      }
+      return { jsonrpc: "2.0", id: 1, result: { slot: 449484700, meta: { err: null } } };
+    });
+
+    const pending = getSolanaTransaction(RPC_URL, SIGNATURE);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const tx = await pending;
+
+    expect(tx).toEqual({ slot: 449484700, meta: { err: null } });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("6. a transient failure that never recovers THROWS (never a fabricated null) and stays bounded", async () => {
+    const { fetchMock } = stubRpc(() => ({
+      jsonrpc: "2.0",
+      id: 1,
+      error: { message: "503 Service Temporarily Unavailable" },
+    }));
+
+    const pending = getSolanaTransaction(RPC_URL, SIGNATURE);
+    const settled = pending.catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const outcome = await settled;
+
+    // An error is NEVER downgraded to `null` ("not found").
+    expect(outcome).toBeInstanceOf(Error);
+    expect(String((outcome as Error).message)).toContain("503");
+    // Bounded: the attempt cap is never exceeded.
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(20);
+  });
 });

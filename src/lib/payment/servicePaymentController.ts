@@ -234,6 +234,26 @@ export interface ServicePaymentControllerDeps extends ServicePaymentCallbacks {
   safePreBroadcastRelease?: (() => boolean) | undefined
 }
 
+/**
+ * The READ-ONLY outcome of "check again" for the ONE pending payment
+ * attempt this browser holds.
+ *
+ * It never carries a signature, a new intent or a new payment: the action
+ * only READS. Callers use it to word the status for the creator honestly
+ * (network unavailable vs not observed yet vs provably released vs
+ * already confirmed on-chain).
+ */
+export type ServicePaymentAttemptRecheckResult =
+  | { readonly status: "no_pending_attempt" }
+  | { readonly status: "released" }
+  | { readonly status: "verified" }
+  | {
+      readonly status: "pending"
+      /** True when the check could not be completed (endpoint unreachable). */
+      readonly transportUnavailable: boolean
+    }
+  | { readonly status: "failed"; readonly error: string }
+
 export interface ServicePaymentController {
   subscribe: (listener: () => void) => () => void
   getState: () => ServicePaymentState
@@ -258,6 +278,16 @@ export interface ServicePaymentController {
    * fails closed instead of paying.
    */
   recheckEntitlement: () => Promise<ServicePaymentDiscoveryResult>
+  /**
+   * READ-ONLY "check again" for the ONE pending payment attempt this
+   * browser holds. Runs ONLY safe read-only checks — stale-attempt
+   * reconciliation (direct on-chain reads) and verification of the SAME
+   * recorded transaction signature — and NEVER signs, sends, mints a new
+   * intent or grants a credit. The controller phase is left untouched, so
+   * the caller decides what to display. Safe to call repeatedly; an
+   * in-flight click is the only concurrency the caller must suppress.
+   */
+  recheckPreviousAttempt: () => Promise<ServicePaymentAttemptRecheckResult>
   /** Full reset — mirrors the modal's close effect. */
   reset: () => void
 }
@@ -675,7 +705,20 @@ interface ServicePaymentVerificationPollBody {
 
 type ServicePaymentVerificationPollResult =
   | { readonly ok: true; readonly status: string }
-  | { readonly ok: false; readonly error: string; readonly pending: boolean }
+  | {
+      readonly ok: false
+      readonly error: string
+      readonly pending: boolean
+      /**
+       * True when the VERIFIER NEVER returned its explicit "not observable
+       * yet" answer (402 `TX_NOT_FOUND`) during the window — the endpoint
+       * was unreachable or answered 429/5xx. It lets the caller say "the
+       * network is temporarily unavailable" instead of "the transaction
+       * was not found", WITHOUT ever treating either as proof that nothing
+       * was sent.
+       */
+      readonly transportUnavailable?: boolean
+    }
 
 /**
  * Bounded polling of the payment verifier.
@@ -811,6 +854,17 @@ async function pollServicePaymentVerification(
 ): Promise<ServicePaymentVerificationPollResult> {
   const deadline = Date.now() + VERIFY_PENDING_MAX_WINDOW_MS
   let lastError = "PAYMENT_VERIFICATION_FAILED"
+  /**
+   * `sawNotObservedAnswer` — the verifier DID answer 402 TX_NOT_FOUND at
+   * least once (the chain was successfully asked and did not report the
+   * transaction yet).
+   * `sawTransportFailure` — at least one attempt could not reach a verdict
+   * (fetch threw, or the endpoint answered 429/5xx).
+   *
+   * They are used ONLY to word the final pending result honestly.
+   */
+  let sawNotObservedAnswer = false
+  let sawTransportFailure = false
 
   for (let attempt = 0; attempt < VERIFY_PENDING_MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) {
@@ -830,6 +884,7 @@ async function pollServicePaymentVerification(
       })
     } catch (err) {
       // Transport failure — no verdict yet, keep polling within the window.
+      sawTransportFailure = true
       lastError =
         err instanceof Error ? err.message : "PAYMENT_VERIFICATION_FAILED"
       continue
@@ -852,13 +907,33 @@ async function pollServicePaymentVerification(
       typeof data?.error === "string" ? data.error : "PAYMENT_VERIFICATION_FAILED"
     lastError = error
 
-    // Only "not observable yet" is pending; anything else is definitive.
-    if (res.status !== 402 || error !== "TX_NOT_FOUND") {
-      return { ok: false, error, pending: false }
+    /**
+     * A TEMPORARY endpoint outage (rate limit / server error) is NEVER a
+     * verdict: the same transaction is polled again within the window, and
+     * the attempt is kept afterwards.
+     */
+    if (res.status === 429 || res.status >= 500) {
+      sawTransportFailure = true
+      continue
     }
+
+    // Only "not observable yet" is pending; anything else is definitive.
+    if (res.status === 402 && error === "TX_NOT_FOUND") {
+      sawNotObservedAnswer = true
+      continue
+    }
+
+    return { ok: false, error, pending: false }
   }
 
-  return { ok: false, error: lastError, pending: true }
+  return {
+    ok: false,
+    error: lastError,
+    pending: true,
+    ...(sawTransportFailure && !sawNotObservedAnswer
+      ? { transportUnavailable: true }
+      : {}),
+  }
 }
 
 /* ───────────────── FACTORY ───────────────── */
@@ -1885,7 +1960,9 @@ export function createServicePaymentController(
       if (!verifyOutcome.ok) {
         throw new Error(
           verifyOutcome.pending
-            ? "PAYMENT_NOT_OBSERVED_ON_CHAIN: this transaction has not been observed on Solana yet. That is NOT proof that it was not sent — it may still confirm. No new payment is offered; the SAME transaction will be checked again."
+            ? verifyOutcome.transportUnavailable
+              ? "PAYMENT_VERIFICATION_UNAVAILABLE: the network could not check this payment. That is NOT proof that nothing was sent — your payment attempt is kept and will be checked again. No new payment was made; the SAME transaction will be checked again."
+              : "PAYMENT_NOT_OBSERVED_ON_CHAIN: this transaction has not been observed on Solana yet. That is NOT proof that it was not sent — it may still confirm. No new payment is offered; the SAME transaction will be checked again."
             : verifyOutcome.error
         )
       }
@@ -1966,6 +2043,77 @@ export function createServicePaymentController(
     }
   }
 
+  /**
+   * READ-ONLY "check again" of the local pending attempt.
+   *
+   * It performs EXACTLY two safe read-only operations:
+   *   1. stale-attempt reconciliation — direct on-chain reads through the
+   *      read-only proxy; it may RELEASE the local pointer only when the
+   *      blockhash expiry and the transaction's absence are both proven,
+   *      and it never starts a payment;
+   *   2. verification polling of the SAME recorded transaction signature —
+   *      the verifier resolves the creator identity server-side, so no
+   *      wallet signature is requested, no intent is minted and no
+   *      transfer is sent.
+   *
+   * It deliberately does NOT call `requestQuote`, sign anything, grant a
+   * credit or mutate the controller phase: the authoritative intent re-read
+   * that must precede any NEW payment still happens in `confirmAndVerify`.
+   */
+  async function recheckPreviousAttempt(): Promise<ServicePaymentAttemptRecheckResult> {
+    const record = readPendingPaymentAttempt()
+    const transactionId = record?.transactionId ?? null
+    if (!record || !transactionId) {
+      // Nothing actionable. A pointer without a signature is owned by the
+      // "unknown outcome" guard and must never be resolved here.
+      return { status: "no_pending_attempt" }
+    }
+
+    const reconciliation = await reconcileStalePendingPaymentAttempt({ fetchImpl })
+    if (reconciliation.status === "released") {
+      // Proven expired AND absent: the pointer is gone and NOTHING was
+      // sent or charged. No quote is requested (read-only) — a new
+      // payment remains an explicit step of the normal flow.
+      return { status: "released" }
+    }
+    if (
+      reconciliation.status === "kept" &&
+      reconciliation.transportUnavailable === true
+    ) {
+      // The read-only checks could not complete: the attempt is kept.
+      return { status: "pending", transportUnavailable: true }
+    }
+
+    const creatorIdentityId =
+      record.creatorIdentityId || getState().verifiedCreatorIdentityId || ""
+    if (!creatorIdentityId) {
+      // Without the identity claim the verifier cannot be asked; the
+      // attempt is kept and the honest state is "still checking".
+      return { status: "pending", transportUnavailable: false }
+    }
+
+    const evidenceId = `payment-recheck-${record.paymentIntentId}-${Date.now()}`
+    const verifyOutcome = await pollServicePaymentVerification(fetchImpl, {
+      paymentIntentId: record.paymentIntentId,
+      creatorIdentityId,
+      evidenceId,
+      transactionId,
+    })
+
+    if (verifyOutcome.ok) {
+      return verifyOutcome.status === "VERIFIED"
+        ? { status: "verified" }
+        : { status: "pending", transportUnavailable: false }
+    }
+    if (verifyOutcome.pending) {
+      return {
+        status: "pending",
+        transportUnavailable: verifyOutcome.transportUnavailable === true,
+      }
+    }
+    return { status: "failed", error: verifyOutcome.error }
+  }
+
   return {
     subscribe,
     getState,
@@ -1977,6 +2125,7 @@ export function createServicePaymentController(
     verifyIdentity,
     confirmAndVerify,
     recheckEntitlement,
+    recheckPreviousAttempt,
     reset,
   }
 }

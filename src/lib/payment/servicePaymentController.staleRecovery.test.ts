@@ -131,7 +131,7 @@ function createStaleStub(options: {
     resumeTransactionId?: string | null;
   };
   /** What /api/service-payment/verify answers. */
-  verifyBehaviour?: "verified" | "not-found";
+  verifyBehaviour?: "verified" | "not-found" | "unavailable";
 } = {}): StaleStub {
   let quoteCalls = 0;
   const verifyBodies: { transactionId?: string | undefined }[] = [];
@@ -180,6 +180,13 @@ function createStaleStub(options: {
           ok: false,
           status: 402,
           json: async () => ({ ok: false, error: "TX_NOT_FOUND" }),
+        } as unknown as Response;
+      }
+      if (options.verifyBehaviour === "unavailable") {
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({ ok: false, error: "VERIFICATION_UNAVAILABLE" }),
         } as unknown as Response;
       }
       return { ok: true, json: async () => ({ ok: true, status: "VERIFIED" }) } as Response;
@@ -419,6 +426,149 @@ describe("controller — stale pending-attempt reconciliation", () => {
     // Quote reads: initial + the authoritative re-read of the second
     // confirm. The purchase proof was reused between the two.
     expect(stub.quoteCalls()).toBe(2);
+  });
+
+  it("words a 503 verification window as a NETWORK OUTAGE, keeps the pointer and never re-signs", async () => {
+    const stub = createStaleStub({ verifyBehaviour: "unavailable" });
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+
+    reconcileMock.mockResolvedValue({
+      status: "kept",
+      reason: "TRANSACTION_STATUS_KNOWN",
+    });
+
+    vi.useFakeTimers();
+    const confirmPromise = controller.confirmAndVerify();
+    await vi.advanceTimersByTimeAsync(VERIFY_WINDOW_DRIVE_MS);
+    await confirmPromise;
+
+    const state = controller.getState();
+    expect(state.error).toContain("PAYMENT_VERIFICATION_UNAVAILABLE");
+    expect(state.error).not.toContain("PAYMENT_NOT_OBSERVED_ON_CHAIN");
+    // The SAME transaction was polled; nothing was signed or broadcast.
+    expect(stub.broadcastCalls()).toHaveLength(0);
+    expect(newPaymentSignings()).toBe(0);
+    // The pointer survives an unreadable (temporary) verification window.
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+  });
+});
+
+describe("controller — READ-ONLY 'check again'", () => {
+  function mockReleased(): void {
+    reconcileMock.mockImplementation(async () => {
+      clearPendingPaymentAttempt();
+      return { status: "released", releaseReason: "EXPIRED_AND_ABSENT" };
+    });
+  }
+
+  it("does nothing — no wallet request, no quote, no payment — when no pending attempt is held", async () => {
+    const stub = createStaleStub();
+    const controller = await driveToPayable(stub);
+    const quoteCallsBefore = stub.quoteCalls();
+
+    const result = await controller.recheckPreviousAttempt();
+
+    expect(result).toEqual({ status: "no_pending_attempt" });
+    expect(stub.verifyCalls()).toHaveLength(0);
+    expect(stub.broadcastCalls()).toHaveLength(0);
+    expect(newPaymentSignings()).toBe(0);
+    expect(stub.quoteCalls()).toBe(quoteCallsBefore);
+  });
+
+  it("reports a PROVEN release without quoting, signing or paying", async () => {
+    const stub = createStaleStub();
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+    const quoteCallsBefore = stub.quoteCalls();
+
+    mockReleased();
+    const result = await controller.recheckPreviousAttempt();
+
+    expect(result).toEqual({ status: "released" });
+    expect(readPendingPaymentAttempt()).toBeNull();
+    // A read-only check never mints a new intent (no create-quote call).
+    expect(stub.quoteCalls()).toBe(quoteCallsBefore);
+    expect(stub.verifyCalls()).toHaveLength(0);
+    expect(stub.broadcastCalls()).toHaveLength(0);
+    expect(newPaymentSignings()).toBe(0);
+  });
+
+  it("confirms the SAME recorded transaction on-chain without signing a new one", async () => {
+    const stub = createStaleStub({ verifyBehaviour: "verified" });
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+
+    reconcileMock.mockResolvedValue({
+      status: "kept",
+      reason: "BLOCKHASH_WINDOW_NOT_PROVABLY_EXPIRED",
+    });
+
+    const result = await controller.recheckPreviousAttempt();
+
+    expect(result).toEqual({ status: "verified" });
+    expect(stub.verifyCalls()).toEqual([{ transactionId: TX }]);
+    expect(newPaymentSignings()).toBe(0);
+    expect(stub.broadcastCalls()).toHaveLength(0);
+    // No proof of absence -> the attempt is kept for the definitive result.
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+  });
+
+  it("reports a temporary network outage (503) honestly and keeps the attempt", async () => {
+    const stub = createStaleStub({ verifyBehaviour: "unavailable" });
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+
+    reconcileMock.mockResolvedValue({
+      status: "kept",
+      reason: "TRANSACTION_STATUS_KNOWN",
+    });
+
+    vi.useFakeTimers();
+    const pending = controller.recheckPreviousAttempt();
+    await vi.advanceTimersByTimeAsync(VERIFY_WINDOW_DRIVE_MS);
+    const result = await pending;
+
+    expect(result).toEqual({ status: "pending", transportUnavailable: true });
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+    expect(newPaymentSignings()).toBe(0);
+  });
+
+  it("reports 'not observed yet' when the verifier answered TX_NOT_FOUND", async () => {
+    const stub = createStaleStub({ verifyBehaviour: "not-found" });
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+
+    reconcileMock.mockResolvedValue({
+      status: "kept",
+      reason: "BLOCKHASH_WINDOW_NOT_PROVABLY_EXPIRED",
+    });
+
+    vi.useFakeTimers();
+    const pending = controller.recheckPreviousAttempt();
+    await vi.advanceTimersByTimeAsync(VERIFY_WINDOW_DRIVE_MS);
+    const result = await pending;
+
+    expect(result).toEqual({ status: "pending", transportUnavailable: false });
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+  });
+
+  it("never asks the verifier when reconciliation itself reported a transport outage", async () => {
+    const stub = createStaleStub();
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+
+    reconcileMock.mockResolvedValue({
+      status: "kept",
+      reason: "BLOCK_HEIGHT_UNAVAILABLE",
+      transportUnavailable: true,
+    });
+
+    const result = await controller.recheckPreviousAttempt();
+
+    expect(result).toEqual({ status: "pending", transportUnavailable: true });
+    expect(stub.verifyCalls()).toHaveLength(0);
+    expect(newPaymentSignings()).toBe(0);
   });
 });
 

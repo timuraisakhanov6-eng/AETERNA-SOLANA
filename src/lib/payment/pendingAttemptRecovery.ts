@@ -42,6 +42,15 @@
  * deliberately NOT consulted — this module relies on direct on-chain
  * reads only.
  *
+ * BOUNDED RETRIES (liveness without weakening the decision)
+ * ---------------------------------------------------------
+ * Each read-only check is attempted AT MOST TWICE. A retry happens ONLY
+ * for a failure classified as a TEMPORARY transport failure (timeout /
+ * network / HTTP 429 / HTTP 5xx); a definitive 4xx refusal is never
+ * retried, and a SUCCESSFUL response — including a successful `null` —
+ * is never retried. Exhausting the retries leaves the record KEPT: a
+ * transient outage can only ever delay a release, never cause one.
+ *
  * AUTHORITY
  * ---------
  * Releasing the POINTER does not change any server state. The identity
@@ -102,10 +111,95 @@ export interface PendingAttemptRecoveryOutcome {
   readonly reason?: string;
   /** Populated for "released". */
   readonly releaseReason?: "EXPIRED_AND_ABSENT";
+  /**
+   * Populated (true) for a "kept" outcome whose reads were blocked by a
+   * TEMPORARY transport failure (timeout / HTTP 429 / HTTP 5xx) after the
+   * bounded retries were exhausted. Callers use it to tell the creator
+   * "the network is temporarily unavailable — your attempt is kept and
+   * will be checked again" apart from a NON-transient refusal, WITHOUT
+   * ever treating either as proof of absence. It never changes the
+   * release decision: reordering, retrying or reclassifying reads must
+   * not clear the record.
+   */
+  readonly transportUnavailable?: boolean;
 }
 
 /** Reused transaction-signature shape — the verifier accepts {64,88}. */
 const TX_ID_SHAPE = /^[A-Za-z0-9]{64,88}$/;
+
+/**
+ * BOUNDED RETRY POLICY for the read-only checks.
+ *
+ * Only a TEMPORARY transport failure may be retried, and only a strictly
+ * bounded number of times: a transient RPC hiccup should not force the
+ * creator to wait for the next explicit check, but an outage must never
+ * become an endless loop either. Two attempts = one initial read plus one
+ * retry — the maximum this stage allows.
+ */
+export const PENDING_ATTEMPT_MAX_READ_ATTEMPTS = 2;
+/** Short, fixed delay between the two bounded attempts (ms). */
+export const PENDING_ATTEMPT_RETRY_DELAY_MS = 400;
+
+/**
+ * A temporary transport/availability failure: the request either never
+ * produced a response (timeout / network) or the edge/upstream answered
+ * with a status that means "temporarily unavailable" (429, 5xx).
+ *
+ * A 4xx other than 429 (a malformed request, a method the proxy refuses)
+ * is a CONFIGURATION/BUG signal, not a transient one: retrying it would
+ * only repeat the same refusal, so it is deliberately NOT retried.
+ */
+function isTransientRpcFailure(err: unknown): boolean {
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+      ? err
+      : "";
+  if (!message) return false;
+
+  if (/SOLANA_RPC_HTTP_(429|5\d\d)\b/.test(message)) return true;
+
+  return /RPC_TIMEOUT|timeout|aborted|AbortError|network|fetch failed|Failed to fetch|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|load failed/i.test(
+    message
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * One read, retried at most `attempts` times and ONLY while the failure
+ * is classified as transient. A SUCCESSFUL response is never retried —
+ * including a successful `null`, which is a definitive observation of
+ * absence, not an error. The returned `transient` flag describes the
+ * FINAL failure only.
+ */
+async function readWithTransientRetry(
+  transport: PendingAttemptRpcTransport,
+  method: PendingAttemptRpcMethod,
+  params: unknown[],
+  attempts: number,
+  delayMs: number
+): Promise<{ ok: true; result: unknown } | { ok: false; transient: boolean }> {
+  const total = Math.max(1, attempts);
+  let transient = false;
+
+  for (let attempt = 0; attempt < total; attempt++) {
+    try {
+      return { ok: true, result: await transport(method, params) };
+    } catch (err) {
+      transient = isTransientRpcFailure(err);
+      if (!transient || attempt === total - 1) {
+        return { ok: false, transient };
+      }
+      if (delayMs > 0) await sleep(delayMs);
+    }
+  }
+
+  return { ok: false, transient };
+}
 
 function firstSignatureValue(
   statusesResult: unknown
@@ -191,6 +285,10 @@ export async function reconcileStalePendingPaymentAttempt(
     rpcTransport?: PendingAttemptRpcTransport;
     /** Overridable in tests only — how "now" is not used for expiry. */
     marginBlocks?: number;
+    /** Bounded read attempts (default 2: one read + one transient retry). */
+    maxReadAttempts?: number;
+    /** Delay between the bounded attempts (ms); tests may pass 0. */
+    retryDelayMs?: number;
   } = {}
 ): Promise<PendingAttemptRecoveryOutcome> {
   const record = readPendingPaymentAttempt();
@@ -205,9 +303,19 @@ export async function reconcileStalePendingPaymentAttempt(
     return { status: "no_transaction_to_recover" };
   }
 
-  const keep = (reason: string): PendingAttemptRecoveryOutcome => ({
+  /**
+   * `transportUnavailable` is set ONLY when the final failure was
+   * classified as a TEMPORARY transport failure, so callers can phrase
+   * "network temporarily unavailable" honestly. It never influences the
+   * decision — `keep` is fail-closed either way.
+   */
+  const keep = (
+    reason: string,
+    transportUnavailable = false
+  ): PendingAttemptRecoveryOutcome => ({
     status: "kept",
     reason,
+    ...(transportUnavailable ? { transportUnavailable: true } : {}),
   });
 
   // The lookups are strict base58-shape reads; a malformed signature
@@ -232,26 +340,39 @@ export async function reconcileStalePendingPaymentAttempt(
     createProxyRpcTransport(options.fetchImpl ?? fetch);
   const marginBlocks =
     options.marginBlocks ?? PENDING_ATTEMPT_RECONCILE_MARGIN_BLOCKS;
+  const maxReadAttempts = Math.max(
+    1,
+    options.maxReadAttempts ?? PENDING_ATTEMPT_MAX_READ_ATTEMPTS
+  );
+  const retryDelayMs =
+    options.retryDelayMs ?? PENDING_ATTEMPT_RETRY_DELAY_MS;
 
   // 1) EXPIRY — network block height vs the recorded window height.
   //    getSlot is a DIFFERENT quantity and is deliberately never
   //    compared with lastValidBlockHeight.
   let currentBlockHeight: number;
-  try {
-    const result = await transport("getBlockHeight", [
-      { commitment: "finalized" },
-    ]);
+  const heightRead = await readWithTransientRetry(
+    transport,
+    "getBlockHeight",
+    [{ commitment: "finalized" }],
+    maxReadAttempts,
+    retryDelayMs
+  );
+  if (!heightRead.ok) {
+    return keep("BLOCK_HEIGHT_UNAVAILABLE", heightRead.transient);
+  }
+  {
+    const result = heightRead.result;
     if (
       typeof result !== "number" ||
       !Number.isFinite(result) ||
       !Number.isInteger(result) ||
       result < 1
     ) {
+      // A RESPONSE that cannot be read is not a transport failure.
       return keep("BLOCK_HEIGHT_UNREADABLE");
     }
     currentBlockHeight = result;
-  } catch {
-    return keep("BLOCK_HEIGHT_UNAVAILABLE");
   }
 
   if (currentBlockHeight <= lastValidBlockHeight + marginBlocks) {
@@ -262,16 +383,20 @@ export async function reconcileStalePendingPaymentAttempt(
 
   // 2) ABSENCE — signature history and the ledger must both be silent.
   let statusKnown: boolean;
-  try {
-    const statuses = await transport("getSignatureStatuses", [
-      [record.transactionId],
-      { searchHistory: true },
-    ]);
-    const parsed = firstSignatureValue(statuses);
+  const statusRead = await readWithTransientRetry(
+    transport,
+    "getSignatureStatuses",
+    [[record.transactionId], { searchHistory: true }],
+    maxReadAttempts,
+    retryDelayMs
+  );
+  if (!statusRead.ok) {
+    return keep("SIGNATURE_STATUS_UNAVAILABLE", statusRead.transient);
+  }
+  {
+    const parsed = firstSignatureValue(statusRead.result);
     if (!parsed.readable) return keep("SIGNATURE_STATUS_UNREADABLE");
     statusKnown = parsed.known;
-  } catch {
-    return keep("SIGNATURE_STATUS_UNAVAILABLE");
   }
 
   if (statusKnown) {
@@ -282,17 +407,24 @@ export async function reconcileStalePendingPaymentAttempt(
     return keep("TRANSACTION_STATUS_KNOWN");
   }
 
-  let transactionFound: boolean;
-  try {
-    const txResult = await transport("getTransaction", [
+  const txRead = await readWithTransientRetry(
+    transport,
+    "getTransaction",
+    [
       record.transactionId,
-      { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 0 },
-    ]);
-    transactionFound = isTransactionFound(txResult);
-  } catch {
-    return keep("TRANSACTION_LOOKUP_UNAVAILABLE");
+      {
+        encoding: "json",
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      },
+    ],
+    maxReadAttempts,
+    retryDelayMs
+  );
+  if (!txRead.ok) {
+    return keep("TRANSACTION_LOOKUP_UNAVAILABLE", txRead.transient);
   }
-
+  const transactionFound = isTransactionFound(txRead.result);
   if (transactionFound) {
     return keep("TRANSACTION_FOUND");
   }

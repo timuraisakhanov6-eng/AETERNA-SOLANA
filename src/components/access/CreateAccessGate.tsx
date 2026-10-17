@@ -135,6 +135,20 @@ function describeGateError(raw: string | null): string {
     return "An earlier purchase attempt is still open. Resuming it instead of starting a new one.";
   }
   /**
+   * NOT-OBSERVED-YET vs COULD-NOT-CHECK. Both mean the SAME transaction
+   * may still confirm; neither proves that nothing was sent, and neither
+   * invites an immediate re-payment. They are worded separately because
+   * the first comes from a verifier that answered (the chain was asked and
+   * did not report the transaction yet) while the second means the check
+   * itself could not complete.
+   */
+  if (code.includes("PAYMENT_VERIFICATION_UNAVAILABLE")) {
+    return "The network is temporarily unavailable, so your payment attempt could not be checked. Nothing new was sent — we kept the attempt and will check the same transaction again.";
+  }
+  if (code.includes("PAYMENT_NOT_OBSERVED_ON_CHAIN")) {
+    return "Your payment transaction has not been found on the network yet. Nothing new was sent — we kept the attempt and will check the same transaction again.";
+  }
+  /**
    * SERVER-SIDE TRANSACTION-FORMAT REFUSAL.
    *
    * `INVALID_INSTRUCTION_COUNT` (the strict parser) and
@@ -324,6 +338,20 @@ export default function CreateAccessGate() {
   const [paymentHold, setPaymentHold] = useState<string | null>(null);
   // True while the pre-payment entitlement re-check is running.
   const [rechecking, setRechecking] = useState(false);
+
+  /**
+   * Read-only "check again" of the local pending payment attempt. It is
+   * guarded so a repeated click cannot start a CONCURRENT check (the
+   * second click is ignored while the first is in flight).
+   */
+  const [checkingAttempt, setCheckingAttempt] = useState(false);
+  const [attemptCheck, setAttemptCheck] = useState<string | null>(null);
+  /**
+   * Synchronous in-flight guard for the read-only check. React state alone
+   * is too late for a second click within the same tick, so a ref is the
+   * authoritative guard: a repeated click joins nothing and opens nothing.
+   */
+  const checkingAttemptRef = useRef(false);
 
   /* ---------- controller wiring (same order the inline gate used) ---------- */
 
@@ -770,7 +798,70 @@ export default function CreateAccessGate() {
     }
   };
 
+  /**
+   * READ-ONLY "check again" of the local pending payment attempt.
+   *
+   * The controller action performs ONLY read-only work: stale-attempt
+   * reconciliation (direct on-chain reads) and verification of the SAME
+   * recorded transaction signature. It requests NO wallet signature, mints
+   * NO new intent and sends NO payment. This handler therefore cannot
+   * double-charge, and the `checkingAttempt` guard makes a repeated click
+   * reuse nothing — a second concurrent check is simply ignored.
+   */
+  const checkPreviousAttempt = async () => {
+    if (checkingAttemptRef.current) return;
+    checkingAttemptRef.current = true;
+    setCheckingAttempt(true);
+    setAttemptCheck(null);
+    try {
+      const result = await servicePayment.recheckPreviousAttempt();
+      switch (result.status) {
+        case "no_pending_attempt":
+          setAttemptCheck(null);
+          break;
+        case "released":
+          setAttemptCheck(
+            "The previous attempt's blockhash window expired and its transaction is provably absent on Solana — nothing was sent. You can start a new payment."
+          );
+          break;
+        case "verified":
+          setAttemptCheck(
+            "Your payment is confirmed on-chain. Continue creation — no new $1 is needed."
+          );
+          break;
+        case "pending":
+          setAttemptCheck(
+            result.transportUnavailable
+              ? "The network is temporarily unavailable, so the attempt could not be checked. Nothing new was sent — we kept the attempt and will check the same transaction again."
+              : "The transaction has not been found on the network yet. Nothing new was sent — we kept the attempt and will check the same transaction again."
+          );
+          break;
+        case "failed":
+          setAttemptCheck(describeGateError(result.error));
+          break;
+      }
+    } catch {
+      setAttemptCheck(
+        "We could not check the previous attempt. Nothing new was sent — please try again in a moment."
+      );
+    } finally {
+      checkingAttemptRef.current = false;
+      setCheckingAttempt(false);
+    }
+  };
+
   /* ---------- derived UI ---------- */
+
+  /**
+   * The local pointer to the ONE payment attempt this browser has in
+   * flight (with a recorded transaction signature). Read fresh on every
+   * render so releasing it during a check is reflected immediately; it
+   * only decides whether the read-only "Check again" affordance is shown.
+   */
+  const pendingAttemptForCheck = (() => {
+    const pending = readPendingPaymentAttempt();
+    return pending && pending.transactionId ? pending : null;
+  })();
 
   const busy =
     createFlowState === "discovering" ||
@@ -899,6 +990,35 @@ export default function CreateAccessGate() {
         >
           {gateStatus}
         </p>
+      )}
+
+      {/* READ-ONLY re-check of a locally held payment attempt. It performs
+          no wallet request and sends no payment, so it can never charge
+          twice; a repeated click cannot start a second check. The result
+          text stays visible after the pointer is released. */}
+      {(pendingAttemptForCheck || attemptCheck) && !busy && !recovering && (
+        <div className="space-y-2 text-center">
+          {pendingAttemptForCheck && (
+            <Button
+              type="button"
+              disabled={checkingAttempt}
+              onClick={() => {
+                void checkPreviousAttempt();
+              }}
+              className="h-9 px-4 text-[11px] bg-transparent text-amber-300 border border-amber-400/50 hover:bg-amber-400/10"
+            >
+              {checkingAttempt ? "Checking…" : "Check again (no payment)"}
+            </Button>
+          )}
+          {attemptCheck && (
+            <p
+              className="text-[11px] text-amber-100/60 leading-relaxed"
+              role="status"
+            >
+              {attemptCheck}
+            </p>
+          )}
+        </div>
       )}
 
       {/* Unfinished-attempt recovery: offered ONLY from the AUTHORITATIVE
