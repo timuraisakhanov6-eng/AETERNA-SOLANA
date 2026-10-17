@@ -93,6 +93,15 @@ const CONFLICT_409 = new Set([
   "CREDIT_NOT_CONSUMING",
   "IDENTITY_MISMATCH",
   "CAPSULE_MISMATCH",
+  /**
+   * The per-credit coordinator answers LIFECYCLE_NOT_FOUND when the
+   * authoritative vault-publication claim is requested for a credit/lifecycle
+   * it does not hold (or does not hold as CONSUMING). Surfaced by
+   * /api/publication/claim since the authoritative claim was wired in; it is
+   * a genuine conflict, never a replay. Anything not enumerated here still
+   * classifies as "unknown" and fails closed.
+   */
+  "LIFECYCLE_NOT_FOUND",
   "STORAGE_PAYMENT_NOT_VERIFIED",
   "STORAGE_PAYMENT_BINDING_MISMATCH",
   "TX_ALREADY_CLAIMED",

@@ -102,6 +102,7 @@ export interface FakeDurableObjectStorage {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<void>;
+  list<T>(options?: { prefix?: string }): Promise<Map<string, T>>;
   transaction<T>(
     closure: (txn: FakeDurableObjectTransaction) => Promise<T>
   ): Promise<T>;
@@ -130,6 +131,17 @@ export function createFakeDurableObjectStorage(): FakeDurableObjectStorage {
     },
     async delete(key: string) {
       data.delete(key);
+    },
+    async list<T>(options?: { prefix?: string }) {
+      // Mirrors DurableObjectStorage.list(): a Map of every entry whose
+      // key starts with the prefix. The coordinator relies on this shape
+      // to resolve a credit's own recorded operations.
+      const prefix = options?.prefix ?? "";
+      const out = new Map<string, T>();
+      for (const [key, value] of data) {
+        if (key.startsWith(prefix)) out.set(key, value as T);
+      }
+      return out;
     },
     async transaction<T>(
       closure: (txn: FakeDurableObjectTransaction) => Promise<T>

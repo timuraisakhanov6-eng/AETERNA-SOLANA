@@ -377,9 +377,20 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     typeof grantData.creatorCreditId !== "string" ||
     !grantData.creatorCreditId
   ) {
+    /**
+     * The coordinator refuses the grant when it cannot confirm the
+     * authoritative issuance provenance (`PROTOCOL_PROVENANCE_UNVERIFIED`).
+     * That is a retryable, fail-closed condition: the verified payment stays
+     * unconsumed and the SAME idempotent flow runs again on retry, so the
+     * 503 is surfaced as 503 (never as a terminal conflict).
+     */
     return fail(
       origin,
-      grantResponse.status === 400 ? 400 : 409,
+      grantResponse.status === 400
+        ? 400
+        : grantResponse.status === 503
+        ? 503
+        : 409,
       grantData?.error || "CREDIT_GRANT_FAILED"
     );
   }

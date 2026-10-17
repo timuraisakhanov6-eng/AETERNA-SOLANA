@@ -623,3 +623,102 @@ describe("identity coordinator — isolation and validation", () => {
     );
   });
 });
+
+/* ================= RESTORED RIGHT REBINDING ================= */
+
+/**
+ * The identity coordinator is what discovery actually reads. A restored
+ * right that was rebound to a new capsule must therefore appear there
+ * EXACTLY ONCE, with the new capsule — never as a second right and never
+ * still pointing at the released capsule.
+ */
+describe("identity coordinator — a restored right is rebound to one capsule", () => {
+  it("uses a recovered right for a new capsule and reports the credit once", async () => {
+    const h = createHarness();
+    const granted = await reserveAndGrant(h, {
+      quoteId: "quote-rebind",
+      paymentIntentId: "intent-rebind",
+      creditId: "credit-rebind",
+    });
+    const creditId = String(granted.granted.json["creatorCreditId"]);
+    expect(creditId.length).toBeGreaterThan(0);
+
+    // First attempt: reserve the OLD capsule, then release the right.
+    const firstReserve = await h.perCredit(creditId, {
+      op: "reserve",
+      creatorCreditId: creditId,
+      creatorIdentityId: IDENTITY,
+      lifecycleId: "lifecycle-old",
+      capsuleId: "capsule-old",
+    });
+    expect(firstReserve.json["outcome"]).toBe("RESERVED");
+    await h.identity({
+      op: "identity-note-reserve",
+      creatorIdentityId: IDENTITY,
+      creatorCreditId: creditId,
+      lifecycleId: "lifecycle-old",
+      capsuleId: "capsule-old",
+    });
+
+    const released = await h.perCredit(creditId, {
+      op: "recover",
+      creatorCreditId: creditId,
+      creatorIdentityId: IDENTITY,
+      lifecycleId: "lifecycle-old",
+      capsuleId: "capsule-old",
+      publicationState: "NOT_VERIFIED",
+      sealState: "NOT_VERIFIED",
+    });
+    expect(released.json["outcome"]).toBe("ABORT_AND_RESTORE_AVAILABLE");
+    await h.identity({
+      op: "identity-note-recover",
+      creatorIdentityId: IDENTITY,
+      creatorCreditId: creditId,
+    });
+
+    // The restored right is bound to a NEW capsule — no new grant, no
+    // second $1.
+    const rebound = await h.perCredit(creditId, {
+      op: "reserve",
+      creatorCreditId: creditId,
+      creatorIdentityId: IDENTITY,
+      lifecycleId: "lifecycle-new",
+      capsuleId: "capsule-new",
+    });
+    expect(rebound.status).toBe(200);
+    expect(rebound.json["outcome"]).toBe("RESERVED");
+    await h.identity({
+      op: "identity-note-reserve",
+      creatorIdentityId: IDENTITY,
+      creatorCreditId: creditId,
+      lifecycleId: "lifecycle-new",
+      capsuleId: "capsule-new",
+    });
+
+    const summary = await h.identity({
+      op: "identity-summary",
+      creatorIdentityId: IDENTITY,
+    });
+    expect(summary.status).toBe(200);
+    expect(summary.json["summary"]).toEqual(
+      expect.objectContaining({
+        availableCount: 0,
+        consumingCount: 1,
+        consumedCount: 0,
+        total: 1,
+      })
+    );
+    expect(summary.json["consuming"]).toEqual([
+      expect.objectContaining({
+        creatorCreditId: creditId,
+        lifecycleId: "lifecycle-new",
+        capsuleId: "capsule-new",
+      }),
+    ]);
+    expect(summary.json["available"]).toEqual([]);
+
+    // Discovery can no longer find this credit under the released capsule.
+    expect(h.kv.data.get(`creator:credit:index:${IDENTITY}:capsule-old`)).toBeUndefined();
+    expect(h.kv.data.get(`creator:credit:index:${IDENTITY}:capsule-new`)).toBe(creditId);
+  });
+});

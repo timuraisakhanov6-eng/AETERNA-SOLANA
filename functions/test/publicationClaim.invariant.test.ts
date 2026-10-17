@@ -22,6 +22,7 @@ import {
   makeEventContext,
   createFakeCreditCoordinatorBinding,
 } from "./harness";
+import { CONTAINER_PUBLICATION_COORDINATOR_NAME } from "../lib/containerPublicationClaim";
 
 const ORIGIN = "https://aeternacapsule.com";
 /**
@@ -72,6 +73,26 @@ function seedReservedLifecycle(env: ReturnType<typeof buildEnv>) {
       lifecycleId: LIFECYCLE_ID,
     })
   );
+
+  /**
+   * AUTHORITATIVE per-credit coordinator record.
+   *
+   * The vault path now records the strongly consistent publication claim in
+   * the per-credit Durable Object BEFORE writing the KV projection, so the
+   * endpoint requires this record: without it the coordinator refuses with
+   * LIFECYCLE_NOT_FOUND and (correctly) no KV publication record is created.
+   */
+  const binding = env.CREDIT_OP_COORDINATOR;
+  binding.get(binding.idFromName("credit-1")); // materialise the instance
+  binding.storages.get("credit-1")!.data.set("credit:credit-1", {
+    id: "credit-1",
+    creatorIdentityId: IDENTITY_ID,
+    status: "CONSUMING",
+    capsuleId: CAPSULE_ID,
+    lifecycleId: LIFECYCLE_ID,
+    revision: 2,
+    updatedAt: 1,
+  });
 }
 
 function seedVerifiedPayment(env: ReturnType<typeof buildEnv>) {
@@ -799,6 +820,31 @@ describe("Stage 4 — container publication claim (Model 3)", () => {
       ...overrides,
     });
 
+  /**
+   * Ask the instance that OWNS the container claim what it knows — the same
+   * read a per-credit recovery/rebind decision performs (finding F1).
+   */
+  const containerStatus = async (
+    env: ReturnType<typeof buildEnv>,
+    body: Record<string, unknown>
+  ) => {
+    const binding = env.CREDIT_OP_COORDINATOR;
+    const stub = binding.get(binding.idFromName(CONTAINER_PUBLICATION_COORDINATOR_NAME));
+    const response = await stub.fetch(
+      new Request("http://container", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "container-publication-claim-status", ...body }),
+      })
+    );
+    return (await response.json()) as {
+      ok: boolean;
+      claimed: boolean;
+      capsuleId?: string | null;
+      containerTxId?: string | null;
+    };
+  };
+
   it("ONE txId -> N logical chunks succeeds and writes exactly ONE record", async () => {
     const env = buildEnv();
     seedReservedLifecycle(env);
@@ -921,5 +967,227 @@ describe("Stage 4 — container publication claim (Model 3)", () => {
       const res = await containerClaim(env, bad);
       expect(res.status).toBe(400);
     }
+  });
+
+  it("records the authoritative claim the per-credit decision reads (F1)", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    expect((await containerClaim(env)).status).toBe(200);
+
+    // By capsule AND by lifecycle: after a recover only the lifecycle remains.
+    expect(
+      await containerStatus(env, { lifecycleId: LIFECYCLE_ID, capsuleId: CAPSULE_ID })
+    ).toEqual(
+      expect.objectContaining({
+        ok: true,
+        claimed: true,
+        capsuleId: CAPSULE_ID,
+        containerTxId: CONTAINER_TX,
+      })
+    );
+    expect(await containerStatus(env, { lifecycleId: LIFECYCLE_ID })).toEqual(
+      expect.objectContaining({ ok: true, claimed: true, capsuleId: CAPSULE_ID })
+    );
+    // A different lifecycle is a POSITIVE negative.
+    expect(await containerStatus(env, { lifecycleId: "lifecycle-other" })).toEqual(
+      expect.objectContaining({ ok: true, claimed: false })
+    );
+  });
+
+  it("keeps the claim authoritative when its KV projection is lost, and completes it on retry (F1)", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    const put = env.PUBLICATION_VERIFICATIONS.put.bind(env.PUBLICATION_VERIFICATIONS);
+    let failures = 1;
+    env.PUBLICATION_VERIFICATIONS.put = async (key, value) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("kv projection unavailable");
+      }
+      return put(key, value);
+    };
+
+    const lost = await containerClaim(env);
+    expect(lost.status).toBe(503);
+    expect(((await lost.json()) as Record<string, unknown>).error).toBe(
+      "CONTAINER_PUBLICATION_PROJECTION_FAILED"
+    );
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`container-publication:${CAPSULE_ID}`)
+    ).toBeNull();
+
+    // The DO claim is the authority and is already visible, so neither
+    // recovery nor rebind can mistake this attempt for "never published".
+    expect(
+      await containerStatus(env, { lifecycleId: LIFECYCLE_ID, capsuleId: CAPSULE_ID })
+    ).toEqual(expect.objectContaining({ claimed: true, containerTxId: CONTAINER_TX }));
+
+    // Retry: the claim is idempotent, and the projection is completed once.
+    const retried = await containerClaim(env);
+    expect(retried.status).toBe(200);
+    expect(((await retried.json()) as Record<string, unknown>).claimed).toBe(true);
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`container-publication:${CAPSULE_ID}`)
+    ).toBeTruthy();
+    expect(
+      (await containerStatus(env, { lifecycleId: LIFECYCLE_ID, capsuleId: CAPSULE_ID }))
+        .containerTxId
+    ).toBe(CONTAINER_TX);
+  });
+});
+
+/**
+ * AUTHORITATIVE VAULT-PUBLICATION CLAIM — the strongly consistent evidence
+ * the coordinator's rebind decision relies on. It must be written BEFORE the
+ * KV publication projection exists, addressed to the PER-CREDIT instance,
+ * and it must fail closed.
+ */
+describe("Phase C — authoritative vault claim (ordering, addressing, fail-closed)", () => {
+  beforeEach(() => {
+    nodeStatus = 200;
+    nodeBody = { id: VAULT_TX };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("records the coordinator claim BEFORE the KV projection, on the per-credit instance", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    const sequence: string[] = [];
+
+    const kvPut = env.PUBLICATION_VERIFICATIONS.put.bind(env.PUBLICATION_VERIFICATIONS);
+    env.PUBLICATION_VERIFICATIONS.put = async (key: string, value: string) => {
+      sequence.push(`kv:${key}`);
+      await kvPut(key, value);
+    };
+
+    const binding = env.CREDIT_OP_COORDINATOR;
+    const originalGet = binding.get.bind(binding);
+    binding.get = ((target: { id: string }) => {
+      const stub = originalGet(target);
+      return {
+        fetch: async (request: Request) => {
+          sequence.push(`do:${target.id}`);
+          return stub.fetch(request);
+        },
+      };
+    }) as typeof binding.get;
+
+    const res = await claim(env);
+    expect(res.status).toBe(200);
+
+    const claimIndex = sequence.findIndex((entry) => entry.startsWith("do:"));
+    // Addressed by the CREDIT id — never the identity or the quote instance.
+    expect(sequence[claimIndex]).toBe("do:credit-1");
+
+    const publicationIndex = sequence.findIndex((entry) =>
+      entry.startsWith(`kv:creator:publication:${LIFECYCLE_ID}`)
+    );
+    expect(publicationIndex).toBeGreaterThan(claimIndex);
+  });
+
+  it("writes NO KV publication record when the coordinator refuses the claim", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    // An AVAILABLE credit: the coordinator refuses with CREDIT_NOT_CONSUMING.
+    env.CREDIT_OP_COORDINATOR.storages.get("credit-1")!.data.set("credit:credit-1", {
+      id: "credit-1",
+      creatorIdentityId: IDENTITY_ID,
+      status: "AVAILABLE",
+      capsuleId: CAPSULE_ID,
+      lifecycleId: null,
+      revision: 3,
+      updatedAt: 1,
+    });
+    seedVerifiedPayment(env);
+    stubNode();
+
+    const res = await claim(env);
+    expect(res.status).toBe(409);
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)
+    ).toBeNull();
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`publication-tx:${VAULT_TX}`)
+    ).toBeNull();
+  });
+
+  it("fails closed (503) when the coordinator cannot be reached, with no KV record", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    env.CREDIT_OP_COORDINATOR.get = (() => {
+      throw new Error("coordinator down");
+    }) as typeof env.CREDIT_OP_COORDINATOR.get;
+
+    const res = await claim(env);
+    expect(res.status).toBe(503);
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)
+    ).toBeNull();
+  });
+
+  it("never records a claim for an unconfirmed (ABSENT) node observation", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+    nodeStatus = 404; // Irys node: transaction ABSENT
+
+    const res = await claim(env);
+    expect(res.status).toBe(409);
+
+    const storage = env.CREDIT_OP_COORDINATOR.storages.get("credit-1")!;
+    expect(
+      [...storage.data.keys()].filter((key) => key.includes("vault-publication-claim"))
+    ).toEqual([]);
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)
+    ).toBeNull();
+  });
+
+  it("is idempotent: a replay completes the projection without a second claim", async () => {
+    const env = buildEnv();
+    seedReservedLifecycle(env);
+    seedVerifiedPayment(env);
+    stubNode();
+
+    const storage = env.CREDIT_OP_COORDINATOR.storages.get("credit-1")!;
+    const claimKeys = () =>
+      [...storage.data.keys()].filter((key) => key.includes("vault-publication-claim"));
+
+    const first = await claim(env);
+    expect(first.status).toBe(200);
+    expect(claimKeys()).toEqual([
+      `op:credit-1:vault-publication-claim:${LIFECYCLE_ID}`,
+    ]);
+    const storedAfterFirst =
+      await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`);
+
+    const second = await claim(env);
+    expect(second.status).toBe(200);
+    // Still exactly ONE claim, and the projection is unchanged.
+    expect(claimKeys()).toEqual([
+      `op:credit-1:vault-publication-claim:${LIFECYCLE_ID}`,
+    ]);
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)
+    ).toBe(storedAfterFirst);
   });
 });

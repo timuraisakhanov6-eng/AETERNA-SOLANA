@@ -40,6 +40,15 @@ interface TestEnv {
   CREATOR_CREDITS: FakeStorage;
   PUBLICATION_VERIFICATIONS: FakeStorage;
   SEAL_VERIFICATIONS: FakeStorage;
+  /**
+   * Self-binding, exactly as in the deployed coordinator worker: the grant
+   * op (addressed per identity+quote) records the AUTHORITATIVE issuance
+   * provenance in the per-credit instance `idFromName(creatorCreditId)`.
+   */
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(target: { id: string }): { fetch(request: Request): Promise<Response> };
+  };
 }
 
 function createEnv(): TestEnv {
@@ -75,6 +84,19 @@ function createCoordinator(env: TestEnv) {
   const state = createFakeStorage();
   const durableState = { storage: state };
   const instance = new CreditOperationCoordinator(durableState as never, env as never);
+
+  /**
+   * SELF-BINDING (production topology): the grant op runs in the
+   * `identity:quote` instance and records protocol provenance in the
+   * PER-CREDIT instance `idFromName(creatorCreditId)`. These tests own one
+   * credit, so every id routes back to this instance — through the UNGATED
+   * fetch, because the inner call is a separate logical request and must not
+   * queue behind the outer one.
+   */
+  env.CREDIT_OP_COORDINATOR = {
+    idFromName: (name: string) => ({ id: name }),
+    get: () => ({ fetch: (request: Request) => instance.fetch(request) }),
+  };
 
   let tail: Promise<unknown> = Promise.resolve();
 
@@ -245,5 +267,103 @@ describe("Creator Credit grant hardening — one verified payment, one Credit", 
     expect(b.status).toBe(200);
     expect(b.json.creatorCreditId).not.toBe(a.json.creatorCreditId);
     expect(creditRecordIds(env)).toHaveLength(2);
+  });
+});
+
+/**
+ * PROTOCOL PROVENANCE AT ISSUANCE.
+ *
+ * The marker is recorded in the PER-CREDIT Durable Object before the grant is
+ * acknowledged, so provenance never depends on an eventually consistent KV
+ * read. A grant that cannot be proven is NOT acknowledged, and the retry of
+ * the same verified payment completes that same issuance.
+ */
+describe("Creator Credit grant hardening — authoritative issuance provenance", () => {
+  const MARKER = "vault-claim-v1";
+
+  it("does not acknowledge a grant it cannot prove, and converges on retry", async () => {
+    const env = createEnv();
+    const { coordinator, state } = createCoordinator(env);
+    const working = env.CREDIT_OP_COORDINATOR!;
+
+    env.CREDIT_OP_COORDINATOR = {
+      idFromName: (name: string) => ({ id: name }),
+      get: () => ({
+        fetch: async () => {
+          throw new Error("provenance unavailable");
+        },
+      }),
+    };
+
+    const blocked = await post(coordinator, grantPayload());
+    expect(blocked.status).toBe(503);
+    expect(blocked.json["error"]).toBe("PROTOCOL_PROVENANCE_UNVERIFIED");
+    // Nothing is acknowledged, minted or projected.
+    expect(creditRecordIds(env)).toEqual([]);
+    expect(env.CREATOR_CREDITS.data.has(indexKey)).toBe(false);
+
+    // The authority returns: the SAME issuance completes, exactly once.
+    env.CREDIT_OP_COORDINATOR = working;
+    const retried = await post(coordinator, grantPayload());
+    expect(retried.status).toBe(200);
+    const creditId = retried.json["creatorCreditId"] as string;
+
+    expect(creditRecordIds(env)).toEqual([creditId]);
+    expect(state.data.get(`issue-protocol:${creditId}`)).toEqual(
+      expect.objectContaining({ publicationProtocol: MARKER })
+    );
+    expect(
+      JSON.parse(env.CREATOR_CREDITS.data.get(`creator:credit:${creditId}`) as string)
+        .publicationProtocol
+    ).toBe(MARKER);
+
+    // A replay mints nothing new and keeps the same provenance.
+    const replay = await post(coordinator, grantPayload());
+    expect(replay.status).toBe(200);
+    expect(replay.json["creatorCreditId"]).toBe(creditId);
+    expect(creditRecordIds(env)).toEqual([creditId]);
+  });
+
+  it("ignores a client-supplied protocol value on the grant payload", async () => {
+    const env = createEnv();
+    const { coordinator, state } = createCoordinator(env);
+
+    const { status, json } = await post(
+      coordinator,
+      grantPayload({ publicationProtocol: "client-forged", protocolIssuance: false })
+    );
+    expect(status).toBe(200);
+
+    const creditId = json["creatorCreditId"] as string;
+    expect(state.data.get(`issue-protocol:${creditId}`)).toEqual(
+      expect.objectContaining({ publicationProtocol: MARKER })
+    );
+    expect(
+      JSON.parse(env.CREATOR_CREDITS.data.get(`creator:credit:${creditId}`) as string)
+        .publicationProtocol
+    ).toBe(MARKER);
+  });
+
+  it("never marks a legacy claim that is merely replayed", async () => {
+    const env = createEnv();
+    const { coordinator, state } = createCoordinator(env);
+    // A historical claim, stored without issuance intent.
+    state.data.set("credit-grant:identity-1:quote-1", {
+      creatorIdentityId: "identity-1",
+      quoteId: "quote-1",
+      creatorCreditId: "creditlegacy0001",
+      createdAt: 1,
+    });
+
+    const replay = await post(coordinator, grantPayload());
+    expect(replay.status).toBe(200);
+    expect(replay.json["outcome"]).toBe("ALREADY_GRANTED");
+    expect(replay.json["creatorCreditId"]).toBe("creditlegacy0001");
+
+    expect(state.data.has("issue-protocol:creditlegacy0001")).toBe(false);
+    expect(
+      JSON.parse(env.CREATOR_CREDITS.data.get("creator:credit:creditlegacy0001") as string)
+        .publicationProtocol
+    ).toBeUndefined();
   });
 });

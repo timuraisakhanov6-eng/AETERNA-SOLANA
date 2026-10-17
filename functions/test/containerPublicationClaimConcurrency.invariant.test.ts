@@ -649,3 +649,133 @@ describe("Stage 4.1 — container claim race safety (endpoint)", () => {
     ).toBeUndefined();
   });
 });
+
+/* ==================================================================== *
+ * Stage 4.2 — the claim's LIFECYCLE association (finding F1)
+ * ==================================================================== */
+
+/**
+ * The per-credit recovery/rebind decision must be able to resolve a
+ * container claim from the RELEASED LIFECYCLE alone (after `recover` cleared
+ * the capsule binding), and two racing claims must never produce evidence
+ * that disagrees with the claim they describe.
+ */
+describe("Stage 4.2 — container claim lifecycle association (F1)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function status(env: Env, lifecycleId: string, capsuleId?: string) {
+    const stub = env.CREDIT_OP_COORDINATOR.get(
+      env.CREDIT_OP_COORDINATOR.idFromName(CONTAINER_PUBLICATION_COORDINATOR_NAME)
+    );
+    const response = await stub.fetch(
+      new Request("http://container", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          op: "container-publication-claim-status",
+          lifecycleId,
+          ...(capsuleId ? { capsuleId } : {}),
+        }),
+      })
+    );
+    return (await response.json()) as {
+      ok: boolean;
+      claimed: boolean;
+      capsuleId?: string | null;
+      containerTxId?: string | null;
+    };
+  }
+
+  it("answers by lifecycle and by capsule, and never claims an untouched lifecycle", async () => {
+    const env = buildEnv();
+    seedAuthority(env);
+
+    expect(await claimContainerPublication(env, primitiveInput())).toEqual({
+      ok: true,
+      outcome: "CLAIMED",
+    });
+
+    expect(await status(env, LIFECYCLE_A, CAPSULE_A)).toEqual(
+      expect.objectContaining({
+        ok: true,
+        claimed: true,
+        capsuleId: CAPSULE_A,
+        containerTxId: CONTAINER_TX,
+      })
+    );
+    expect(await status(env, LIFECYCLE_A)).toEqual(
+      expect.objectContaining({ ok: true, claimed: true, capsuleId: CAPSULE_A })
+    );
+    expect(await status(env, LIFECYCLE_B)).toEqual(
+      expect.objectContaining({ ok: true, claimed: false })
+    );
+  });
+
+  it("records the association atomically with the claim under a race", async () => {
+    const env = buildEnv();
+    seedAuthority(env);
+
+    const [a, b] = await Promise.all([
+      claimContainerPublication(env, primitiveInput()),
+      claimContainerPublication(env, primitiveInput({ containerTxId: "L".repeat(43) })),
+    ]);
+
+    const outcomes = [a, b].map((result) =>
+      result.ok ? result.outcome : result.reason
+    );
+    expect(outcomes.filter((outcome) => outcome === "CLAIMED")).toHaveLength(1);
+    expect(
+      outcomes.filter((outcome) => outcome === "CONTAINER_ALREADY_PUBLISHED")
+    ).toHaveLength(1);
+
+    const authoritative = await status(env, LIFECYCLE_A, CAPSULE_A);
+    expect(authoritative.claimed).toBe(true);
+    expect(authoritative.containerTxId).toBe(CONTAINER_TX);
+
+    const storage = coordinatorStorage(env)!;
+    expect(
+      [...storage.data.keys()].filter((key) => key.startsWith("container-publication-claim:"))
+    ).toEqual([claimKey(CAPSULE_A)]);
+    expect(
+      [...storage.data.keys()].filter((key) => key.startsWith("container-publication-tx:"))
+    ).toHaveLength(1);
+    expect(
+      [...storage.data.keys()].filter((key) =>
+        key.startsWith("container-publication-claim-lifecycle:")
+      )
+    ).toEqual([`container-publication-claim-lifecycle:${LIFECYCLE_A}`]);
+  });
+
+  it("repairs a missing lifecycle association on an exact replay", async () => {
+    const env = buildEnv();
+    seedAuthority(env);
+
+    expect(await claimContainerPublication(env, primitiveInput())).toEqual({
+      ok: true,
+      outcome: "CLAIMED",
+    });
+
+    const storage = coordinatorStorage(env)!;
+    storage.data.delete(`container-publication-claim-lifecycle:${LIFECYCLE_A}`);
+    expect(await status(env, LIFECYCLE_A)).toEqual(
+      expect.objectContaining({ claimed: false })
+    );
+
+    // The capsule-keyed claim is still authoritative, so the replay converges.
+    expect(await claimContainerPublication(env, primitiveInput())).toEqual({
+      ok: true,
+      outcome: "ALREADY_CLAIMED",
+    });
+    expect(await status(env, LIFECYCLE_A)).toEqual(
+      expect.objectContaining({ ok: true, claimed: true, capsuleId: CAPSULE_A })
+    );
+  });
+});

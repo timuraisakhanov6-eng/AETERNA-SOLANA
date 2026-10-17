@@ -108,6 +108,95 @@ function parseInput(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Establish the AUTHORITATIVE vault-publication claim in the per-credit
+ * CreditOperationCoordinator, BEFORE any KV publication projection exists.
+ *
+ * WHY: the coordinator's rebind decision must never rest on a missing KV
+ * record (KV is eventually consistent and a read can hide a record). This
+ * claim is strongly consistent evidence that the lifecycle reached the
+ * publication stage, so it is written FIRST and a failure here prevents the
+ * KV publication record from being created at all.
+ *
+ * ADDRESSING: `idFromName(creatorCreditId)` — that instance owns the
+ * authoritative per-credit record (reserve / recover / finalize and the
+ * lazily created credit record all live there). The identity instance
+ * (`identity:<creatorIdentityId>`) and the grant instance
+ * (`<creatorIdentityId>:<quoteId>`) hold no credit record and would answer
+ * LIFECYCLE_NOT_FOUND.
+ *
+ * The payload carries exactly the fields the coordinator handler consumes
+ * (`op`, `creatorCreditId`, `creatorIdentityId`, `lifecycleId`,
+ * `capsuleId`); the transaction id and the storage payment were already
+ * validated above, and the handler's own idempotency key is
+ * (creatorCreditId, lifecycleId).
+ *
+ * FAILS CLOSED on any refusal, transport error or unverifiable answer: the
+ * caller must not write the KV publication projection in that case, and no
+ * outcome here ever records an explicit publication failure.
+ */
+async function requestVaultPublicationClaim(
+  env: PublicationClaimEnv,
+  input: {
+    creatorCreditId: string;
+    creatorIdentityId: string;
+    lifecycleId: string;
+    capsuleId: string;
+  }
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const binding = env.CREDIT_OP_COORDINATOR;
+  if (!binding) {
+    return { ok: false, status: 503, error: "CREDIT_COORDINATOR_UNAVAILABLE" };
+  }
+
+  let response: Response;
+  try {
+    const stub = binding.get(binding.idFromName(input.creatorCreditId));
+    response = await stub.fetch(
+      new Request("https://aeterna-credit-coordinator.invalid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          op: "vault-publication-claim",
+          creatorCreditId: input.creatorCreditId,
+          creatorIdentityId: input.creatorIdentityId,
+          lifecycleId: input.lifecycleId,
+          capsuleId: input.capsuleId,
+        }),
+      })
+    );
+  } catch {
+    return { ok: false, status: 503, error: "CREDIT_COORDINATOR_UNAVAILABLE" };
+  }
+
+  let data: { ok?: unknown; error?: unknown } | null = null;
+  try {
+    data = (await response.json()) as { ok?: unknown; error?: unknown };
+  } catch {
+    data = null;
+  }
+
+  if (response.status === 200 && data?.ok === true) {
+    return { ok: true };
+  }
+
+  /**
+   * Fail closed. A 200 WITHOUT `ok: true` is an unverifiable answer, never a
+   * success; a refusal keeps the coordinator's own reason.
+   */
+  const error =
+    typeof data?.error === "string" && data.error
+      ? data.error
+      : "PUBLICATION_CLAIM_UNVERIFIED";
+  const status =
+    response.status === 400
+      ? 400
+      : response.status >= 500 || response.status === 200
+      ? 503
+      : 409;
+  return { ok: false, status, error };
+}
+
 /* ================= ENDPOINT ================= */
 
 export async function onRequestOptions(
@@ -360,6 +449,39 @@ export async function onRequestPost(
     // expectedVaultSha256 is NOT accepted from the client: it is
     // computed by /api/publication/verify from the gateway-fetched
     // bytes (server-side), exactly like the legacy upload path.
+
+    /**
+     * AUTHORITATIVE CLAIM FIRST, KV PROJECTION SECOND.
+     *
+     * Everything above validated ownership, lifecycle, capsule and the
+     * storage payment, and the Irys node positively confirmed this exact
+     * transaction. The strongly consistent coordinator claim is recorded
+     * NOW, before the KV publication record exists: if it fails, times out
+     * or comes back unverifiable, NO KV publication record is written and
+     * the caller fails closed — so a coordinator that later finds no claim
+     * for a MARKED right knows the attempt never reached this stage.
+     *
+     * This path is only reached when no publication record exists yet
+     * (terminal replays and the different-tx conflict returned above), and
+     * the coordinator call is idempotent on (creatorCreditId, lifecycleId),
+     * so a retry safely completes a projection that an earlier crash left
+     * unwritten without creating a second claim.
+     */
+    const publicationCreatorCreditId =
+      typeof lifecycle.id === "string" ? lifecycle.id.trim() : "";
+    if (!publicationCreatorCreditId) {
+      return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+    }
+    const vaultClaim = await requestVaultPublicationClaim(env, {
+      creatorCreditId: publicationCreatorCreditId,
+      creatorIdentityId,
+      lifecycleId,
+      capsuleId,
+    });
+    if (!vaultClaim.ok) {
+      return fail(origin, vaultClaim.status, vaultClaim.error);
+    }
+
     const record = {
       lifecycleId,
       capsuleId,
