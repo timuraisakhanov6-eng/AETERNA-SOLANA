@@ -37,6 +37,19 @@ export interface SolanaRpcEnv {
  *   getEstimatedFee       -> getFeeForMessage
  * plus the blockhash/slot/epoch/rent reads below.
  *
+ * RECOVERY ADDITION (stale pending-payment reconciliation):
+ *   getBlockHeight        — the authoritative network height, compared
+ *                           against a pending attempt's recorded
+ *                           lastValidBlockHeight to prove that a payment
+ *                           transaction's blockhash window has expired.
+ *   getSignatureStatuses  — read-only signature lookup (with history
+ *                           search) used to decide whether the recorded
+ *                           transaction is already known on-chain.
+ * Both are pure reads; neither can mutate chain state. They must NEVER
+ * be used as a substitute for the payment verifier
+ * (/api/service-payment/verify) — the reading side treats any uncertain
+ * answer as "keep the pending record".
+ *
  * Anything absent from this set — in particular every write method
  * (sendTransaction, sendRawTransaction, simulateTransaction, requestAirdrop)
  * — is rejected.
@@ -44,6 +57,8 @@ export interface SolanaRpcEnv {
 const ALLOWED_READ_METHODS = new Set<string>([
   "getAccountInfo",
   "getLatestBlockhash",
+  "getBlockHeight",
+  "getSignatureStatuses",
   "getTransaction",
   "getSlot",
   "getEpochInfo",

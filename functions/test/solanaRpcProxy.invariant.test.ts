@@ -135,6 +135,73 @@ describe("/api/solana/rpc — read-only JSON-RPC transport", () => {
     expect(calls[0]!.method).toBe("getLatestBlockhash");
   });
 
+  /**
+   * RECOVERY ADDITION — stale pending-payment reconciliation reads.
+   *
+   * The client-side reconciliation of a stale pending payment attempt
+   * proves a blockhash window's expiry with getBlockHeight (NEVER with
+   * getSlot — those are different quantities) and checks whether the
+   * recorded transaction is already known on-chain with
+   * getSignatureStatuses (history search). Both are read-only and must
+   * reach the upstream RPC verbatim.
+   */
+  it("B2. forwards the allow-listed getBlockHeight with params unchanged", async () => {
+    const { calls } = stubRpc(() => ({
+      jsonrpc: "2.0",
+      id: 1,
+      result: 262236000,
+    }));
+
+    const params = [{ commitment: "finalized" }];
+    const response = await onRequestPost(
+      contextFor({
+        body: {
+          jsonrpc: "2.0",
+          id: "rec-1",
+          method: "getBlockHeight",
+          params,
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe("getBlockHeight");
+    expect(calls[0]!.params).toEqual(params);
+    const payload = (await response.json()) as { result: number };
+    expect(payload.result).toBe(262236000);
+  });
+
+  it("B3. forwards the allow-listed getSignatureStatuses with params unchanged", async () => {
+    const { calls } = stubRpc(() => ({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { context: { slot: 1 }, value: [null] },
+    }));
+
+    const params = [
+      ["5YvEKgAAexampleSignatureStringForHistorySearch11"],
+      { searchHistory: true },
+    ];
+    const response = await onRequestPost(
+      contextFor({
+        body: {
+          jsonrpc: "2.0",
+          id: "rec-2",
+          method: "getSignatureStatuses",
+          params,
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe("getSignatureStatuses");
+    expect(calls[0]!.params).toEqual(params);
+    const payload = (await response.json()) as { result: unknown };
+    expect(payload.result).toEqual({ context: { slot: 1 }, value: [null] });
+  });
+
   it("C. rejects a malformed request body with PARSE_ERROR", async () => {
     const { fetchMock } = stubRpc(() => ({ jsonrpc: "2.0", id: 1, result: 1 }));
 

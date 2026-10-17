@@ -103,6 +103,26 @@ function describeGateError(raw: string | null): string {
   if (code.includes("PAYMENT_REJECTED_BY_WALLET")) {
     return "You cancelled in your wallet. Nothing was sent — you can try again.";
   }
+  /**
+   * SAFE STALE-ATTEMPT RELEASE (proven expiry + proven absence).
+   *
+   * The controller released the stalled pointer only after direct
+   * on-chain reads proved the payment window had expired and the
+   * transaction is absent from Solana. The refreshed attempt state was
+   * confirmed ready_to_pay with no server-bound signature. Nothing was
+   * charged and nothing was sent; the next payment is an explicit step.
+   */
+  if (code.includes("PAYMENT_STALE_ATTEMPT_RELEASED")) {
+    return "Your previous payment could not be found on the network after its window expired, so the stalled attempt was cleared. Nothing was charged — tap Pay to start a fresh payment.";
+  }
+  /**
+   * SERVER-BOUND RESUME. The server holds a transaction signature for
+   * this attempt that the local reads could not observe: the client
+   * must resume verifying THAT signature, never send a second payment.
+   */
+  if (code.includes("PAYMENT_SERVER_SIGNATURE_BOUND")) {
+    return "A payment for this purchase is already bound on the server and is being checked. Nothing new was sent — tap Check again to resume it.";
+  }
   if (
     code.includes("ENTITLEMENT_STATE_UNKNOWN") ||
     code.includes("ENUMERATION_INCOMPLETE") ||

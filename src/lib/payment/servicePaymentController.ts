@@ -31,6 +31,7 @@ import {
   readPendingPaymentAttempt,
   writePendingPaymentAttempt,
 } from "@/lib/payment/pendingPaymentAttempt"
+import { reconcileStalePendingPaymentAttempt } from "@/lib/payment/pendingAttemptRecovery"
 
 /* ───────────────── TYPES ───────────────── */
 
@@ -1550,6 +1551,89 @@ export function createServicePaymentController(
     let resumableTransactionId: string | null = null
     if (pendingForThisIntent) {
       if (pendingForThisIntent.transactionId) {
+        /**
+         * STALE-ATTEMPT RECONCILIATION (proven-safe release path).
+         *
+         * A pointer whose blockhash window has EXPIRED and whose
+         * transaction is PROVABLY ABSENT from Solana can never land and
+         * can never verify: without this reconciliation every future
+         * attempt on the intent re-enters the bounded TX_NOT_FOUND
+         * polling window and fails again — the record never gets its
+         * verdict and the creator is stuck.
+         *
+         * Reconciliation asks ONLY direct read-only blockchain reads
+         * (getBlockHeight vs the recorded lastValidBlockHeight, then
+         * getSignatureStatuses-with-history and getTransaction):
+         *   - TX_NOT_FOUND from the verifier, the record's age and
+         *     failure counts are NEVER sufficient;
+         *   - a KNOWN status (confirmed or failed) or a FOUND
+         *     transaction keeps the pointer — the verifier owns the
+         *     verdict; nothing is deleted automatically;
+         *   - EVERY uncertain outcome keeps the pointer (fail closed).
+         *
+         * RELEASE must not start a payment: the flow below stops with a
+         * controlled error after re-obtaining the AUTHORITATIVE
+         * intent/quote state, so the creator starts the next payment
+         * step explicitly and the pre-signature re-read of that attempt
+         * decides what happens next.
+         */
+        const reconciliation = await reconcileStalePendingPaymentAttempt({
+          fetchImpl,
+        })
+        if (reconciliation.status === "released") {
+          // Re-obtain the authoritative attempt state (proof reuse —
+          // create-quote verifies but does not consume the challenge, so
+          // this re-read costs no wallet prompt and no payment).
+          // NOTE: this is intentionally NOT `verifyIdentity()` and NOT a
+          // signature — after a release the flow returns to the creator.
+          await requestQuote()
+          const refreshed = state.quote
+          if (
+            refreshed &&
+            refreshed.paymentIntentId === pendingForThisIntent.paymentIntentId
+          ) {
+            if (refreshed.resumeTransactionId) {
+              // The server holds a signature for this attempt that the
+              // local reads could not observe. The client must never
+              // send a second transaction: resume-verify THAT one.
+              patch({
+                error:
+                  "PAYMENT_SERVER_SIGNATURE_BOUND: the server has already bound a transaction signature to this payment attempt. Press Check again to resume verifying THAT transaction — nothing new will be sent.",
+                phase: "error",
+                isProcessing: false,
+              })
+              return
+            }
+            if (refreshed.paymentState === "granted") {
+              patch({
+                error: "PAYMENT_ALREADY_GRANTED_REFRESH_REQUIRED",
+                phase: "error",
+                isProcessing: false,
+              })
+              return
+            }
+            if (refreshed.paymentState === "verified_pending_grant") {
+              patch({
+                error: "PAYMENT_ALREADY_RECORDED_CHECK_REQUIRED",
+                phase: "error",
+                isProcessing: false,
+              })
+              return
+            }
+            if (refreshed.paymentState === "ready_to_pay") {
+              patch({
+                error:
+                  "PAYMENT_STALE_ATTEMPT_RELEASED: the previous attempt's blockhash window has expired and its transaction is provably absent on Solana. Nothing was sent and nothing new was charged — press Pay to start a fresh payment.",
+                phase: "error",
+                isProcessing: false,
+              })
+              return
+            }
+          }
+          // Otherwise the refreshed quote/error state stands exactly as
+          // requestQuote left it — the creator sees its verdict.
+          return
+        }
         resumableTransactionId = pendingForThisIntent.transactionId
       } else if (pendingForThisIntent.outcome === "unknown") {
         patch({
