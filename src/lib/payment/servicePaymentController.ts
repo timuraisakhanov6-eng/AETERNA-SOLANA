@@ -254,6 +254,28 @@ export type ServicePaymentAttemptRecheckResult =
     }
   | { readonly status: "failed"; readonly error: string }
 
+/**
+ * The outcome of the AUTOMATIC recovery of the ONE pending payment attempt
+ * this browser holds (`completePreviousAttempt`).
+ *
+ * It CONTINUES an already-signed purchase: it re-verifies the SAME recorded
+ * transaction and grants the Creator Credit idempotently. It never mints an
+ * intent, requests a quote, signs or sends — so any non-"completed" outcome
+ * means "nothing new was sent and the attempt was kept".
+ */
+export type ServicePaymentAttemptCompletionResult =
+  | { readonly status: "no_pending_attempt" }
+  | {
+      readonly status: "completed"
+      /** null only when the grant answered without an id (server anomaly). */
+      readonly creatorCreditId: string | null
+      readonly creatorIdentityId: string
+      readonly account: string
+      readonly paymentIntentId: string
+    }
+  | { readonly status: "pending"; readonly transportUnavailable: boolean }
+  | { readonly status: "failed"; readonly error: string }
+
 export interface ServicePaymentController {
   subscribe: (listener: () => void) => () => void
   getState: () => ServicePaymentState
@@ -288,6 +310,19 @@ export interface ServicePaymentController {
    * in-flight click is the only concurrency the caller must suppress.
    */
   recheckPreviousAttempt: () => Promise<ServicePaymentAttemptRecheckResult>
+  /**
+   * AUTOMATIC recovery of the ONE pending payment attempt this browser
+   * holds. Unlike `recheckPreviousAttempt` (read-only), it CONTINUES the
+   * purchase: it re-verifies the SAME recorded transaction and, only on a
+   * VERIFIED verdict, grants the Creator Credit idempotently and emits
+   * `onCreditReady`, so the caller's normal completion flow advances.
+   *
+   * It NEVER signs, sends, mints an intent or requests a wallet signature:
+   * every network call operates on the transaction id already recorded.
+   * When the paying wallet is not connected (or a different account is
+   * active) it does nothing and keeps the attempt.
+   */
+  completePreviousAttempt: () => Promise<ServicePaymentAttemptCompletionResult>
   /** Full reset — mirrors the modal's close effect. */
   reset: () => void
 }
@@ -1803,6 +1838,99 @@ export function createServicePaymentController(
     }
   }
 
+  /**
+   * Verify the SAME recorded transaction and, ONLY on a VERIFIED verdict,
+   * grant the Creator Credit through the canonical
+   * `/api/creator/grant-credit` endpoint.
+   *
+   * This is the ONE shared implementation of the purchase settlement, used
+   * by BOTH `confirmAndVerify` (an explicit payment) and
+   * `completePreviousAttempt` (automatic recovery of an already-signed
+   * attempt). It NEVER signs, sends, mints an intent or requests a wallet
+   * signature: every call operates exclusively on a transaction id the
+   * caller already holds, and the server remains the sole authority for the
+   * verdict and the grant.
+   */
+  async function verifyAndGrantAttempt(input: {
+    paymentIntentId: string
+    creatorIdentityId: string
+    account: string
+    transactionId: string
+    evidencePrefix: string
+  }): Promise<
+    | { ok: true; status: string; creatorCreditId: string | null }
+    | { ok: false; kind: "pending"; transportUnavailable: boolean }
+    | { ok: false; kind: "error"; error: string }
+  > {
+    const evidenceId = `${input.evidencePrefix}-${input.paymentIntentId}-${Date.now()}`
+
+    const verifyOutcome = await pollServicePaymentVerification(fetchImpl, {
+      paymentIntentId: input.paymentIntentId,
+      creatorIdentityId: input.creatorIdentityId,
+      evidenceId,
+      transactionId: input.transactionId,
+    })
+
+    if (!verifyOutcome.ok) {
+      return verifyOutcome.pending
+        ? {
+            ok: false,
+            kind: "pending",
+            transportUnavailable: verifyOutcome.transportUnavailable === true,
+          }
+        : { ok: false, kind: "error", error: verifyOutcome.error }
+    }
+
+    if (verifyOutcome.status !== "VERIFIED") {
+      return { ok: false, kind: "error", error: "PAYMENT_NOT_VERIFIED" }
+    }
+
+    const grantRes = await fetchImpl("/api/creator/grant-credit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        paymentIntentId: input.paymentIntentId,
+        creatorIdentityId: input.creatorIdentityId,
+        verifiedPaymentId: evidenceId,
+        transactionId: input.transactionId,
+      }),
+    })
+
+    const grantData = await grantRes.json()
+    if (!grantRes.ok || !grantData?.ok) {
+      return {
+        ok: false,
+        kind: "error",
+        error: grantData?.error || "PAYMENT_VERIFICATION_FAILED",
+      }
+    }
+
+    const status = normalizeGrantCreditStatus(grantData.status)
+    /**
+     * The payment is now settled server-side (a Creator Credit exists for
+     * this intent): the local pending-attempt pointer has served its
+     * purpose and must not block a FUTURE, separate purchase.
+     */
+    clearPendingPaymentAttempt()
+    patch({
+      phase: status === "available" ? "available" : "verifying",
+      isProcessing: false,
+    })
+    callbacks.onCreditReady?.({
+      status,
+      creatorIdentityId: input.creatorIdentityId,
+      creatorCreditId: grantData.creatorCreditId,
+      account: input.account,
+      paymentIntentId: input.paymentIntentId,
+    })
+
+    return {
+      ok: true,
+      status,
+      creatorCreditId: grantData.creatorCreditId ?? null,
+    }
+  }
+
   const confirmAndVerify = async () => {
     // PATCH-2K-A: the $1 payment is reachable only through a completed
     // credit-status discovery that answered NO CREDIT (PATCH-2J ordering).
@@ -2218,62 +2346,27 @@ export function createServicePaymentController(
         txHash = signed.signature
       }
 
-      const evidenceId = `payment-modal-${quote.paymentIntentId}-${Date.now()}`
-
-      const verifyOutcome = await pollServicePaymentVerification(fetchImpl, {
+      const outcome = await verifyAndGrantAttempt({
         paymentIntentId: quote.paymentIntentId,
         creatorIdentityId: effectiveCreatorIdentityId,
-        evidenceId,
+        account: currentAccount,
         transactionId: txHash,
+        evidencePrefix: "payment-modal",
       })
 
-      if (!verifyOutcome.ok) {
+      if (!outcome.ok) {
         throw new Error(
-          verifyOutcome.pending
-            ? verifyOutcome.transportUnavailable
+          outcome.kind === "pending"
+            ? outcome.transportUnavailable
               ? "PAYMENT_VERIFICATION_UNAVAILABLE: the network could not check this payment. That is NOT proof that nothing was sent — your payment attempt is kept and will be checked again. No new payment was made; the SAME transaction will be checked again."
               : "PAYMENT_NOT_OBSERVED_ON_CHAIN: this transaction has not been observed on Solana yet. That is NOT proof that it was not sent — it may still confirm. No new payment is offered; the SAME transaction will be checked again."
-            : verifyOutcome.error
+            : outcome.error
         )
       }
 
-      if (verifyOutcome.status !== "VERIFIED") {
-        throw new Error("PAYMENT_NOT_VERIFIED")
-      }
+      const status = outcome.status
 
-      const grantRes = await fetchImpl("/api/creator/grant-credit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paymentIntentId: quote.paymentIntentId,
-          creatorIdentityId: effectiveCreatorIdentityId,
-          verifiedPaymentId: evidenceId,
-          transactionId: txHash,
-        }),
-      })
-
-      const grantData = await grantRes.json()
-      if (!grantRes.ok || !grantData?.ok) {
-        throw new Error(grantData?.error || "PAYMENT_VERIFICATION_FAILED")
-      }
-
-      const status = normalizeGrantCreditStatus(grantData.status)
-      /**
-       * The payment is now settled server-side (a Creator Credit exists
-       * for this intent): the local pending-attempt pointer has served
-       * its purpose and must not block a FUTURE, separate purchase.
-       */
-      clearPendingPaymentAttempt()
-      patch({ phase: status === "available" ? "available" : "verifying", isProcessing: false })
-      callbacks.onCreditReady?.({
-        status,
-        creatorIdentityId: effectiveCreatorIdentityId,
-        creatorCreditId: grantData.creatorCreditId,
-        account: currentAccount,
-        paymentIntentId: quote.paymentIntentId,
-      })
-
-      if (status !== "available" || !grantData.creatorCreditId) {
+      if (status !== "available" || !outcome.creatorCreditId) {
         return
       }
 
@@ -2302,7 +2395,7 @@ export function createServicePaymentController(
       }
 
       callbacks.onReserveReady?.({
-        creatorCreditId: grantData.creatorCreditId,
+        creatorCreditId: outcome.creatorCreditId,
         lifecycleId: lifecycleData.lifecycleId ?? lifecycleId,
         paymentIntentId: quote.paymentIntentId,
       })
@@ -2384,6 +2477,73 @@ export function createServicePaymentController(
     return { status: "failed", error: verifyOutcome.error }
   }
 
+  /**
+   * AUTOMATIC recovery of the ONE pending payment attempt this browser
+   * holds, for an attempt whose transaction signature is already known.
+   *
+   * Unlike `recheckPreviousAttempt` (purely read-only), this action
+   * CONTINUES the purchase: it re-verifies the SAME recorded transaction
+   * and — only when the verifier confirms it on-chain — grants the Creator
+   * Credit idempotently and emits `onCreditReady`, so the caller's normal
+   * completion flow advances exactly as after an explicit payment.
+   *
+   * It NEVER signs, sends, mints a new intent or requests a wallet
+   * signature: every network call operates on the transaction id already
+   * recorded, so it can never open a second financial attempt. When the
+   * (account-bound) paying wallet is not connected, or a different account
+   * is active, nothing happens and the attempt is kept.
+   */
+  async function completePreviousAttempt(): Promise<ServicePaymentAttemptCompletionResult> {
+    const record = readPendingPaymentAttempt()
+    const transactionId = record?.transactionId ?? null
+    if (!record || !transactionId) {
+      return { status: "no_pending_attempt" }
+    }
+
+    const creatorIdentityId =
+      record.creatorIdentityId || getState().verifiedCreatorIdentityId || ""
+    if (!creatorIdentityId) {
+      // Without the identity claim the verifier cannot be asked; the
+      // attempt is kept and the honest state is "still checking".
+      return { status: "pending", transportUnavailable: false }
+    }
+
+    /**
+     * The granted right is ACCOUNT-BOUND: it may only be activated for the
+     * wallet that paid. A missing/disconnected wallet, or a different
+     * account, must never complete the attempt.
+     */
+    const currentAccount = wallet?.account ?? null
+    if (
+      !currentAccount ||
+      (record.account !== null && record.account !== currentAccount)
+    ) {
+      return { status: "pending", transportUnavailable: false }
+    }
+
+    const outcome = await verifyAndGrantAttempt({
+      paymentIntentId: record.paymentIntentId,
+      creatorIdentityId,
+      account: currentAccount,
+      transactionId,
+      evidencePrefix: "payment-attempt-recovery",
+    })
+
+    if (!outcome.ok) {
+      return outcome.kind === "pending"
+        ? { status: "pending", transportUnavailable: outcome.transportUnavailable }
+        : { status: "failed", error: outcome.error }
+    }
+
+    return {
+      status: "completed",
+      creatorCreditId: outcome.creatorCreditId,
+      creatorIdentityId,
+      account: currentAccount,
+      paymentIntentId: record.paymentIntentId,
+    }
+  }
+
   return {
     subscribe,
     getState,
@@ -2396,6 +2556,7 @@ export function createServicePaymentController(
     confirmAndVerify,
     recheckEntitlement,
     recheckPreviousAttempt,
+    completePreviousAttempt,
     reset,
   }
 }

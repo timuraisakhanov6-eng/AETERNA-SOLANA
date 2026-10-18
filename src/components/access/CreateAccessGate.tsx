@@ -121,7 +121,7 @@ function describeGateError(raw: string | null): string {
    * must resume verifying THAT signature, never send a second payment.
    */
   if (code.includes("PAYMENT_SERVER_SIGNATURE_BOUND")) {
-    return "A payment for this purchase is already bound on the server and is being checked. Nothing new was sent — tap Check again to resume it.";
+    return "A payment for this purchase is already bound on the server and is being checked. Nothing new was sent — we will resume it automatically once the check confirms.";
   }
   if (
     code.includes("ENTITLEMENT_STATE_UNKNOWN") ||
@@ -207,6 +207,29 @@ function walletFlowEvent(
   return null;
 }
 
+/**
+ * BOUNDED automatic retry schedule for the pending-attempt recovery (ms).
+ *
+ * A transient RPC/server failure earns a limited number of automatic
+ * retries with backoff — and NOTHING more. Once the schedule is exhausted
+ * the attempt is KEPT and the next automatic check happens on a natural
+ * event (network return, tab focus) or the next visit: never an endless
+ * poll, and never a new payment.
+ */
+const ATTEMPT_RECOVERY_BACKOFF_MS = [2_000, 5_000, 15_000] as const;
+
+/**
+ * The ONE Solana network this app purchases on.
+ *
+ * The identity challenge, the quote, the recorded pending attempt and the
+ * verifier all speak this single value — and neither the settlement result
+ * (`ServicePaymentCreditResult`) nor the wallet context carries a network
+ * of its own, so a purchase can never belong to a different network than
+ * the connection observing it. Naming it here gives the identity proof and
+ * the settlement guard ONE source of truth instead of repeating a literal.
+ */
+const SOLANA_NETWORK = "solana";
+
 /* ================= COMPONENT ================= */
 
 /**
@@ -237,7 +260,7 @@ async function buildRecoveryOwnerProof(
     const res = await fetch("/api/creator/issue-challenge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ network: "solana", publicKey: account }),
+      body: JSON.stringify({ network: SOLANA_NETWORK, publicKey: account }),
     });
     const data = (await res.json().catch(() => null)) as {
       ok?: boolean;
@@ -261,7 +284,7 @@ async function buildRecoveryOwnerProof(
     );
     const encoded = btoa(String.fromCharCode(...new Uint8Array(signature)));
 
-    return { challengeId, network: "solana", account, signature: encoded };
+    return { challengeId, network: SOLANA_NETWORK, account, signature: encoded };
   } catch {
     // Wallet rejected / transport failure: no proof, no recovery.
     return null;
@@ -273,6 +296,28 @@ export default function CreateAccessGate() {
   const { admission, grantAccess, clearAccess } = useCreateAccess();
   const { reportCreditDiscovery, reportCreditReady } = useLandingPaymentGate();
   const wallet = useAeternaWallet();
+
+  /**
+   * The CONNECTION a settlement must still match before its result may be
+   * applied to this UI.
+   *
+   * The payment callbacks are installed once and then fire from async
+   * continuations (a verify + grant round-trip, or the automatic completion
+   * of a previous attempt) that can land long after the wallet has moved
+   * on. Such an answer must never be judged by the values captured when the
+   * request STARTED: every application of a server answer is checked
+   * against this ref, which the wallet effect keeps in step with the live
+   * wallet on every wallet change — before anything is granted or reset.
+   */
+  const liveConnectionRef = useRef<{
+    connected: boolean;
+    account: string | null;
+    network: string;
+  }>({
+    connected: wallet.connected,
+    account: wallet.connected ? wallet.account : null,
+    network: SOLANA_NETWORK,
+  });
 
   /* ---------- headless service payment controller (canonical flow) ---------- */
 
@@ -340,18 +385,38 @@ export default function CreateAccessGate() {
   const [rechecking, setRechecking] = useState(false);
 
   /**
-   * Read-only "check again" of the local pending payment attempt. It is
-   * guarded so a repeated click cannot start a CONCURRENT check (the
-   * second click is ignored while the first is in flight).
+   * AUTOMATIC recovery of the local pending payment attempt (Stage B.1).
+   *
+   * The creator never triggers the check by hand. It runs on its own as
+   * soon as a saved attempt with a known transaction signature exists, and
+   * an ALREADY-CONFIRMED payment is completed through the canonical grant
+   * path — so the normal flow advances with no second click and no second
+   * payment. The status line is the ONLY surface for it: there is no
+   * manual "check again" button.
    */
-  const [checkingAttempt, setCheckingAttempt] = useState(false);
   const [attemptCheck, setAttemptCheck] = useState<string | null>(null);
   /**
-   * Synchronous in-flight guard for the read-only check. React state alone
-   * is too late for a second click within the same tick, so a ref is the
-   * authoritative guard: a repeated click joins nothing and opens nothing.
+   * Synchronous in-flight guard for the automatic check, PLUS a per-run
+   * generation token. A duplicate mount/render, an `online` event or a
+   * visibility change can therefore never open a second concurrent check:
+   * the generation invalidates the superseded run and the ref refuses a
+   * second one until the first settles.
    */
-  const checkingAttemptRef = useRef(false);
+  const attemptRecoveryInFlightRef = useRef(false);
+  const attemptRecoveryGenerationRef = useRef(0);
+  /**
+   * A valid re-arm signal that arrived WHILE a check was already running
+   * must not be lost. The settling run consumes this flag and re-arms
+   * exactly ONE further bounded cycle — never a concurrent check, and
+   * never an endless loop (it is set only by a real signal).
+   */
+  const attemptRecoveryRescanRef = useRef(false);
+  /**
+   * Bumped to RE-ARM a bounded recovery cycle: after the retries are
+   * exhausted, the next automatic check happens on a natural event or the
+   * next entry into the $1 step — never as an endless poll.
+   */
+  const [recoveryEpoch, setRecoveryEpoch] = useState(0);
 
   /* ---------- controller wiring (same order the inline gate used) ---------- */
 
@@ -409,6 +474,86 @@ export default function CreateAccessGate() {
     [grantAccess]
   );
 
+  /**
+   * Does a server answer belong to the connection that is live RIGHT NOW?
+   *
+   * By the time `onCreditReady` runs the purchase is ALREADY settled
+   * server-side (the Creator Credit exists for its owner, the pending
+   * pointer was cleared by the canonical completion). This predicate
+   * decides ONLY whether that answer may be applied to the CURRENT UI —
+   * ignoring it never un-does the server fact, and the original account
+   * re-obtains its right through the ordinary discovery without a second
+   * payment.
+   *
+   * Three independent facts are compared against the LIVE connection,
+   * never against values captured when the request started:
+   *
+   *  - `account`  — an empty account (when the caller requires one), a
+   *                 disconnected wallet or a different account refuses;
+   *  - `identity` — when the live session holds a verified identity (or a
+   *                 discovery answer) for the current account, the answer
+   *                 must carry the same one. Absence of the fact on either
+   *                 side is NOT a mismatch — never invent one;
+   *  - `network`  — when the live session holds an identity proof, that
+   *                 proof's network must be the network this app purchases
+   *                 on.
+   *
+   * `requireAccount` encodes the one real difference between the two
+   * callers: a settled CREDIT always names its owner (`onCreditReady`),
+   * while a discovery answer is also produced for bindings that report no
+   * account at all — there "absent" must not strand the flow.
+   */
+  const belongsToLiveConnection = useCallback(
+    (
+      result: { account?: string | null; creatorIdentityId?: string | null },
+      requireAccount: boolean
+    ) => {
+      const live = liveConnectionRef.current;
+      if (!live.connected || !live.account) return false;
+
+      const answeredAccount = result.account ?? "";
+      if (answeredAccount) {
+        if (answeredAccount !== live.account) return false;
+      } else if (requireAccount) {
+        return false;
+      }
+
+      const liveState = servicePayment.getState();
+      const liveAccount =
+        liveState.verifiedCreatorAccount ?? liveState.discovery?.account ?? null;
+      if (
+        answeredAccount &&
+        liveAccount !== null &&
+        liveAccount !== answeredAccount
+      ) {
+        return false;
+      }
+
+      const liveIdentity =
+        liveState.verifiedCreatorIdentityId ??
+        liveState.discovery?.creatorIdentityId ??
+        null;
+      const answeredIdentity = result.creatorIdentityId ?? "";
+      if (
+        liveIdentity !== null &&
+        answeredIdentity !== "" &&
+        answeredIdentity !== liveIdentity
+      ) {
+        return false;
+      }
+
+      if (
+        liveState.identityProof !== null &&
+        liveState.identityProof.network !== live.network
+      ) {
+        return false;
+      }
+
+      return true;
+    },
+    [servicePayment]
+  );
+
   // Server-verified facts enter as reducer events; entitlement facts go to
   // the gate mirror (adoptIdentity) AND to the in-memory admission. All
   // three updates land in ONE React commit, so the navigation effect below
@@ -418,6 +563,15 @@ export default function CreateAccessGate() {
     servicePayment.setCallbacks({
       onCreditDiscovered: (result) => {
         reportCreditDiscovery(result);
+        /**
+         * Stage B.1.4 — the mirror update above stays unconditional (an
+         * authoritative "none" legitimately clears a stale mirror for the
+         * account it answers about), but an answer that belongs to ANOTHER
+         * account must not move THIS connection's flow: a late "available"
+         * from a previous account may never turn the new connection into
+         * `paid` / `needs-recovery` or grant it an admission.
+         */
+        if (!belongsToLiveConnection(result, false)) return;
         // D1: three distinct authoritative answers. CONSUMING is NEVER
         // folded into "none" — it parks the flow in needs-recovery, which
         // cannot reach a payment.
@@ -433,6 +587,15 @@ export default function CreateAccessGate() {
         }
       },
       onCreditReady: (result) => {
+        /**
+         * Stage B.1.4 — the settlement is SERVER-side valid, but applying
+         * it is a separate fact that must match the connection that is live
+         * now. A settlement that started under a previous account (or while
+         * the wallet was connected) may never grant local access, move the
+         * flow to `paid` or navigate for the account that replaced it —
+         * and may never touch the UI-state mirror either.
+         */
+        if (!belongsToLiveConnection(result, true)) return;
         reportCreditReady(result);
         dispatchCreateFlow("PAYMENT_CONFIRMED");
         if (result.creatorCreditId) {
@@ -449,7 +612,7 @@ export default function CreateAccessGate() {
         }
       },
     });
-  }, [servicePayment, reportCreditDiscovery, reportCreditReady, grantAccess, grantAdmissionFromDiscovery]);
+  }, [servicePayment, reportCreditDiscovery, reportCreditReady, grantAccess, grantAdmissionFromDiscovery, belongsToLiveConnection]);
 
   useEffect(() => {
     servicePayment.syncWallet(wallet);
@@ -459,21 +622,58 @@ export default function CreateAccessGate() {
   // creator must re-run the gate with the identity that owns the credit.
   const previousWalletAccountRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
+    /**
+     * Keep the settlement guard's view of the connection CURRENT before
+     * anything below reacts to the change: it is this ref — never a value
+     * captured when an async request started — that decides whether an
+     * arriving settlement may be applied.
+     */
+    liveConnectionRef.current = {
+      connected: wallet.connected,
+      account: wallet.connected ? wallet.account : null,
+      network: SOLANA_NETWORK,
+    };
+
     const previous = previousWalletAccountRef.current;
     if (previous !== undefined) {
       const ev = walletFlowEvent(previous, wallet.connected, wallet.account);
       if (ev) {
         clearAccess();
+        /**
+         * The flow must never be LEFT in a state that belonged to the
+         * previous account: `ACCOUNT_CHANGED` / `DISCONNECTED` are the
+         * reducer's EXISTING transitions to the safe `ready` state. A
+         * settlement that arrives afterwards therefore cannot move this
+         * connection to `paid` (nor leave it simulating work), and no
+         * payment is ever started from here.
+         */
+        dispatchCreateFlow(ev);
       }
     }
     previousWalletAccountRef.current = wallet.connected ? wallet.account : null;
   }, [wallet, clearAccess]);
 
-  // Controller error → reducer (same semantics as the inline gate: a
-  // payment-phase failure returns to $1 confirm with the discovery answer
-  // preserved; identity-phase failures surface the retry state).
+  /**
+   * Controller error → reducer (same semantics as the inline gate: a
+   * payment-phase failure returns to $1 confirm with the discovery answer
+   * preserved; identity-phase failures surface the retry state).
+   *
+   * Each error is routed ONCE. The controller STAYS in `error` until the
+   * next operation clears it (every operation patches `error: null` on
+   * entry), so a persistent error must not be re-routed on every unrelated
+   * flow change: a Stage B.1 recovery that has just legitimately entered
+   * the $1 step (`PAYMENT_STARTED`) would otherwise be aborted straight
+   * back to `needs-payment`, and the `PAYMENT_CONFIRMED` that follows the
+   * successful grant would be a no-op — a CONFIRMED previous attempt would
+   * never reach `paid`/navigation. Leaving the error phase clears the latch,
+   * so a LATER failure with the same message is routed again.
+   */
+  const routedPaymentErrorRef = useRef<string | null>(null);
   useEffect(() => {
-    if (servicePaymentRuntime.phase !== "error") return;
+    if (servicePaymentRuntime.phase !== "error") {
+      routedPaymentErrorRef.current = null;
+      return;
+    }
     const paymentError = servicePaymentRuntime.error ?? "";
     /**
      * These two are NOT generic failures: the controller's pre-signature
@@ -487,6 +687,8 @@ export default function CreateAccessGate() {
     ) {
       return;
     }
+    if (routedPaymentErrorRef.current === paymentError) return;
+    routedPaymentErrorRef.current = paymentError;
     dispatchCreateFlow(
       createFlowState === "payment-in-progress"
         ? "PAYMENT_ABORTED"
@@ -495,13 +697,23 @@ export default function CreateAccessGate() {
   }, [servicePaymentRuntime.phase, createFlowState, servicePaymentRuntime.error]);
 
   // The ONLY navigation into /create: admitted AND the state machine is
-  // paid. Never fired from an event handler — always after the commit
+  // paid AND the admission belongs to the CONNECTION THAT IS LIVE IN THIS
+  // COMMIT. Never fired from an event handler — always after the commit
   // that established admission.
   useEffect(() => {
-    if (createFlowState === "paid" && admission) {
-      navigate("/create");
-    }
-  }, [createFlowState, admission, navigate]);
+    if (createFlowState !== "paid" || !admission) return;
+    /**
+     * The account binding is re-checked HERE as well, from the committed
+     * wallet values: a settlement that started under a previous account can
+     * be applied in the very commit in which the wallet has already moved
+     * on, before any effect has had a chance to void the admission.
+     * Navigating is user-visible, so it verifies the binding itself instead
+     * of trusting the admission's freshness.
+     */
+    if (!wallet.connected || !wallet.account) return;
+    if (admission.account !== wallet.account) return;
+    navigate("/create");
+  }, [createFlowState, admission, navigate, wallet.connected, wallet.account]);
 
   /* ---------- actions ---------- */
 
@@ -547,6 +759,9 @@ export default function CreateAccessGate() {
 
     setGrantIncomplete(false);
     setRecoveryOutcome(null);
+    // A fresh, explicit flow supersedes any previous recovery status; the
+    // automatic recovery re-arms itself when the flow reaches the $1 step.
+    setAttemptCheck(null);
 
     // Model 01 wallet policy: Phantom only
     // (docs/canonical/AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1).
@@ -660,7 +875,7 @@ export default function CreateAccessGate() {
         ) {
           dispatchCreateFlow("RESET");
           setPaymentHold(
-            "A previous payment attempt for this purchase is being checked. Nothing new will be sent — tap Check again shortly."
+            "A previous payment attempt for this purchase is being checked. Nothing new will be sent — we will continue automatically once the check confirms."
           );
           return;
         }
@@ -711,7 +926,7 @@ export default function CreateAccessGate() {
       // unfinished: fail closed — nothing new is sent.
       dispatchCreateFlow("RESET");
       setPaymentHold(
-        "A previous payment attempt for this purchase is being checked. Nothing new will be sent — tap Check again shortly."
+        "A previous payment attempt for this purchase is being checked. Nothing new will be sent — we will continue automatically once the check confirms."
       );
       return;
     }
@@ -799,69 +1014,272 @@ export default function CreateAccessGate() {
   };
 
   /**
-   * READ-ONLY "check again" of the local pending payment attempt.
-   *
-   * The controller action performs ONLY read-only work: stale-attempt
-   * reconciliation (direct on-chain reads) and verification of the SAME
-   * recorded transaction signature. It requests NO wallet signature, mints
-   * NO new intent and sends NO payment. This handler therefore cannot
-   * double-charge, and the `checkingAttempt` guard makes a repeated click
-   * reuse nothing — a second concurrent check is simply ignored.
+   * NOTE (Stage B.1): the manual "Check again (no payment)" action was
+   * removed from the UX. The SAME read-only check — and the canonical
+   * completion of an already-signed attempt — now run AUTOMATICALLY; see
+   * the recovery effects after `pendingAttemptForCheck` below.
    */
-  const checkPreviousAttempt = async () => {
-    if (checkingAttemptRef.current) return;
-    checkingAttemptRef.current = true;
-    setCheckingAttempt(true);
-    setAttemptCheck(null);
-    try {
-      const result = await servicePayment.recheckPreviousAttempt();
-      switch (result.status) {
-        case "no_pending_attempt":
-          setAttemptCheck(null);
-          break;
-        case "released":
-          setAttemptCheck(
-            "The previous attempt's blockhash window expired and its transaction is provably absent on Solana — nothing was sent. You can start a new payment."
-          );
-          break;
-        case "verified":
-          setAttemptCheck(
-            "Your payment is confirmed on-chain. Continue creation — no new $1 is needed."
-          );
-          break;
-        case "pending":
-          setAttemptCheck(
-            result.transportUnavailable
-              ? "The network is temporarily unavailable, so the attempt could not be checked. Nothing new was sent — we kept the attempt and will check the same transaction again."
-              : "The transaction has not been found on the network yet. Nothing new was sent — we kept the attempt and will check the same transaction again."
-          );
-          break;
-        case "failed":
-          setAttemptCheck(describeGateError(result.error));
-          break;
-      }
-    } catch {
-      setAttemptCheck(
-        "We could not check the previous attempt. Nothing new was sent — please try again in a moment."
-      );
-    } finally {
-      checkingAttemptRef.current = false;
-      setCheckingAttempt(false);
-    }
-  };
 
   /* ---------- derived UI ---------- */
 
   /**
    * The local pointer to the ONE payment attempt this browser has in
    * flight (with a recorded transaction signature). Read fresh on every
-   * render so releasing it during a check is reflected immediately; it
-   * only decides whether the read-only "Check again" affordance is shown.
+   * render so releasing it during a check is reflected immediately.
    */
   const pendingAttemptForCheck = (() => {
     const pending = readPendingPaymentAttempt();
     return pending && pending.transactionId ? pending : null;
   })();
+
+  /* ---------- automatic pending-attempt recovery (Stage B.1) ---------- */
+
+  /**
+   * The transaction signature of the pending attempt, as a PRIMITIVE: the
+   * recovery effect must re-run only when the attempt itself changes, never
+   * on an unrelated render.
+   */
+  const pendingAttemptTransactionId =
+    pendingAttemptForCheck?.transactionId ?? null;
+  /** The paying wallet's account while connected (null when disconnected). */
+  const walletAccount = wallet.connected ? wallet.account : null;
+
+  /** The latest create-flow step, readable from inside the async loop. */
+  const createFlowStateRef = useRef(createFlowState);
+  useEffect(() => {
+    createFlowStateRef.current = createFlowState;
+  }, [createFlowState]);
+
+  /**
+   * RE-ARM on a GENUINE entry into the $1 step. A transition CAUSED by the
+   * recovery's OWN bounded retry (payment-in-progress → needs-payment after a
+   * transient completion failure) is deliberately NOT re-armed here: the
+   * retry loop owns that case, so it can never spiral into a tight loop.
+   */
+  const previousCreateFlowStateRef = useRef(createFlowState);
+  /**
+   * Set ONLY for the transition the recovery is itself about to make while
+   * unwinding its own $1 step (payment-in-progress → needs-payment). It is
+   * CONSUMED — and cleared — by the very next run of the re-arm effect,
+   * whatever branch that run takes, so a no-op transition, a stale
+   * generation, an already-true `admission` or an ordinary external abort
+   * can never leave it set and suppress a later, independent entry.
+   */
+  const recoveryOwnAbortRef = useRef(false);
+  useEffect(() => {
+    const previous = previousCreateFlowStateRef.current;
+    previousCreateFlowStateRef.current = createFlowState;
+    /**
+     * Consume the marker unconditionally, BEFORE any early return: it
+     * describes the transition that just happened and must never outlive
+     * it (a leftover marker would swallow one genuine re-arm later).
+     */
+    const ownAbort = recoveryOwnAbortRef.current;
+    recoveryOwnAbortRef.current = false;
+    if (createFlowState !== "needs-payment" || admission) return;
+    if (ownAbort) return;
+    if (previous === "needs-payment") return;
+    setRecoveryEpoch((epoch) => epoch + 1);
+  }, [createFlowState, admission]);
+
+  /**
+   * A returned network or a re-shown tab is a natural re-entry: it re-arms
+   * a bounded recovery cycle WITHOUT any polling in between.
+   */
+  useEffect(() => {
+    const rearm = () => {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
+        return;
+      }
+      setRecoveryEpoch((epoch) => epoch + 1);
+    };
+    window.addEventListener("online", rearm);
+    document.addEventListener("visibilitychange", rearm);
+    return () => {
+      window.removeEventListener("online", rearm);
+      document.removeEventListener("visibilitychange", rearm);
+    };
+  }, []);
+
+  /**
+   * AUTOMATIC recovery of the ONE pending payment attempt this browser
+   * holds.
+   *
+   * Whenever a saved attempt with a known transaction signature exists, the
+   * read-only check runs on its own; a transient failure is retried a
+   * BOUNDED number of times with backoff, and after the cycle is exhausted
+   * the attempt is KEPT for a later natural event (network return, tab
+   * focus, the next visit) — never an endless poll.
+   *
+   * A payment the verifier CONFIRMS is handed to the canonical completion
+   * (`completePreviousAttempt`): the SAME transaction is re-verified and the
+   * Creator Credit is granted IDEMPOTENTLY, which emits `onCreditReady` and
+   * advances the normal flow (payment-in-progress → paid → /create) with NO
+   * second click and NO new payment. No wallet signature, transaction or
+   * quote is ever created here.
+   *
+   * The $1 step it opens is ALWAYS settled by the owner that opened it: even
+   * when the completion's result has become stale (account/admission/flow
+   * change), a transient failure still unwinds that same step — the flow can
+   * never be left `payment-in-progress` without an owner. A valid re-arm
+   * signal that arrives while a check is running is remembered and honoured
+   * once that check settles (never in parallel).
+   */
+  useEffect(() => {
+    if (!pendingAttemptTransactionId) return;
+    if (admission) return;
+    if (rechecking) return;
+
+    const generation = ++attemptRecoveryGenerationRef.current;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+
+    const waitingStatus =
+      "Checking the state of your previous payment attempt. No new payment is made. We will continue automatically once the result is confirmed.";
+
+    const run = async () => {
+      if (attemptRecoveryGenerationRef.current !== generation) return;
+      if (attemptRecoveryInFlightRef.current) {
+        /**
+         * A NEW valid signal (a re-arm event, a re-entered $1 step) arrived
+         * while a check was running. Remember it instead of dropping it:
+         * the settling run re-arms ONE further bounded cycle, so a signal
+         * can never be lost to a running check — and two checks never run
+         * concurrently.
+         */
+        attemptRecoveryRescanRef.current = true;
+        return;
+      }
+      /**
+       * Only the QUIET steps own the recovery: the pristine Home (`ready`)
+       * and the $1 step (`needs-payment`). While the explicit flow is doing
+       * something else — discovering, making a payment, paid, or a
+       * CONSUMING-lifecycle recovery — the recovery withdraws and lets that
+       * step own the single intent. This is what keeps an explicit "Pay $1"
+       * click and the automatic check from ever running side by side.
+       */
+      const flowStep = createFlowStateRef.current;
+      if (flowStep !== "ready" && flowStep !== "needs-payment") return;
+      attemptRecoveryInFlightRef.current = true;
+      let retry = false;
+      try {
+        const result = await servicePayment.recheckPreviousAttempt();
+        if (attemptRecoveryGenerationRef.current !== generation) return;
+
+        if (result.status === "no_pending_attempt") {
+          setAttemptCheck(null);
+          return;
+        }
+        if (result.status === "released") {
+          setAttemptCheck(
+            "Your previous payment attempt's window expired and nothing was sent on Solana. You can start a new payment."
+          );
+          return;
+        }
+        if (result.status !== "verified") {
+          // "pending" (still unknown) or "failed": keep the attempt and the
+          // calm waiting status; retry within the bounded budget only.
+          setAttemptCheck(waitingStatus);
+          retry = true;
+        } else if (
+          createFlowStateRef.current !== "needs-payment" ||
+          !walletAccount
+        ) {
+          // Confirmed, but the creator has not reached the $1 step with the
+          // paying wallet connected yet: the flow re-arms the recovery when
+          // it does.
+          setAttemptCheck(
+            "Your previous payment is confirmed. Continue creation when you are ready — no new $1 is needed."
+          );
+          return;
+        } else {
+          setAttemptCheck(
+            "Your previous payment is confirmed on-chain. No new payment is needed — we are continuing your creation automatically."
+          );
+          // Enter the canonical $1 step, then CONTINUE the SAME attempt:
+          // re-verify THAT transaction and grant idempotently.
+          dispatchCreateFlow("PAYMENT_STARTED");
+          const completion = await servicePayment.completePreviousAttempt();
+          /**
+           * This is the ONE branch that can outlive its generation. A result
+           * that may no longer be APPLIED (a stale generation) must still
+           * never leave the $1 step ownerless: the transition below is the
+           * recovery's OWN unwind of the step IT opened, so the flow can
+           * never end up stuck in `payment-in-progress` — while the
+           * status/retry bookkeeping stays reserved for the current run.
+           */
+          const stillCurrent =
+            attemptRecoveryGenerationRef.current === generation;
+          if (completion.status === "completed") return;
+          if (completion.status === "no_pending_attempt") {
+            if (stillCurrent) setAttemptCheck(null);
+            return;
+          }
+          // Transient completion failure: fall back to the $1 step and let
+          // the bounded retry cycle try the SAME transaction again — never a
+          // new payment. The marker records this as the recovery's OWN
+          // unwind so the re-arm effect does not open a second, overlapping
+          // cycle.
+          //
+          // The unwind is UNCONDITIONAL: the recovery owns the $1 step it
+          // has just opened (it enters `payment-in-progress` only from the
+          // quiet `needs-payment`, and nothing else can take that step over
+          // while its completion is pending), so a stale generation must
+          // never leave the step ownerless. The reducer treats a redundant
+          // abort as a no-op.
+          recoveryOwnAbortRef.current = true;
+          dispatchCreateFlow("PAYMENT_ABORTED");
+          if (!stillCurrent) return;
+          setAttemptCheck(waitingStatus);
+          retry = true;
+        }
+      } catch {
+        if (attemptRecoveryGenerationRef.current !== generation) return;
+        setAttemptCheck(waitingStatus);
+        retry = true;
+      } finally {
+        attemptRecoveryInFlightRef.current = false;
+        /**
+         * A signal that arrived during this run is honoured here, ONCE the
+         * in-flight guard is released: a fresh bounded cycle starts, never
+         * a concurrent one, and no signal is silently dropped.
+         */
+        if (attemptRecoveryRescanRef.current) {
+          attemptRecoveryRescanRef.current = false;
+          setRecoveryEpoch((epoch) => epoch + 1);
+        }
+      }
+
+      if (
+        retry &&
+        attempt < ATTEMPT_RECOVERY_BACKOFF_MS.length &&
+        attemptRecoveryGenerationRef.current === generation
+      ) {
+        const delay = ATTEMPT_RECOVERY_BACKOFF_MS[attempt]!;
+        attempt += 1;
+        timer = setTimeout(() => {
+          void run();
+        }, delay);
+      }
+    };
+
+    void run();
+
+    return () => {
+      attemptRecoveryGenerationRef.current = generation + 1;
+      if (timer) clearTimeout(timer);
+    };
+  }, [
+    pendingAttemptTransactionId,
+    admission,
+    rechecking,
+    recoveryEpoch,
+    walletAccount,
+    servicePayment,
+  ]);
 
   const busy =
     createFlowState === "discovering" ||
@@ -904,6 +1322,11 @@ export default function CreateAccessGate() {
       // no payment is started on an unconfirmed absence.
       return "We could not confirm that you have no active creation right. Nothing was charged — please try again in a moment.";
     }
+    /**
+     * Stage B.1: a saved payment attempt is recovered AUTOMATICALLY. Its
+     * calm status replaces the neutral copy; the raw RPC/transaction
+     * details are never shown.
+     */
     switch (createFlowState) {
       case "discovering":
         return servicePaymentRuntime.phase === "connecting_wallet"
@@ -929,6 +1352,11 @@ export default function CreateAccessGate() {
         if (discoverySummary?.consumedCount) {
           return "Your previous creation right was used. A new capsule needs a new $1 creation right.";
         }
+        // A saved attempt is being recovered automatically: its status
+        // replaces the neutral $1 copy.
+        if (attemptCheck) {
+          return attemptCheck;
+        }
         return "One-time setup — $1 USDC. One capsule per payment.";
       case "payment-in-progress":
         return "Processing…";
@@ -939,7 +1367,8 @@ export default function CreateAccessGate() {
           servicePaymentRuntime.error ?? servicePaymentRuntime.verificationError
         );
       default:
-        return null; // ready — plain Create Capsule
+        // ready — the recovery status, or plain Create Capsule.
+        return attemptCheck;
     }
   })();
 
@@ -992,34 +1421,11 @@ export default function CreateAccessGate() {
         </p>
       )}
 
-      {/* READ-ONLY re-check of a locally held payment attempt. It performs
-          no wallet request and sends no payment, so it can never charge
-          twice; a repeated click cannot start a second check. The result
-          text stays visible after the pointer is released. */}
-      {(pendingAttemptForCheck || attemptCheck) && !busy && !recovering && (
-        <div className="space-y-2 text-center">
-          {pendingAttemptForCheck && (
-            <Button
-              type="button"
-              disabled={checkingAttempt}
-              onClick={() => {
-                void checkPreviousAttempt();
-              }}
-              className="h-9 px-4 text-[11px] bg-transparent text-amber-300 border border-amber-400/50 hover:bg-amber-400/10"
-            >
-              {checkingAttempt ? "Checking…" : "Check again (no payment)"}
-            </Button>
-          )}
-          {attemptCheck && (
-            <p
-              className="text-[11px] text-amber-100/60 leading-relaxed"
-              role="status"
-            >
-              {attemptCheck}
-            </p>
-          )}
-        </div>
-      )}
+      {/* Stage B.1: a locally held payment attempt is recovered
+          AUTOMATICALLY (read-only check + canonical idempotent grant). No
+          manual "check again" button exists, no payment is ever started and
+          no RPC/transaction detail is shown; the calm status above is the
+          only surface. */}
 
       {/* Unfinished-attempt recovery: offered ONLY from the AUTHORITATIVE
           enumeration (never from localStorage alone), never automatically,

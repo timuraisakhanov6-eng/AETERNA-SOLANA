@@ -116,6 +116,7 @@ interface StaleStub {
   quoteCalls: () => number;
   verifyCalls: () => { transactionId?: string | undefined }[];
   broadcastCalls: () => unknown[];
+  grantCalls: () => number;
 }
 /**
  * Sequenced fetch stub for the stale-recovery controller path. The
@@ -134,6 +135,7 @@ function createStaleStub(options: {
   verifyBehaviour?: "verified" | "not-found" | "unavailable";
 } = {}): StaleStub {
   let quoteCalls = 0;
+  let grantCalls = 0;
   const verifyBodies: { transactionId?: string | undefined }[] = [];
   const broadcastBodies: unknown[] = [];
 
@@ -196,6 +198,7 @@ function createStaleStub(options: {
       return { ok: true, json: async () => ({ ok: true, signature: TX }) } as Response;
     }
     if (url.includes("grant-credit")) {
+      grantCalls += 1;
       return {
         ok: true,
         json: async () => ({ ok: true, creatorCreditId: "credit-1", status: "AVAILABLE" }),
@@ -209,6 +212,7 @@ function createStaleStub(options: {
     quoteCalls: () => quoteCalls,
     verifyCalls: () => verifyBodies,
     broadcastCalls: () => broadcastBodies,
+    grantCalls: () => grantCalls,
   };
 }
 
@@ -567,6 +571,136 @@ describe("controller — READ-ONLY 'check again'", () => {
     const result = await controller.recheckPreviousAttempt();
 
     expect(result).toEqual({ status: "pending", transportUnavailable: true });
+    expect(stub.verifyCalls()).toHaveLength(0);
+    expect(newPaymentSignings()).toBe(0);
+  });
+});
+
+/**
+ * Stage B.1 — the AUTOMATIC completion of a pending attempt.
+ *
+ * `completePreviousAttempt` CONTINUES an already-signed purchase: it
+ * re-verifies the SAME recorded transaction, and only on a VERIFIED verdict
+ * grants the Creator Credit idempotently and emits `onCreditReady`. It never
+ * mints an intent, requests a quote, signs or sends — so it can never open a
+ * second financial attempt.
+ */
+describe("controller — automatic completion of a pending attempt", () => {
+  function seedKept(): void {
+    reconcileMock.mockResolvedValue({
+      status: "kept",
+      reason: "BLOCKHASH_WINDOW_NOT_PROVABLY_EXPIRED",
+    });
+  }
+
+  it("verifies the SAME transaction and grants idempotently — never a new quote, signature or transfer", async () => {
+    const stub = createStaleStub({ verifyBehaviour: "verified" });
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+    const onCreditReady = vi.fn();
+    controller.setCallbacks({ onCreditReady });
+    seedKept();
+
+    const result = await controller.completePreviousAttempt();
+
+    expect(result).toEqual({
+      status: "completed",
+      creatorCreditId: "credit-1",
+      creatorIdentityId: "identity-1",
+      account: ACCOUNT,
+      paymentIntentId: INTENT,
+    });
+    // The SAME transaction was verified: no new intent (create-quote), no
+    // signing and no broadcast.
+    expect(stub.quoteCalls()).toBe(1);
+    expect(stub.verifyCalls()).toHaveLength(1);
+    expect(stub.verifyCalls()[0]?.transactionId).toBe(TX);
+    expect(newPaymentSignings()).toBe(0);
+    expect(stub.broadcastCalls()).toHaveLength(0);
+    expect(stub.grantCalls()).toBe(1);
+    // The pointer is released only AFTER the grant settles.
+    expect(readPendingPaymentAttempt()).toBeNull();
+    expect(onCreditReady).toHaveBeenCalledTimes(1);
+    expect(onCreditReady).toHaveBeenCalledWith(
+      expect.objectContaining({
+        creatorCreditId: "credit-1",
+        creatorIdentityId: "identity-1",
+        account: ACCOUNT,
+        paymentIntentId: INTENT,
+      })
+    );
+
+    // A REPEATED recovery finds nothing left to do: it mints NO second
+    // intent and grants NO second credit.
+    const again = await controller.completePreviousAttempt();
+    expect(again).toEqual({ status: "no_pending_attempt" });
+    expect(stub.quoteCalls()).toBe(1);
+    expect(stub.grantCalls()).toBe(1);
+    expect(newPaymentSignings()).toBe(0);
+    expect(onCreditReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an UNCONFIRMED (TX_NOT_FOUND) answer as unknown: the attempt is kept and nothing is sent", async () => {
+    const stub = createStaleStub({ verifyBehaviour: "not-found" });
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+    seedKept();
+
+    vi.useFakeTimers();
+    const pending = controller.completePreviousAttempt();
+    await vi.advanceTimersByTimeAsync(VERIFY_WINDOW_DRIVE_MS);
+    const result = await pending;
+
+    expect(result).toEqual({ status: "pending", transportUnavailable: false });
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+    expect(newPaymentSignings()).toBe(0);
+    expect(stub.broadcastCalls()).toHaveLength(0);
+    expect(stub.quoteCalls()).toBe(1);
+    // An unobserved transaction is NOT proof of absence: no grant.
+    expect(stub.grantCalls()).toBe(0);
+    expect(readPendingPaymentAttempt()).not.toBeNull();
+  });
+
+  it("keeps the attempt when the verifier is unreachable and never signs", async () => {
+    const stub = createStaleStub({ verifyBehaviour: "unavailable" });
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+    seedKept();
+
+    vi.useFakeTimers();
+    const pending = controller.completePreviousAttempt();
+    await vi.advanceTimersByTimeAsync(VERIFY_WINDOW_DRIVE_MS);
+    const result = await pending;
+
+    expect(result).toEqual({ status: "pending", transportUnavailable: true });
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+    expect(newPaymentSignings()).toBe(0);
+    expect(stub.grantCalls()).toBe(0);
+  });
+
+  it("never completes for a wallet that is not the payer, and sends nothing", async () => {
+    const stub = createStaleStub({ verifyBehaviour: "verified" });
+    const controller = await driveToPayable(stub);
+    seedStalePointer();
+    seedKept();
+    controller.syncWallet(createWalletStub({ account: "SomeOtherWalletAccount" }));
+
+    const result = await controller.completePreviousAttempt();
+
+    expect(result).toEqual({ status: "pending", transportUnavailable: false });
+    expect(stub.verifyCalls()).toHaveLength(0);
+    expect(newPaymentSignings()).toBe(0);
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
+    expect(stub.grantCalls()).toBe(0);
+  });
+
+  it("reports no_pending_attempt when this browser holds nothing to complete", async () => {
+    const stub = createStaleStub();
+    const controller = await driveToPayable(stub);
+
+    const result = await controller.completePreviousAttempt();
+
+    expect(result).toEqual({ status: "no_pending_attempt" });
     expect(stub.verifyCalls()).toHaveLength(0);
     expect(newPaymentSignings()).toBe(0);
   });

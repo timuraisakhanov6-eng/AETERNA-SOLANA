@@ -41,7 +41,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import {
   CreatorCreditProvider,
@@ -129,9 +129,28 @@ const {
   };
 });
 
-vi.mock("@/context/AETERNAWalletContext", () => ({
-  useAeternaWallet: () => stableWallet,
-}));
+vi.mock("@/context/AETERNAWalletContext", () => {
+  /**
+   * A NEW value whenever the connected wallet actually changes — exactly what
+   * the real context memoizes — and the SAME value otherwise. A wallet-moving
+   * scenario (account switch / disconnect) therefore reaches every wallet
+   * effect in the gate, while an ordinary re-render changes nothing.
+   */
+  let snapshot: typeof stableWallet | null = null;
+  return {
+    useAeternaWallet: () => {
+      if (
+        !snapshot ||
+        snapshot.connected !== stableWallet.connected ||
+        snapshot.account !== stableWallet.account ||
+        snapshot.walletName !== stableWallet.walletName
+      ) {
+        snapshot = { ...stableWallet };
+      }
+      return snapshot;
+    },
+  };
+});
 
 vi.mock("@/lib/wallet/solanaWallet", () => ({
   signSolanaUSDCPayment: signSolanaUSDCPaymentMock,
@@ -325,6 +344,19 @@ function installFetchRoutes(
 const fetchCallsTo = (fragment: string) =>
   fetchMock.mock.calls.filter((call) => String(call[0]).includes(fragment));
 
+/**
+ * The request `init` of every fetch call to a matching endpoint: the body
+ * carries the identity of the caller (the evidence id).
+ */
+const fetchInitsTo = (fragment: string) =>
+  (
+    fetchMock.mock.calls as unknown as Array<
+      [unknown, RequestInit | undefined]
+    >
+  )
+    .filter((call) => String(call[0]).includes(fragment))
+    .map((call) => call[1]);
+
 /* ───────────────── harness ───────────────── */
 
 /** The /create destination the gate navigates to on admission. */
@@ -345,6 +377,20 @@ function SeedAdmission() {
   return null;
 }
 
+/**
+ * Renders the in-memory admission the UI actually acts on (`none` while the
+ * session holds no right). It makes "no admission was granted" directly
+ * observable instead of inferring it from the absence of navigation.
+ */
+function AdmissionProbe() {
+  const { admission } = useCreateAccess();
+  return React.createElement(
+    "div",
+    { "data-testid": "admission" },
+    admission ? `${admission.account}|${admission.creatorCreditId}` : "none"
+  );
+}
+
 const tree = (options?: { seedAdmission?: boolean }) =>
   React.createElement(
     MemoryRouter,
@@ -361,6 +407,7 @@ const tree = (options?: { seedAdmission?: boolean }) =>
           React.createElement(
             CreateAccessProvider,
             null,
+            React.createElement(AdmissionProbe),
             options?.seedAdmission
               ? React.createElement(
                   React.Fragment,
@@ -413,6 +460,26 @@ function connectWallet(): void {
   stableWallet.connected = true;
   stableWallet.account = WALLET_ACCOUNT;
   stableWallet.walletName = "Phantom";
+}
+
+/** The OTHER wallet account ("B") — never the owner of A's credit. */
+const WALLET_ACCOUNT_B = "9YtRqBase58WalletAccountAccessGateB";
+
+/**
+ * Move the CONNECTED wallet (switch account, or disconnect) and re-render the
+ * gate, so the whole component observes the new connection — exactly as the
+ * real provider does when the wallet state changes.
+ */
+async function moveWallet(
+  view: { rerender: (element: React.ReactElement) => void },
+  next: { connected: boolean; account: string | null }
+): Promise<void> {
+  stableWallet.connected = next.connected;
+  stableWallet.account = next.account;
+  stableWallet.walletName = next.connected ? "Phantom" : null;
+  await act(async () => {
+    view.rerender(tree());
+  });
 }
 
 /* ==== SCENARIOS ==== */
@@ -688,7 +755,13 @@ describe("Home Access Gate", () => {
   it("8. a failed verification stays on Home and only an EXPLICIT retry can charge again (never automatic)", async () => {
     setPhantom(true);
     connectWallet();
-    let verifyAttempt = 0;
+    /**
+     * The verifier does NOT confirm the transaction until the test allows
+     * it. The AUTOMATIC same-attempt recovery (Stage B.1) therefore keeps
+     * re-checking the SAME transaction WITHOUT completing anything, and a
+     * new payment remains impossible.
+     */
+    let acceptVerification = false;
     installFetchRoutes([
       { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
       { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
@@ -696,10 +769,7 @@ describe("Home Access Gate", () => {
       { match: "/api/service-payment/create-quote", respond: CREATE_QUOTE },
       {
         match: "/api/service-payment/verify",
-        respond: () => {
-          verifyAttempt += 1;
-          return verifyAttempt === 1 ? VERIFY_FAILED() : VERIFY_VERIFIED();
-        },
+        respond: () => (acceptVerification ? VERIFY_VERIFIED() : VERIFY_FAILED()),
       },
       { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
     ]);
@@ -726,13 +796,25 @@ describe("Home Access Gate", () => {
     expect(screen.queryByTestId("create-route")).toBeNull();
     expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
     expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
-    // No automatic retry: exactly one failure, one verify call, one
-    // payment attempt.
-    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(1);
-    expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
+    const signaturesBeforeAutoCheck = signMessageMock.mock.calls.length;
 
-    // Explicit retry: the discovery answer is retained (no second
-    // signature, no second discovery) and the payment is re-attempted.
+    // Stage B.1: the SAME saved attempt is re-checked AUTOMATICALLY. It
+    // re-verifies the recorded transaction without any wallet request, and
+    // with an UNCONFIRMED verifier it signs nothing, grants nothing and
+    // navigates nowhere.
+    await waitFor(
+      () => expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(2),
+      { timeout: 5000 }
+    );
+    expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
+    expect(signMessageMock.mock.calls.length).toBe(signaturesBeforeAutoCheck);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(screen.queryByTestId("create-route")).toBeNull();
+
+    // The creator's EXPLICIT retry: the discovery answer is retained (no
+    // second signature, no second discovery) and the SAME transaction is
+    // re-verified.
+    acceptVerification = true;
     fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
 
     await waitFor(
@@ -742,7 +824,8 @@ describe("Home Access Gate", () => {
     // Discovery answer retained: the second attempt does NOT re-run
     // discovery or ask for a second signature for it, and the retained
     // quote means no second purchase-guard proof either. Four signatures
-    // total: discovery + two pre-payment re-checks + one guard proof.
+    // total: discovery + two pre-payment re-checks + one guard proof (the
+    // automatic recovery adds NO wallet request).
     expect(signMessageMock).toHaveBeenCalledTimes(4);
     expect(fetchCallsTo("/api/creator/credit-status")).toHaveLength(3);
     /**
@@ -750,9 +833,11 @@ describe("Home Access Gate", () => {
      * signature is already known — it verifies it again instead of
      * sending a second transfer. Exactly ONE transfer is ever sent for
      * one purchase attempt, and the grant still happens exactly once.
+     * Three verify calls: the explicit attempt, the AUTOMATIC read-only
+     * re-check of that same attempt, and the resumed verification.
      */
     expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
-    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(2);
+    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(3);
     expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1);
   });
 
@@ -1488,17 +1573,22 @@ describe("Home Access Gate", () => {
   });
 
   /**
-   * READ-ONLY "Check again" (Stage B).
+   * Stage B.1 — AUTOMATIC recovery of a saved payment attempt.
    *
-   * A locally held payment attempt may be re-checked without ANY wallet
-   * request: the reconciliation reads the chain directly and the
-   * verification of the SAME transaction is signature-free.
+   * A locally held payment attempt with a known transaction signature is
+   * ALWAYS recovered automatically: the read-only check runs on its own (no
+   * wallet request, no payment), a transient failure is retried a BOUNDED
+   * number of times with backoff, and a payment the verifier CONFIRMS is
+   * completed through the canonical idempotent grant so the normal flow
+   * advances without a second click and without a second payment.
    */
-  function seedStalePointerForGate(): void {
+  function seedStalePointerForGate(
+    paymentIntentId = "intent-gate-recheck"
+  ): void {
     const tx = "MockRecheckTransactionSignatureForGate".padEnd(64, "A");
     const seeded = writePendingPaymentAttempt({
       version: 2,
-      paymentIntentId: "intent-gate-recheck",
+      paymentIntentId,
       creatorIdentityId: CREATOR_IDENTITY_ID,
       network: "solana",
       account: WALLET_ACCOUNT,
@@ -1536,7 +1626,56 @@ describe("Home Access Gate", () => {
     },
   ];
 
-  it("offers a read-only Check again that opens NO wallet window and sends NO payment", async () => {
+  /** Read-only RPC reads that KEEP the pointer (window not provably expired). */
+  const SOLANA_RPC_ROUTES_KEPT = [
+    {
+      match: "/api/solana/rpc",
+      respond: (init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          id?: unknown;
+          method?: string;
+        };
+        if (body.method === "getBlockHeight") {
+          // Still inside the recorded window (+margin): never releasable.
+          return json({ jsonrpc: "2.0", id: body.id, result: 12345 });
+        }
+        return json({ jsonrpc: "2.0", id: body.id, result: null });
+      },
+    },
+  ];
+
+  /**
+   * A `/api/service-payment/verify` responder keyed by the CALLER's evidence
+   * id, so a scenario can distinguish the three independent callers:
+   *   - `payment-recheck-…`            the recovery's read-only re-check;
+   *   - `payment-attempt-recovery-…`   the recovery's canonical completion;
+   *   - `payment-modal-…`              an explicit "Pay $1".
+   */
+  function verifyByCaller(outcomes: {
+    recheck: () => ReturnType<typeof json>;
+    completion: () => ReturnType<typeof json>;
+    explicit: () => ReturnType<typeof json>;
+  }): (init?: RequestInit) => ReturnType<typeof json> {
+    return (init?: RequestInit) => {
+      const evidenceId = String(
+        JSON.parse(String(init?.body ?? "{}")).evidenceId ?? ""
+      );
+      if (evidenceId.startsWith("payment-recheck-")) return outcomes.recheck();
+      if (evidenceId.startsWith("payment-attempt-recovery-")) {
+        return outcomes.completion();
+      }
+      return outcomes.explicit();
+    };
+  }
+
+  /** How many verify calls a given caller (evidence prefix) made. */
+  function verifyCallsBy(prefix: string): number {
+    return fetchInitsTo("/api/service-payment/verify").filter((init) =>
+      String(init?.body ?? "").includes(`"evidenceId":"${prefix}`)
+    ).length;
+  }
+
+  it("B1.1 — the manual 'Check again (no payment)' button is gone and the read-only check runs AUTOMATICALLY", async () => {
     connectWallet();
     setPhantom(true);
     seedStalePointerForGate();
@@ -1544,49 +1683,894 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    const checkAgain = await screen.findByRole("button", {
-      name: "Check again (no payment)",
-    });
-    fireEvent.click(checkAgain);
+    // No manual control exists anywhere in the interface.
+    expect(
+      screen.queryByRole("button", { name: "Check again (no payment)" })
+    ).toBeNull();
 
+    // With NO click at all, the check ran and reported the proven release.
     await waitFor(() => {
-      expect(screen.getByText(/provably absent on Solana/i)).toBeTruthy();
+      expect(screen.getByRole("status").textContent).toContain(
+        "window expired and nothing was sent"
+      );
     });
 
-    // Read-only: no identity signature, no transaction signature, no
-    // broadcast, no new quote/intent.
     expect(signMessageMock).not.toHaveBeenCalled();
     expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
     expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
     expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
-    // The provably stale pointer was released.
     expect(readPendingPaymentAttempt()).toBeNull();
   });
 
-  it("a repeated click never starts a concurrent check", async () => {
+  it("B1.2 — a re-entry event during an in-flight check never starts a concurrent check", async () => {
     connectWallet();
     setPhantom(true);
     seedStalePointerForGate();
-    installFetchRoutes(SOLANA_RPC_ROUTES);
+
+    // The reconciliation read hangs: the check stays in flight, so an
+    // overlap is directly observable as a SECOND read.
+    installFetchRoutes([
+      {
+        match: "/api/solana/rpc",
+        respond: () => ({ ok: true, json: () => new Promise<never>(() => {}) }),
+      },
+    ]);
 
     render(tree());
 
-    const checkAgain = await screen.findByRole("button", {
-      name: "Check again (no payment)",
-    });
-    // Two clicks in the SAME tick, before the first check settles.
-    fireEvent.click(checkAgain);
-    fireEvent.click(checkAgain);
+    await waitFor(() => expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(1));
 
-    await waitFor(() => {
-      expect(screen.getByText(/provably absent on Solana/i)).toBeTruthy();
+    // A natural re-entry event (network returned) must NOT open a second,
+    // concurrent cycle while the first is still running.
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
     });
 
-    // ONE reconciliation = exactly three read-only RPC calls; a second
-    // concurrent check would have doubled them.
-    expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(3);
+    expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(1);
     expect(signMessageMock).not.toHaveBeenCalled();
     expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+  });
+
+  it("B1.3 — a confirmed-on-chain attempt is preserved and needs no manual check and no second payment", async () => {
+    connectWallet();
+    setPhantom(true);
+    seedStalePointerForGate();
+    installFetchRoutes([
+      ...SOLANA_RPC_ROUTES_KEPT,
+      { match: "/api/service-payment/verify", respond: VERIFY_VERIFIED },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    render(tree());
+
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain(
+        "previous payment is confirmed"
+      );
+    });
+
+    // Nothing new was sent; the single saved attempt is preserved for the
+    // automatic completion at the $1 step.
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    expect(readPendingPaymentAttempt()?.transactionId).not.toBeNull();
+  });
+
+  it("B1.4 — a confirmed attempt at the $1 step is completed automatically with an idempotent grant and navigation", async () => {
+    setPhantom(true);
+    connectWallet();
+    seedStalePointerForGate();
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      ...SOLANA_RPC_ROUTES_KEPT,
+      { match: "/api/service-payment/verify", respond: VERIFY_VERIFIED },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    render(tree());
+
+    // The creator performs ONLY the normal first step (discovery).
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    // No "Pay $1" click: the saved attempt is verified and granted
+    // automatically, and the creator lands in creation.
+    await waitFor(() => expect(screen.getByTestId("create-route")).toBeTruthy(), {
+      timeout: 8000,
+    });
+
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    // The SAME transaction was granted exactly once (idempotent), and the
+    // pointer is released only after the grant.
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1);
+    expect(readPendingPaymentAttempt()).toBeNull();
+  });
+
+  it("B1.5 — a transient failure triggers a BOUNDED automatic retry cycle with NO signature and keeps the attempt", async () => {
+    connectWallet();
+    setPhantom(true);
+    seedStalePointerForGate();
+    installFetchRoutes([
+      {
+        match: "/api/solana/rpc",
+        // The read-only transport is temporarily unavailable.
+        respond: () => ({ ok: false, json: async () => ({}) }),
+      },
+    ]);
+
+    vi.useFakeTimers();
+    try {
+      render(tree());
+
+      // The FIRST check runs on its own.
+      await act(async () => {});
+      expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(1);
+
+      // A bounded number of automatic retries follow, then it STOPS.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+      });
+      const bounded = fetchCallsTo("/api/solana/rpc").length;
+      expect(bounded).toBeGreaterThan(1);
+      expect(bounded).toBeLessThanOrEqual(4);
+
+      // No endless polling.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+      });
+      expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(bounded);
+
+      // No wallet request of any kind; the attempt is KEPT.
+      expect(signMessageMock).not.toHaveBeenCalled();
+      expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+      expect(readPendingPaymentAttempt()?.transactionId).toBe(
+        "MockRecheckTransactionSignatureForGate".padEnd(64, "A")
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("B1.6 — an inherited controller error does NOT abort the automatic completion of a CONFIRMED attempt (paid + navigation, no click)", async () => {
+    setPhantom(true);
+    connectWallet();
+    /**
+     * The EXPLICIT $1 fails TRANSIENTLY, which leaves the controller in
+     * `phase === "error"` while the attempt (with its transaction id) is
+     * KEPT — exactly the state a confirmed previous attempt is recovered
+     * from. The recovery's own COMPLETION is withheld so the $1 step it
+     * opens is really COMMITTED while that stale error is still the
+     * controller's phase.
+     */
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      { match: "/api/service-payment/create-quote", respond: CREATE_QUOTE },
+      {
+        match: "/api/service-payment/verify",
+        respond: verifyByCaller({
+          recheck: () => VERIFY_VERIFIED(),
+          completion: () => ({
+            ok: true,
+            json: () =>
+              completionGate.then(() => ({ ok: true, status: "VERIFIED" })),
+          }),
+          explicit: () => VERIFY_FAILED(),
+        }),
+      },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    render(tree());
+
+    // 1) The normal first step, then ONE explicit $1 that FAILS.
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    await waitFor(
+      () =>
+        expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toContain(
+          "Payment could not be verified"
+        ),
+      { timeout: 5000 }
+    );
+    expect(screen.queryByTestId("create-route")).toBeNull();
+    const signaturesAfterFailure = signMessageMock.mock.calls.length;
+
+    // 2) With NO further user interaction the AUTOMATIC recovery re-checks
+    //    the SAME transaction, finds it confirmed and CONTINUES it: it
+    //    enters the $1 step and awaits the canonical completion.
+    await waitFor(
+      // `Processing…` is ONLY reachable in `payment-in-progress`: it proves
+      // the inherited `error` did NOT send the flow back to `needs-payment`.
+      () => expect(screen.getByRole("status").textContent).toContain("Processing"),
+      { timeout: 5000 }
+    );
+    expect(screen.queryByRole("button", { name: PAY_BUTTON })).toBeNull();
+
+    // 3) The canonical completion succeeds (a VERIFIED verdict + an
+    //    idempotent grant) and the flow must reach `paid` and NAVIGATE.
+    await act(async () => {
+      releaseCompletion();
+    });
+
+    await waitFor(() => expect(screen.getByTestId("create-route")).toBeTruthy(), {
+      timeout: 8000,
+    });
+
+    // Exactly ONE transfer was ever signed and sent; the recovery minted no
+    // new intent, asked for no signature and broadcast nothing.
+    expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(1);
+    // Two create-quote calls are the EXPLICIT payment's own (the quote and
+    // the pre-signature re-read, as in test 7) — the recovery added none.
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(2);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1);
+    expect(signMessageMock.mock.calls.length).toBe(signaturesAfterFailure);
+    expect(readPendingPaymentAttempt()).toBeNull();
+  });
+
+  it("B1.7 — a generation change during the pending completion still releases the $1 step (never stuck in Processing)", async () => {
+    setPhantom(true);
+    connectWallet();
+    seedStalePointerForGate();
+
+    /**
+     * The recovery's COMPLETION is withheld, so the flow is genuinely
+     * `payment-in-progress` when the generation changes; it then resolves as
+     * a TRANSIENT failure.
+     */
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+    const gatedCompletionFailure = () => ({
+      ok: true,
+      json: () =>
+        completionGate.then(() => ({
+          ok: true,
+          error: "PAYMENT_VERIFICATION_FAILED",
+        })),
+    });
+
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      ...SOLANA_RPC_ROUTES_KEPT,
+      {
+        match: "/api/service-payment/verify",
+        respond: verifyByCaller({
+          recheck: VERIFY_VERIFIED,
+          completion: gatedCompletionFailure,
+          explicit: VERIFY_FAILED,
+        }),
+      },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    render(tree());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    // The recovery confirmed the read-only check and entered the $1 step;
+    // the completion is blocked, so the UI is unmistakably mid-payment.
+    await waitFor(
+      () => expect(screen.getByRole("status").textContent).toContain("Processing"),
+      { timeout: 5000 }
+    );
+    expect(screen.queryByRole("button", { name: PAY_BUTTON })).toBeNull();
+
+    // A generation change while the completion is pending: account,
+    // admission or a natural event. It must not abandon the $1 step.
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+
+    // The stale result lands as a transient failure. The step the recovery
+    // ITSELF opened has to be released — never left simulating work.
+    await act(async () => {
+      releaseCompletion();
+    });
+    await waitFor(
+      () =>
+        expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+
+    // Nothing financial happened and no new attempt was opened.
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(readPendingPaymentAttempt()).not.toBeNull();
+  });
+
+  it("B1.8 — a re-arm signal during an in-flight check is honoured after it settles (never in parallel, never lost)", async () => {
+    connectWallet();
+    setPhantom(true);
+    seedStalePointerForGate();
+
+    // The FIRST read hangs: the check stays in flight, so a concurrent
+    // check would be directly observable as a SECOND read.
+    let releaseFirstRead: () => void = () => {};
+    const firstReadGate = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    let rpcCalls = 0;
+    installFetchRoutes([
+      {
+        match: "/api/solana/rpc",
+        respond: () => {
+          rpcCalls += 1;
+          if (rpcCalls === 1) {
+            return { ok: true, json: () => firstReadGate.then(() => ({})) };
+          }
+          // Every later read keeps the pointer (fail closed).
+          return { ok: false, json: async () => ({}) };
+        },
+      },
+      { match: "/api/service-payment/verify", respond: VERIFY_FAILED },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    render(tree());
+    await waitFor(() => expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(1));
+
+    // A natural re-entry event arrives WHILE the check is running: it must
+    // not open a second, concurrent check...
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(1);
+
+    // ...but it must not be LOST either: once the running check settles, the
+    // pending signal re-arms one further bounded cycle.
+    await act(async () => {
+      releaseFirstRead();
+    });
+    await waitFor(
+      () => expect(fetchCallsTo("/api/solana/rpc").length).toBeGreaterThan(1),
+      { timeout: 5000 }
+    );
+
+    // One further signal, one further cycle — never an amplification.
+    const settled = fetchCallsTo("/api/solana/rpc").length;
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await waitFor(
+      () => expect(fetchCallsTo("/api/solana/rpc")).toHaveLength(settled + 1),
+      { timeout: 5000 }
+    );
+
+    // All of it stayed read-only: no wallet request, no payment, no grant,
+    // and the single saved attempt is KEPT.
+    expect(signMessageMock).not.toHaveBeenCalled();
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(readPendingPaymentAttempt()).not.toBeNull();
+  });
+
+  it("B1.9 — the recovery's own unwind never swallows the NEXT genuine entry into the $1 step", async () => {
+    setPhantom(true);
+    connectWallet();
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      { match: "/api/service-payment/create-quote", respond: CREATE_QUOTE },
+      ...SOLANA_RPC_ROUTES_KEPT,
+      {
+        match: "/api/service-payment/verify",
+        respond: verifyByCaller({
+          recheck: VERIFY_VERIFIED,
+          completion: VERIFY_FAILED,
+          explicit: VERIFY_FAILED,
+        }),
+      },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    render(tree());
+
+    // The normal first step reaches the $1 step with NO saved attempt yet.
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    await waitFor(
+      () =>
+        expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+    expect(verifyCallsBy("payment-recheck-")).toBe(0);
+
+    /**
+     * Flush the $1 step's ARRIVAL re-arm signal while NO saved attempt exists
+     * yet, so the recovery can only start from the natural signal below. (A
+     * late flush would start a first cycle that the signal then supersedes —
+     * the same, correct read-only check run twice, which is what a signal
+     * arriving during a check is designed to do.)
+     */
+    await act(async () => {});
+
+    /**
+     * A saved attempt appears (carrying the intent the $1 step uses). The
+     * next natural signal starts the recovery: it CONFIRMS the previous
+     * transaction, its canonical completion fails TRANSIENTLY, and the
+     * recovery unwinds its OWN $1 step back to `needs-payment`.
+     */
+    seedStalePointerForGate("payment-intent-access-gate");
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+
+    await waitFor(
+      () => expect(verifyCallsBy("payment-attempt-recovery-")).toBe(1),
+      { timeout: 5000 }
+    );
+
+    // The recovery's OWN unwind opened NO second, overlapping cycle: one
+    // re-check produced that one completion.
+    expect(verifyCallsBy("payment-recheck-")).toBe(1);
+    expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy();
+
+    /**
+     * The NEXT entry into the $1 step is INDEPENDENT (an explicit "Pay $1"
+     * that fails). The marker left by the recovery's own unwind must not
+     * swallow it: the automatic recovery has to run again.
+     */
+    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+
+    await waitFor(
+      () => expect(verifyCallsBy("payment-recheck-")).toBe(2),
+      { timeout: 5000 }
+    );
+
+    // The explicit retry RESUMED the recorded transaction: no second
+    // transfer was signed or sent and nothing was granted.
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(readPendingPaymentAttempt()).not.toBeNull();
+  });
+
+  /**
+   * ─── Stage B.1.4 — a settlement that belongs to ANOTHER connection ───
+   *
+   * The server side of a purchase is settled for ITS owner; whether that
+   * result may be applied to THIS interface is a separate fact. These
+   * scenarios move the connected wallet (switch / disconnect) while the
+   * canonical completion — or an explicit payment's verification — is still
+   * in flight, and then let it land SUCCESSFULLY for the original account.
+   *
+   * In every case the credit stays settled server-side for A (the grant
+   * request is made, the pointer is released by that settlement), while the
+   * current UI must receive nothing: no admission, no `paid`, no navigation
+   * and no second purchase of any kind.
+   */
+
+  /** A verify answer that lands only when the test releases it. */
+  function gatedVerified(release: Promise<void>) {
+    return {
+      ok: true,
+      json: () => release.then(() => ({ ok: true, status: "VERIFIED" })),
+    };
+  }
+
+  /**
+   * A: the account is SWITCHED while A's canonical completion is pending.
+   */
+  it("B1.10 (A) — a pending completion that lands after an ACCOUNT SWITCH never admits the new account", async () => {
+    setPhantom(true);
+    connectWallet();
+    seedStalePointerForGate("payment-intent-access-gate");
+
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      ...SOLANA_RPC_ROUTES_KEPT,
+      {
+        match: "/api/service-payment/verify",
+        respond: verifyByCaller({
+          recheck: VERIFY_VERIFIED,
+          completion: () => gatedVerified(completionGate),
+          explicit: VERIFY_FAILED,
+        }),
+      },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    const view = render(tree());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    // Under A the recovery confirmed the recorded transaction and entered the
+    // $1 step to continue THAT attempt: the completion is genuinely pending.
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toContain("Processing"),
+      { timeout: 5000 }
+    );
+    expect(verifyCallsBy("payment-attempt-recovery-")).toBe(1);
+
+    // The identity proof of the initial discovery is the only wallet prompt
+    // so far; nothing may be added by the settlement of ANOTHER connection.
+    const promptsBeforeSwitch = signMessageMock.mock.calls.length;
+
+    // The user switches to a DIFFERENT wallet while it is pending.
+    await moveWallet(view, { connected: true, account: WALLET_ACCOUNT_B });
+
+    // The flow left the state that belonged to A and nothing navigated.
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole("button", { name: GATE_BUTTON })
+        ).toBeTruthy(),
+      { timeout: 5000 }
+    );
+    expect(screen.queryByText("Processing…")).toBeNull();
+    expect(screen.queryByTestId("create-route")).toBeNull();
+    // Nothing was admitted for A's settlement in B's session either.
+    expect(screen.getByTestId("admission").textContent).toBe("none");
+
+    // The recorded attempt is NOT dropped by the switch itself: it is the
+    // only record of A's transaction.
+    expect(readPendingPaymentAttempt()).not.toBeNull();
+
+    // A's settlement lands: the server settles the credit for A ...
+    await act(async () => {
+      releaseCompletion();
+    });
+    await waitFor(
+      () => expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1),
+      { timeout: 5000 }
+    );
+
+    // ... and the UI REFUSES to apply it to B.
+    expect(screen.queryByTestId("create-route")).toBeNull();
+    expect(screen.queryByText(/Creation right confirmed/)).toBeNull();
+    expect(screen.queryByText("Processing…")).toBeNull();
+    expect(screen.getByRole("button", { name: GATE_BUTTON })).toBeTruthy();
+    expect(screen.getByTestId("admission").textContent).toBe("none");
+
+    // No second purchase of ANY kind was opened for B.
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(signMessageMock.mock.calls.length).toBe(promptsBeforeSwitch);
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    expect(verifyCallsBy("payment-modal-")).toBe(0);
+
+    // The settled attempt is released by the SERVER fact (never left as a
+    // dangling pointer that could re-enter a payment).
+    await waitFor(
+      () => expect(readPendingPaymentAttempt()).toBeNull(),
+      { timeout: 5000 }
+    );
+  });
+
+  /**
+   * B: the wallet is DISCONNECTED while A's canonical completion is pending.
+   */
+  it("B1.11 (B) — a pending completion that lands after a DISCONNECT is never applied", async () => {
+    setPhantom(true);
+    connectWallet();
+    seedStalePointerForGate("payment-intent-access-gate");
+
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      ...SOLANA_RPC_ROUTES_KEPT,
+      {
+        match: "/api/service-payment/verify",
+        respond: verifyByCaller({
+          recheck: VERIFY_VERIFIED,
+          completion: () => gatedVerified(completionGate),
+          explicit: VERIFY_FAILED,
+        }),
+      },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    const view = render(tree());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toContain("Processing"),
+      { timeout: 5000 }
+    );
+
+    // The user disconnects while the completion is pending.
+    await moveWallet(view, { connected: false, account: null });
+
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole("button", { name: GATE_BUTTON })
+        ).toBeTruthy(),
+      { timeout: 5000 }
+    );
+    expect(screen.queryByText("Processing…")).toBeNull();
+    expect(screen.queryByTestId("create-route")).toBeNull();
+    expect(screen.getByTestId("admission").textContent).toBe("none");
+
+    // A's settlement still completes server-side ...
+    await act(async () => {
+      releaseCompletion();
+    });
+    await waitFor(
+      () => expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1),
+      { timeout: 5000 }
+    );
+
+    // ... and is NEVER applied to a disconnected wallet.
+    expect(screen.queryByTestId("create-route")).toBeNull();
+    expect(screen.queryByText(/Creation right confirmed/)).toBeNull();
+    expect(screen.queryByText("Processing…")).toBeNull();
+    expect(screen.getByTestId("admission").textContent).toBe("none");
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    expect(verifyCallsBy("payment-modal-")).toBe(0);
+  });
+
+  /**
+   * C: the SAME protection on the ordinary explicit-payment path
+   * (`confirmAndVerify`), which settles through the same shared callback.
+   */
+  it("B1.12 (C) — an EXPLICIT payment's settlement is equally bound to the account that paid it", async () => {
+    setPhantom(true);
+    connectWallet();
+
+    let releaseVerify: () => void = () => {};
+    const verifyGate = new Promise<void>((resolve) => {
+      releaseVerify = resolve;
+    });
+
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      { match: "/api/service-payment/create-quote", respond: CREATE_QUOTE },
+      ...SOLANA_RPC_ROUTES_KEPT,
+      {
+        match: "/api/service-payment/verify",
+        respond: verifyByCaller({
+          recheck: VERIFY_VERIFIED,
+          completion: VERIFY_FAILED,
+          explicit: () => gatedVerified(verifyGate),
+        }),
+      },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    const view = render(tree());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    await waitFor(
+      () =>
+        expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+
+    // The one explicit $1 is signed and sent under A; its verification is
+    // withheld, so the flow really is mid-payment (Processing…).
+    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toContain("Processing"),
+      { timeout: 5000 }
+    );
+    expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(1);
+    const quotesAtSwitch = fetchCallsTo("/api/service-payment/create-quote").length;
+    const signaturesAtSwitch = signMessageMock.mock.calls.length;
+
+    // The user switches to B while A's payment is still being verified.
+    await moveWallet(view, { connected: true, account: WALLET_ACCOUNT_B });
+
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole("button", { name: GATE_BUTTON })
+        ).toBeTruthy(),
+      { timeout: 5000 }
+    );
+    expect(screen.queryByText("Processing…")).toBeNull();
+    expect(screen.getByTestId("admission").textContent).toBe("none");
+    expect(readPendingPaymentAttempt()).not.toBeNull();
+
+    // A's payment is verified and granted server-side ...
+    await act(async () => {
+      releaseVerify();
+    });
+    await waitFor(
+      () => expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1),
+      { timeout: 5000 }
+    );
+
+    // ... and is never applied to B, and nothing financial is repeated.
+    expect(screen.queryByTestId("create-route")).toBeNull();
+    expect(screen.queryByText(/Creation right confirmed/)).toBeNull();
+    expect(screen.getByTestId("admission").textContent).toBe("none");
+    expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(1);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(
+      quotesAtSwitch
+    );
+    expect(signMessageMock.mock.calls.length).toBe(signaturesAtSwitch);
+  });
+
+  /**
+   * D: after the switch, the ORIGINAL owner re-obtains the right it already
+   * owns — through the ordinary discovery, with no second charge.
+   */
+  it("B1.13 (D) — the original owner comes back and finds its settled right (no second $1)", async () => {
+    setPhantom(true);
+    connectWallet();
+    seedStalePointerForGate("payment-intent-access-gate");
+
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+
+    /**
+     * The server's answer about A's right: absent before the settlement,
+     * AVAILABLE once the settled credit exists.
+     */
+    let creditRightExists = false;
+    const creditStatus = () =>
+      creditRightExists ? AVAILABLE_DISCOVERY() : NO_CREDIT_DISCOVERY();
+
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: creditStatus },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      ...SOLANA_RPC_ROUTES_KEPT,
+      {
+        match: "/api/service-payment/verify",
+        respond: verifyByCaller({
+          recheck: VERIFY_VERIFIED,
+          completion: () => gatedVerified(completionGate),
+          explicit: VERIFY_FAILED,
+        }),
+      },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    const view = render(tree());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toContain("Processing"),
+      { timeout: 5000 }
+    );
+
+    // B interrupts and gets NOTHING from A's settlement.
+    await moveWallet(view, { connected: true, account: WALLET_ACCOUNT_B });
+    await act(async () => {
+      releaseCompletion();
+    });
+    await waitFor(
+      () => expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1),
+      { timeout: 5000 }
+    );
+    expect(screen.queryByTestId("create-route")).toBeNull();
+    await waitFor(
+      () => expect(readPendingPaymentAttempt()).toBeNull(),
+      { timeout: 5000 }
+    );
+
+    // The right is now settled for A...
+    creditRightExists = true;
+
+    // ...so when A comes back, the ordinary check finds it: admission and
+    // navigation without a second payment.
+    await moveWallet(view, { connected: true, account: WALLET_ACCOUNT });
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole("button", { name: GATE_BUTTON })
+        ).toBeTruthy(),
+      { timeout: 5000 }
+    );
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    await waitFor(
+      () => expect(screen.getByTestId("create-route")).toBeTruthy(),
+      { timeout: 8000 }
+    );
+
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    // Exactly the ONE grant A's settled payment produced.
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1);
+    // A's own right is what the session now holds.
+    expect(screen.getByTestId("admission").textContent).toBe(
+      `${WALLET_ACCOUNT}|${CREATOR_CREDIT_ID}`
+    );
+  });
+
+  /**
+   * E: the SAME account is still admitted by its own settlement — the guard
+   * must not block the ordinary successful flow.
+   */
+  it("B1.14 (E) — the SAME account's settlement still reaches paid + navigation with no click", async () => {
+    setPhantom(true);
+    connectWallet();
+    seedStalePointerForGate("payment-intent-access-gate");
+
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      ...SOLANA_RPC_ROUTES_KEPT,
+      {
+        match: "/api/service-payment/verify",
+        respond: verifyByCaller({
+          recheck: VERIFY_VERIFIED,
+          completion: () => gatedVerified(completionGate),
+          explicit: VERIFY_FAILED,
+        }),
+      },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    render(tree());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toContain("Processing"),
+      { timeout: 5000 }
+    );
+
+    // The wallet never changes: the settlement belongs to the connection
+    // that is live, so the flow advances by itself.
+    await act(async () => {
+      releaseCompletion();
+    });
+
+    await waitFor(
+      () => expect(screen.getByTestId("create-route")).toBeTruthy(),
+      { timeout: 8000 }
+    );
+
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(1);
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    expect(readPendingPaymentAttempt()).toBeNull();
+    expect(screen.getByTestId("admission").textContent).toBe(
+      `${WALLET_ACCOUNT}|${CREATOR_CREDIT_ID}`
+    );
   });
 });
 
@@ -1644,14 +2628,16 @@ describe("Home Access Gate — server refusal and in-flight protection", () => {
         { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
         { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
         { match: "/api/service-payment/create-quote", respond: CREATE_QUOTE },
-        { match: "/api/service-payment/verify", respond: VERIFY_VERIFIED },
+        { match: "/api/service-payment/verify", respond: VERIFY_FAILED },
         { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
       ],
       /**
        * The endpoint refuses the transaction format BEFORE submitting it.
        * No classification field is present on purpose: an envelope the
        * client cannot vouch for must NOT be treated as a proven pre-send
-       * refusal.
+       * refusal. The verifier stays UNCONFIRMED (see above), so the
+       * automatic same-attempt recovery must keep the attempt without
+       * completing anything.
        */
       () => json({ ok: false, error: "INVALID_INSTRUCTION_COUNT" }, false)
     );
@@ -1679,9 +2665,12 @@ describe("Home Access Gate — server refusal and in-flight protection", () => {
     expect(statusText).not.toContain("Something went wrong");
     // ...and it makes no claim about the user's funds.
     expect(statusText).not.toMatch(/not charged|nothing was charged|no money/i);
-    // Nothing beyond the single refused attempt was ever attempted.
+    // Nothing beyond the single refused attempt was ever attempted: the
+    // automatic same-attempt recovery may only re-check the recorded
+    // transaction (read-only) — it never signs, sends, grants or navigates
+    // while the verifier does not confirm.
     expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
-    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(0);
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(1);
     expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
     expect(screen.queryByTestId("create-route")).toBeNull();
   });
