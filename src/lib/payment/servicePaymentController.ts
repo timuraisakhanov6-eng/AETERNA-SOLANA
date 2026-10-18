@@ -894,6 +894,23 @@ function isDefiniteWalletRejection(err: unknown): boolean {
 }
 
 /**
+ * Classifies the wallet-side MESSAGE-IDENTITY refusal of the sign-only step.
+ *
+ * `signSolanaUSDCPayment` raises it (as `WalletModifiedTransactionError`)
+ * when the transaction the wallet returned is not the one AETERNA
+ * prepared. It is matched by its STRUCTURED `code` — never by the error
+ * text.
+ *
+ * The refusal happens strictly BEFORE broadcast: the returned
+ * transaction was never posted to `/api/solana/broadcast`, so no
+ * on-chain operation of this attempt can exist.
+ */
+function isWalletModifiedTransactionError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false
+  return (err as { code?: unknown }).code === "WALLET_MODIFIED_TRANSACTION"
+}
+
+/**
  * Binds + broadcasts a signed payment through the validated endpoint.
  *
  * Never throws. On a failure it reports the SERVER's own structured
@@ -2246,6 +2263,38 @@ export function createServicePaymentController(
             clearPendingPaymentAttempt()
             patch({
               error: "PAYMENT_REJECTED_BY_WALLET",
+              phase: "error",
+              isProcessing: false,
+            })
+            return
+          }
+          if (isWalletModifiedTransactionError(signErr)) {
+            /**
+             * PROVEN PRE-SEND REFUSAL — the wallet returned a transaction
+             * whose message differs from the one AETERNA prepared.
+             *
+             * The client refused those bytes and never posted them to
+             * `/api/solana/broadcast`, so no transaction of THIS attempt
+             * can exist on chain. Recording the generic "unknown outcome"
+             * marker would falsely block the intent as if one could.
+             *
+             * Only a PROVISIONAL record may be released here: no
+             * transaction id, the SAME intent and the SAME account. A
+             * record that carries a signature — or one that belongs to
+             * another intent or account — is never touched from this
+             * path.
+             */
+            const provisional = readPendingPaymentAttempt()
+            if (
+              provisional &&
+              provisional.transactionId === null &&
+              provisional.paymentIntentId === quote.paymentIntentId &&
+              provisional.account === currentAccount
+            ) {
+              clearPendingPaymentAttempt()
+            }
+            patch({
+              error: "WALLET_MODIFIED_TRANSACTION",
               phase: "error",
               isProcessing: false,
             })

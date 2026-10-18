@@ -179,6 +179,18 @@ function describeGateError(raw: string | null): string {
   ) {
     return "Your wallet's transaction was rejected by our server before it was submitted — the transaction format did not match what this payment expects. If a payment is still being checked, wait for that result before paying again.";
   }
+  /**
+   * WALLET-SIDE MESSAGE-IDENTITY REFUSAL.
+   *
+   * The wallet returned a transaction whose message differs from the one
+   * AETERNA prepared; the app refused it BEFORE any broadcast. This is
+   * not a verification failure and not a submission: the copy states only
+   * the observed facts — no claim about WHY the wallet changed the
+   * transaction, and nothing about funds.
+   */
+  if (code.includes("WALLET_MODIFIED_TRANSACTION")) {
+    return "The transaction your wallet returned did not match the one prepared here, so it was refused and nothing was sent. Check your wallet settings, or try again after the cause is identified.";
+  }
   if (code.includes("SIGNATURE") || code.includes("CHALLENGE")) {
     return "Wallet verification was not completed. Please try again.";
   }

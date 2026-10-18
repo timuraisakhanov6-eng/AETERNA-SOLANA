@@ -775,3 +775,169 @@ describe("pre-broadcast refusal handling", () => {
     expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
   });
 });
+
+/**
+ * WALLET-MODIFIED-TRANSACTION REFUSAL (pre-broadcast, client side).
+ *
+ * The sign-only step refuses the transaction a wallet returned when its
+ * message is not the one AETERNA prepared. The refusal is classified by
+ * its STRUCTURED code (`WALLET_MODIFIED_TRANSACTION`), never by error
+ * text, and it is proven pre-send: the returned bytes were never posted
+ * to the broadcast endpoint. The local pending pointer must therefore
+ * gain no "unknown outcome" marker — and only a PROVISIONAL record (no
+ * transaction id) of THIS intent and THIS account may be released;
+ * anything carrying a signature, or belonging to another intent or
+ * account, stays untouched.
+ */
+describe("wallet-modified transaction refusal", () => {
+  /**
+   * The error shape the sign-only step raises: a structured `code`. The
+   * message deliberately does NOT contain the code string, so these tests
+   * fail if the controller ever classifies by text.
+   */
+  function walletModifiedTransactionError(): Error {
+    return Object.assign(
+      new Error("the wallet returned a different transaction"),
+      { code: "WALLET_MODIFIED_TRANSACTION" }
+    );
+  }
+
+  it("refuses BEFORE broadcast — no broadcast, no verify, no grant, no second signature, no new quote", async () => {
+    const stub = createStub();
+    const controller = await driveToPayable(stub);
+    vi.mocked(signSolanaUSDCPayment).mockRejectedValueOnce(
+      walletModifiedTransactionError()
+    );
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().phase).toBe("error");
+    expect(controller.getState().error).toBe("WALLET_MODIFIED_TRANSACTION");
+    expect(stub.broadcastCalls()).toHaveLength(0);
+    expect(stub.verifyCalls()).toHaveLength(0);
+    expect(stub.grantCalls()).toHaveLength(0);
+    expect(vi.mocked(signSolanaUSDCPayment)).toHaveBeenCalledTimes(1);
+    // The initial quote and the authoritative pre-signature re-read are
+    // the ONLY create-quote calls: the refusal starts nothing new.
+    expect(stub.quoteCalls).toBe(2);
+    // Nothing of this attempt can exist: no "possibly sent" marker is
+    // left behind for the creator to be stuck on.
+    expect(readPendingPaymentAttempt()).toBeNull();
+  });
+
+  it("releases ONLY a provisional (no transaction id) record of the SAME intent and account", async () => {
+    const stub = createStub();
+    const controller = await driveToPayable(stub);
+    const intent = controller.getState().quote!.paymentIntentId;
+    writePendingPaymentAttempt({
+      version: 2,
+      paymentIntentId: intent,
+      creatorIdentityId: "identity-1",
+      network: "solana",
+      account: ACCOUNT,
+      transactionId: null,
+      signedTransaction: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
+      outcome: "submitted",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    vi.mocked(signSolanaUSDCPayment).mockRejectedValueOnce(
+      walletModifiedTransactionError()
+    );
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("WALLET_MODIFIED_TRANSACTION");
+    expect(stub.broadcastCalls()).toHaveLength(0);
+    expect(readPendingPaymentAttempt()).toBeNull();
+  });
+
+  it("KEEPS a provisional record of the same intent that belongs to ANOTHER account", async () => {
+    const stub = createStub();
+    const controller = await driveToPayable(stub);
+    const intent = controller.getState().quote!.paymentIntentId;
+    writePendingPaymentAttempt({
+      version: 2,
+      paymentIntentId: intent,
+      creatorIdentityId: "identity-1",
+      network: "solana",
+      account: "ADifferentBase58WalletAccountRecovery",
+      transactionId: null,
+      signedTransaction: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
+      outcome: "submitted",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    vi.mocked(signSolanaUSDCPayment).mockRejectedValueOnce(
+      walletModifiedTransactionError()
+    );
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("WALLET_MODIFIED_TRANSACTION");
+    const kept = readPendingPaymentAttempt();
+    expect(kept?.paymentIntentId).toBe(intent);
+    expect(kept?.account).toBe("ADifferentBase58WalletAccountRecovery");
+  });
+
+  it("KEEPS a record of ANOTHER intent — a refusal never touches a foreign attempt", async () => {
+    const stub = createStub();
+    const controller = await driveToPayable(stub);
+    writePendingPaymentAttempt({
+      version: 2,
+      paymentIntentId: "intent-of-another-attempt",
+      creatorIdentityId: "identity-1",
+      network: "solana",
+      account: ACCOUNT,
+      transactionId: null,
+      signedTransaction: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
+      outcome: "unknown",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    vi.mocked(signSolanaUSDCPayment).mockRejectedValueOnce(
+      walletModifiedTransactionError()
+    );
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("WALLET_MODIFIED_TRANSACTION");
+    expect(readPendingPaymentAttempt()?.paymentIntentId).toBe(
+      "intent-of-another-attempt"
+    );
+  });
+
+  it("NEVER clears a record that carries a transaction id", async () => {
+    const stub = createStub();
+    const controller = await driveToPayable(stub);
+    const otherTx = "SomeoneElsesTransactionSignatureRecovery55555555555";
+    writePendingPaymentAttempt({
+      version: 2,
+      paymentIntentId: "intent-of-another-attempt",
+      creatorIdentityId: "identity-1",
+      network: "solana",
+      account: ACCOUNT,
+      transactionId: otherTx,
+      signedTransaction: "bW9jay1zaWduZWQ=",
+      blockhash: "mock-blockhash",
+      lastValidBlockHeight: 12345,
+      outcome: "submitted",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    vi.mocked(signSolanaUSDCPayment).mockRejectedValueOnce(
+      walletModifiedTransactionError()
+    );
+
+    await controller.confirmAndVerify();
+
+    expect(controller.getState().error).toBe("WALLET_MODIFIED_TRANSACTION");
+    expect(readPendingPaymentAttempt()?.transactionId).toBe(otherTx);
+  });
+});

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
-import { sendSolanaUSDCPayment } from "./solanaWallet";
+import {
+  sendSolanaUSDCPayment,
+  signSolanaUSDCPayment,
+  WalletModifiedTransactionError,
+} from "./solanaWallet";
 
 const FIXED_PUBLIC_KEY = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 const FIXED_DESTINATION = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
@@ -544,5 +548,202 @@ describe("sendSolanaUSDCPayment — settlement ATA provisioning", () => {
     ).rejects.toThrow("Invalid token account response.");
 
     expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+});
+
+/* ================= WALLET MESSAGE-IDENTITY GUARD =================
+ *
+ * `signSolanaUSDCPayment` must accept ONLY the exact message it prepared
+ * for the wallet: the signature checks prove that the wallet signed the
+ * message it RETURNED, but not that the returned message is the SAME one.
+ * A wallet can force a different message (added/removed instructions, an
+ * adjusted fee, another blockhash) and sign it correctly.
+ *
+ * Every scenario below runs the REAL serialization path — the builder's
+ * legacy transaction, a REAL ed25519 signature made by a test keypair
+ * over the returned message, and the same `Transaction.from(bytes)`
+ * re-parse the wallet adapter performs. No network, no real wallet, no
+ * fabricated signature that would skip real verification.
+ */
+describe("signSolanaUSDCPayment — wallet message-identity guard", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00Z"));
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * The file's FIXED_BLOCKHASH is not base58-decodable ("Blockhash111…"
+   * contains 'l' / 'o'), so a transaction built on it cannot be REALLY
+   * serialized. Production always signs a real RPC blockhash; this valid
+   * value only makes the fixture serializable.
+   */
+  const VALID_BLOCKHASH = "11111111111111111111111111111111";
+
+  type WalletTx = import("@solana/web3.js").Transaction;
+
+  function installSerializableFetch() {
+    return installFetchMock(
+      buildFetchImplementation({
+        destinationAtaExists: false,
+        blockhash: VALID_BLOCKHASH,
+      })
+    );
+  }
+
+  it("A: the wallet signs the EXACT prepared message — accepted, message unchanged", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+
+    const payer = web3.Keypair.generate();
+    let preparedMessage: Uint8Array | null = null;
+    let returned: WalletTx | null = null;
+
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      // The real wallet path: bytes out, the wallet signs exactly those
+      // bytes, and the adapter re-parses what comes back.
+      signTransaction: async (transaction: unknown) => {
+        const tx = transaction as WalletTx;
+        preparedMessage = Uint8Array.from(tx.serializeMessage());
+        tx.sign(payer);
+        returned = web3.Transaction.from(
+          tx.serialize({ requireAllSignatures: false, verifySignatures: false })
+        );
+        return returned;
+      },
+    });
+
+    // `signSolanaUSDCPayment` itself serialized the returned transaction,
+    // which runs a REAL ed25519 verification of the returned message.
+    expect((returned as unknown as WalletTx).verifySignatures()).toBe(true);
+    expect(
+      Buffer.compare(
+        Buffer.from(preparedMessage as unknown as Uint8Array),
+        Buffer.from((returned as unknown as WalletTx).serializeMessage())
+      )
+    ).toBe(0);
+
+    const broadcast = web3.Transaction.from(
+      Uint8Array.from(Buffer.from(result.signedTransactionBase64, "base64"))
+    );
+    expect(broadcast.verifySignatures()).toBe(true);
+    expect(broadcast.instructions).toHaveLength(2);
+    expect(broadcast.instructions[0]!.programId.toBase58()).toBe(
+      ASSOCIATED_TOKEN_PROGRAM
+    );
+    expect(broadcast.instructions[1]!.programId.toBase58()).toBe(TOKEN_PROGRAM);
+    expect(result.signature.length).toBeGreaterThan(0);
+  });
+
+  it("B: extra instructions (5 total, validly signed) are refused with WALLET_MODIFIED_TRANSACTION", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+
+    const payer = web3.Keypair.generate();
+    let returned: WalletTx | null = null;
+
+    let caught: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          // A DIFFERENT message: the prepared instructions plus three
+          // program-level ones a wallet could add — signed with the SAME
+          // fee-payer key, so the signature is genuinely valid over it.
+          const modified = new web3.Transaction().add(
+            web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+            web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 501 }),
+            web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 2 }),
+            ...original.instructions
+          );
+          modified.feePayer = original.feePayer!;
+          modified.recentBlockhash = original.recentBlockhash!;
+          modified.sign(payer);
+          returned = web3.Transaction.from(modified.serialize());
+          return returned;
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    // The returned transaction is VALID — the refusal must come from the
+    // message-identity guard, never from a bad signature.
+    expect((returned as unknown as WalletTx).instructions).toHaveLength(5);
+    expect((returned as unknown as WalletTx).verifySignatures()).toBe(true);
+    expect(caught).toBeInstanceOf(WalletModifiedTransactionError);
+    expect((caught as WalletModifiedTransactionError).code).toBe(
+      "WALLET_MODIFIED_TRANSACTION"
+    );
+  });
+
+  it("C: removed instructions (0 total, validly signed) are refused before broadcast", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+
+    const payer = web3.Keypair.generate();
+    let returned: WalletTx | null = null;
+
+    let caught: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const emptied = new web3.Transaction();
+          emptied.feePayer = original.feePayer!;
+          emptied.recentBlockhash = original.recentBlockhash!;
+          emptied.sign(payer);
+          returned = web3.Transaction.from(emptied.serialize());
+          return returned;
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect((returned as unknown as WalletTx).instructions).toHaveLength(0);
+    expect((returned as unknown as WalletTx).verifySignatures()).toBe(true);
+    expect(caught).toBeInstanceOf(WalletModifiedTransactionError);
+    expect((caught as WalletModifiedTransactionError).code).toBe(
+      "WALLET_MODIFIED_TRANSACTION"
+    );
+  });
+
+  it("D: a damaged wallet response is refused safely — nothing is returned or broadcast", async () => {
+    const fetchMock = installSerializableFetch();
+
+    let caught: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: FIXED_PUBLIC_KEY,
+        // Damaged on purpose: the signature-shaped fields pass the
+        // existing checks, but the message cannot be read at all, so the
+        // identity of the transaction cannot be proven.
+        signTransaction: async () =>
+          ({
+            signatures: [{ length: 64 }],
+            signature: new Uint8Array(64),
+          }) as never,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(WalletModifiedTransactionError);
+    expect((caught as WalletModifiedTransactionError).code).toBe(
+      "WALLET_MODIFIED_TRANSACTION"
+    );
+    // The payment path never reached the broadcast endpoint.
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls.some((url) => url.includes("/api/solana/broadcast"))).toBe(
+      false
+    );
   });
 });

@@ -482,6 +482,61 @@ async function buildServicePaymentTransaction({
 }
 
 /**
+ * The wallet returned a transaction whose MESSAGE is not the one AETERNA
+ * prepared for signing.
+ *
+ * A wallet is free to force a different message (adjusted fees, extra or
+ * removed instructions, another blockhash) and to sign THAT message
+ * correctly — the signature checks alone cannot see the difference. Such
+ * a transaction is never this payment: it is refused here, BEFORE the
+ * signed bytes can reach the controller or `/api/solana/broadcast`, and
+ * no pending attempt is recorded for it.
+ *
+ * `code` is a stable, structured marker for callers; classification must
+ * never rely on matching the error text.
+ */
+export class WalletModifiedTransactionError extends Error {
+  readonly code = "WALLET_MODIFIED_TRANSACTION" as const
+
+  constructor() {
+    super(
+      "WALLET_MODIFIED_TRANSACTION: the wallet returned a transaction whose message differs from the one AETERNA prepared"
+    )
+    this.name = "WalletModifiedTransactionError"
+  }
+}
+
+/** Exact byte-sequence equality of two serialized Solana messages. */
+function messageBytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+/**
+ * The message bytes of the transaction a wallet returned, or null when
+ * they cannot be read at all (unknown shape, alien type, serialization
+ * error).
+ *
+ * null means the identity of the transaction CANNOT be proven, so the
+ * caller must fail closed and refuse it.
+ */
+function readReturnedMessageBytes(transaction: unknown): Uint8Array | null {
+  const candidate = transaction as { serializeMessage?: unknown }
+  if (typeof candidate?.serializeMessage !== "function") return null
+  try {
+    const message = (candidate.serializeMessage as () => unknown).call(
+      candidate
+    )
+    return message instanceof Uint8Array ? message : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Signs the canonical payment WITHOUT sending it.
  *
  * Returns the transaction signature (computed from the signed
@@ -520,6 +575,15 @@ export async function signSolanaUSDCPayment({
   const { transaction, blockhash, lastValidBlockHeight } =
     await buildServicePaymentTransaction({ destination, amountAtomic, publicKey: publicKeyOption })
 
+  /**
+   * FREEZE the exact message that is put in front of the wallet.
+   *
+   * Captured BEFORE the wallet is called, so a wallet that mutates the
+   * transaction object it was handed cannot move the reference point
+   * afterwards.
+   */
+  const preparedMessage = transaction.serializeMessage()
+
   const signed = await signTransaction(transaction)
 
   // Fully signed means: exactly one signature slot and a non-empty value.
@@ -532,6 +596,22 @@ export async function signSolanaUSDCPayment({
   const signatureBytes = signedTransaction.signature
   if (!signatureBytes || signatureBytes.length === 0) {
     throw new Error("Signed transaction carries no signature")
+  }
+
+  /**
+   * MESSAGE-IDENTITY GUARD — fail closed BEFORE broadcast.
+   *
+   * The signature checks above only prove that the wallet signed the
+   * message it RETURNED; they cannot see that the returned message is a
+   * different one. Only a full byte comparison of the prepared and the
+   * returned message can, so ANY difference — or a message that cannot
+   * be read at all — ends the payment path here with the typed
+   * `WALLET_MODIFIED_TRANSACTION` refusal. The signed bytes never reach
+   * the controller and never reach `/api/solana/broadcast`.
+   */
+  const returnedMessage = readReturnedMessageBytes(signed)
+  if (!returnedMessage || !messageBytesEqual(preparedMessage, returnedMessage)) {
+    throw new WalletModifiedTransactionError()
   }
 
   return {

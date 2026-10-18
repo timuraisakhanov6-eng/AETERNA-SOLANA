@@ -2724,6 +2724,66 @@ describe("Home Access Gate — server refusal and in-flight protection", () => {
     expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
     expect(screen.queryByTestId("create-route")).toBeNull();
   });
+
+  it("17. a wallet-modified transaction is refused with a specific explanation — nothing was sent, nothing is held open", async () => {
+    setPhantom(true);
+    connectWallet();
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+      { match: "/api/creator/verify-proof", respond: VERIFY_PROOF },
+      { match: "/api/service-payment/create-quote", respond: CREATE_QUOTE },
+      { match: "/api/service-payment/verify", respond: VERIFY_FAILED },
+      { match: "/api/creator/grant-credit", respond: GRANT_CREDIT },
+    ]);
+
+    /**
+     * The sign-only wallet step refuses the transaction the wallet
+     * returned: a STRUCTURED code (the message deliberately does not
+     * contain it), proven pre-send by the client itself. The broadcast
+     * endpoint must never be reached — not even once.
+     */
+    signSolanaUSDCPaymentMock.mockRejectedValueOnce(
+      Object.assign(
+        new Error("the wallet returned a different transaction"),
+        { code: "WALLET_MODIFIED_TRANSACTION" }
+      )
+    );
+
+    render(tree());
+
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toContain(
+          "did not match the one prepared here"
+        ),
+      { timeout: 5000 }
+    );
+
+    const statusText = screen.getByRole("status").textContent ?? "";
+    // The specific refusal is surfaced, never the generic fallback…
+    expect(statusText).not.toContain("Something went wrong");
+    // …it makes no claim about funds…
+    expect(statusText).not.toMatch(/not charged|nothing was charged|no money/i);
+    // …and it never reads as sent, pending or awaiting confirmation.
+    expect(statusText).not.toMatch(/awaiting|being checked|may still/i);
+    // Nothing was sent and nothing new was attempted: no broadcast, no
+    // verification, no grant, no automatic retry, no leftover pointer.
+    expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
+    expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(signSolanaUSDCPaymentMock).toHaveBeenCalledTimes(1);
+    expect(readPendingPaymentAttempt()).toBeNull();
+    expect(screen.queryByTestId("create-route")).toBeNull();
+  });
 });
 
 /**
