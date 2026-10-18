@@ -747,3 +747,514 @@ describe("signSolanaUSDCPayment — wallet message-identity guard", () => {
     );
   });
 });
+
+/* ---------------------------------------------------------------------
+ * TEMPORARY OPT-IN DIAGNOSTICS (WALLET_MODIFIED_TRANSACTION)
+ *
+ * With `?aeternaWalletDiag=1` the guard emits exactly ONE structured,
+ * privacy-filtered `console.warn` record on a message mismatch; without
+ * that exact flag nothing is collected or logged. The refusal itself and
+ * the broadcast barrier are untouched.
+ * ------------------------------------------------------------------- */
+
+interface DiagMessageSide {
+  messageLength: number;
+  messageSha256: string;
+  header: number[] | null;
+  accountKeyCount: number | null;
+  accountKeyFingerprints: Array<{ index: number; sha256: string }> | null;
+  recentBlockhash: string | null;
+  instructionCount: number | null;
+  instructions: Array<{
+    index: number;
+    programId: string;
+    accountCount: number;
+    dataLength: number;
+    dataSha256: string;
+  }> | null;
+  parseError: string | null;
+}
+
+interface DiagRecord {
+  event: string;
+  cause?: string;
+  firstDifferingOffset?: number | null;
+  prepared?: DiagMessageSide | null;
+  returned?: DiagMessageSide | null;
+  diagnostics?: string;
+}
+
+describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => {
+  const VALID_BLOCKHASH = "11111111111111111111111111111111";
+  const DIAG_ENABLED_SEARCH = "?aeternaWalletDiag=1";
+
+  type WalletTx = import("@solana/web3.js").Transaction;
+
+  function installSerializableFetch() {
+    return installFetchMock(
+      buildFetchImplementation({
+        destinationAtaExists: false,
+        blockhash: VALID_BLOCKHASH,
+      })
+    );
+  }
+
+  function enableDiagnostics(search: string = DIAG_ENABLED_SEARCH) {
+    vi.stubGlobal("window", { location: { search } });
+  }
+
+  function expectNoBroadcast(fetchMock: ReturnType<typeof installFetchMock>) {
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls.some((url) => url.includes("/api/solana/broadcast"))).toBe(
+      false
+    );
+  }
+
+  /**
+   * AETERNA diagnostics emit exactly ONE console.warn payload: an object
+   * carrying the exact `event` marker below. Unrelated library warnings
+   * (e.g. bigint-buffer's binding notice) are plain strings and must
+   * never be mistaken for a diagnostics record.
+   */
+  function readDiagRecords(): DiagRecord[] {
+    return vi
+      .mocked(console.warn)
+      .mock.calls.map((call) => call[0])
+      .filter(
+        (entry): entry is DiagRecord =>
+          typeof entry === "object" &&
+          entry !== null &&
+          (entry as { event?: unknown }).event === "WALLET_MODIFIED_TRANSACTION"
+      );
+  }
+
+  function readDiagRecord(): DiagRecord {
+    const records = readDiagRecords();
+    expect(records).toHaveLength(1);
+    return records[0]!;
+  }
+
+  /**
+   * A wallet that re-signs the same instructions under a DIFFERENT
+   * blockhash — the classic modification the guard must refuse.
+   */
+  async function runBlockhashSwap(
+    web3: typeof import("@solana/web3.js"),
+    payer: import("@solana/web3.js").Keypair
+  ): Promise<{
+    thrown: unknown;
+    fetchMock: ReturnType<typeof installFetchMock>;
+    replacementBlockhash: string;
+  }> {
+    const fetchMock = installSerializableFetch();
+    const replacementBlockhash = web3.Keypair.generate().publicKey.toBase58();
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const modified = new web3.Transaction().add(
+            ...original.instructions
+          );
+          modified.feePayer = original.feePayer!;
+          modified.recentBlockhash = replacementBlockhash;
+          modified.sign(payer);
+          return web3.Transaction.from(modified.serialize());
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    return { thrown, fetchMock, replacementBlockhash };
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("classifies a recentBlockhash swap and emits ONE bounded record only with the exact flag", async () => {
+    const web3 = await import("@solana/web3.js");
+    const payer = web3.Keypair.generate();
+
+    // Without the flag: refused as before, and no diagnostics RECORD is
+    // emitted (foreign library console.warn output is ignored).
+    const silent = await runBlockhashSwap(web3, payer);
+    expectNoBroadcast(silent.fetchMock);
+    expect(readDiagRecords()).toHaveLength(0);
+
+    // With ?aeternaWalletDiag=1: exactly one bounded record.
+    enableDiagnostics();
+    const { fetchMock, replacementBlockhash } = await runBlockhashSwap(
+      web3,
+      payer
+    );
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    expect(Object.keys(record).sort()).toEqual([
+      "cause",
+      "event",
+      "firstDifferingOffset",
+      "prepared",
+      "returned",
+    ]);
+    expect(record.event).toBe("WALLET_MODIFIED_TRANSACTION");
+    expect(record.cause).toBe("recent_blockhash");
+
+    const prepared = record.prepared!;
+    const returned = record.returned!;
+    expect(Object.keys(prepared).sort()).toEqual([
+      "accountKeyCount",
+      "accountKeyFingerprints",
+      "header",
+      "instructionCount",
+      "instructions",
+      "messageLength",
+      "messageSha256",
+      "parseError",
+      "recentBlockhash",
+    ]);
+    expect(prepared.parseError).toBeNull();
+    expect(returned.parseError).toBeNull();
+    expect(prepared.messageLength).toBe(returned.messageLength);
+    expect(prepared.messageSha256).not.toBe(returned.messageSha256);
+    expect(prepared.recentBlockhash).toBe(VALID_BLOCKHASH);
+    expect(returned.recentBlockhash).toBe(replacementBlockhash);
+    expect(returned.header).toEqual(prepared.header);
+    expect(returned.accountKeyCount).toBe(prepared.accountKeyCount);
+    expect(returned.accountKeyFingerprints).toEqual(
+      prepared.accountKeyFingerprints
+    );
+    expect(returned.instructions).toEqual(prepared.instructions);
+
+    // The first difference must sit inside the blockhash region:
+    // header (3) + shortvec key count (1) + 32 bytes per account key.
+    const blockhashStart = 3 + 1 + 32 * prepared.accountKeyCount!;
+    expect(typeof record.firstDifferingOffset).toBe("number");
+    expect(record.firstDifferingOffset).toBeGreaterThanOrEqual(
+      blockhashStart
+    );
+    expect(record.firstDifferingOffset).toBeLessThan(blockhashStart + 32);
+  });
+
+  it("distinguishes an added instruction and a rewritten account key in the diagnostic fields", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    const payer = web3.Keypair.generate();
+
+    // (a) One extra instruction (ComputeBudget) in front of the originals.
+    const fetchA = installSerializableFetch();
+    let thrownA: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const modified = new web3.Transaction().add(
+            web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+            ...original.instructions
+          );
+          modified.feePayer = original.feePayer!;
+          modified.recentBlockhash = original.recentBlockhash!;
+          modified.sign(payer);
+          return web3.Transaction.from(modified.serialize());
+        },
+      });
+    } catch (error) {
+      thrownA = error;
+    }
+    expect(thrownA).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchA);
+
+    const recordA = readDiagRecord();
+    expect(recordA.cause).toBe("instruction_count");
+    expect(recordA.returned!.instructionCount).toBe(
+      recordA.prepared!.instructionCount! + 1
+    );
+    expect(recordA.returned!.instructions![0]!.programId).toBe(
+      "ComputeBudget111111111111111111111111111111"
+    );
+    expect(recordA.returned!.accountKeyFingerprints).not.toEqual(
+      recordA.prepared!.accountKeyFingerprints
+    );
+
+    vi.mocked(console.warn).mockClear();
+
+    // (b) Same instruction count, ONE non-signer account key rewritten at
+    // the byte level. Patching the frozen serialized message keeps its
+    // length, its account order and every compiled instruction index
+    // intact, so "account_keys" is the only possible classification.
+    // (Recompiling with a random replacement key can reorder same-class
+    // keys and would then legitimately classify as "instruction_structure".)
+    const fetchB = installSerializableFetch();
+    let thrownB: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const patchedBytes = Uint8Array.from(original.serializeMessage());
+          // header (3) + shortvec key count (1 byte, 8 keys): the first
+          // non-signer key (index 1) starts at offset 4 + 32.
+          const rewrittenKeyOffset = 4 + 32;
+          patchedBytes[rewrittenKeyOffset] =
+            patchedBytes[rewrittenKeyOffset]! ^ 0x7f;
+          // A real signed transaction whose message is EXACTLY the patched
+          // bytes: one placeholder signature slot, then re-sign the parsed
+          // transaction (its message is pinned, never recompiled).
+          const wire = new Uint8Array(1 + 64 + patchedBytes.length);
+          wire[0] = 1;
+          wire.set(patchedBytes, 1 + 64);
+          const returned = web3.Transaction.from(wire);
+          returned.partialSign(payer);
+          return web3.Transaction.from(returned.serialize());
+        },
+      });
+    } catch (error) {
+      thrownB = error;
+    }
+    expect(thrownB).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchB);
+
+    const recordB = readDiagRecord();
+    expect(recordB.cause).toBe("account_keys");
+    expect(recordB.returned!.accountKeyCount).toBe(
+      recordB.prepared!.accountKeyCount
+    );
+    const preparedKeys = recordB.prepared!.accountKeyFingerprints!;
+    const returnedKeys = recordB.returned!.accountKeyFingerprints!;
+    expect(returnedKeys).not.toEqual(preparedKeys);
+    // Exactly ONE key differs, and it is the patched index 1.
+    expect(
+      returnedKeys
+        .filter((entry) => entry.sha256 !== preparedKeys[entry.index]!.sha256)
+        .map((entry) => entry.index)
+    ).toEqual([1]);
+    // The first difference sits exactly on the patched key byte.
+    expect(recordB.firstDifferingOffset).toBe(4 + 32);
+    // The instructions themselves are byte-identical.
+    expect(recordB.returned!.instructions).toEqual(
+      recordB.prepared!.instructions
+    );
+  });
+
+  it("detects a same-length instruction-data change by the data fingerprint", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    const payer = web3.Keypair.generate();
+    const fetchMock = installSerializableFetch();
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const instructions = original.instructions.map((instruction) => {
+            if (instruction.programId.toBase58() !== TOKEN_PROGRAM) {
+              return instruction;
+            }
+            const data = Buffer.from(instruction.data);
+            data[data.length - 1] = data[data.length - 1]! ^ 0x01;
+            return new web3.TransactionInstruction({
+              programId: instruction.programId,
+              keys: instruction.keys,
+              data,
+            });
+          });
+          const modified = new web3.Transaction().add(...instructions);
+          modified.feePayer = original.feePayer!;
+          modified.recentBlockhash = original.recentBlockhash!;
+          modified.sign(payer);
+          return web3.Transaction.from(modified.serialize());
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    expect(record.cause).toBe("instruction_data");
+    const preparedTransfer = record.prepared!.instructions![1]!;
+    const returnedTransfer = record.returned!.instructions![1]!;
+    expect(preparedTransfer.dataLength).toBe(returnedTransfer.dataLength);
+    expect(returnedTransfer.dataSha256).not.toBe(preparedTransfer.dataSha256);
+    expect(returnedTransfer.programId).toBe(preparedTransfer.programId);
+    expect(record.returned!.accountKeyFingerprints).toEqual(
+      record.prepared!.accountKeyFingerprints
+    );
+  });
+
+  it("keeps the FROZEN prepared bytes even when the wallet mutates the handed transaction", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    const payer = web3.Keypair.generate();
+    const fetchMock = installSerializableFetch();
+    const replacementBlockhash = web3.Keypair.generate().publicKey.toBase58();
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          // Hostile wallet: mutates the very object it was handed and
+          // returns that same instance.
+          const original = transaction as WalletTx;
+          original.recentBlockhash = replacementBlockhash;
+          original.sign(payer);
+          return original;
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    expect(record.cause).toBe("recent_blockhash");
+    // Prepared side comes from the bytes frozen BEFORE the wallet call.
+    expect(record.prepared!.recentBlockhash).toBe(VALID_BLOCKHASH);
+    expect(record.returned!.recentBlockhash).toBe(replacementBlockhash);
+  });
+
+  it("marks an unparseable returned message and still refuses", async () => {
+    enableDiagnostics();
+    const fetchMock = installSerializableFetch();
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: FIXED_PUBLIC_KEY,
+        // Readable by the guard (it IS a byte array) but not a valid
+        // legacy message — diagnostics must degrade, not crash.
+        signTransaction: async () =>
+          ({
+            signatures: [{ length: 64 }],
+            signature: new Uint8Array(64),
+            serializeMessage: () => Uint8Array.from([7, 7, 7]),
+          }) as never,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expect((thrown as WalletModifiedTransactionError).code).toBe(
+      "WALLET_MODIFIED_TRANSACTION"
+    );
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    expect(record.event).toBe("WALLET_MODIFIED_TRANSACTION");
+    expect(record.cause).toBe("unknown");
+    expect(record.prepared!.parseError).toBeNull();
+    expect(record.returned!.parseError).toBe("message_not_parseable");
+    expect(record.returned!.messageLength).toBe(3);
+    expect(record.firstDifferingOffset).toBe(0);
+  });
+
+  it("a diagnostics failure is contained and never changes the refusal", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    // Simulates an environment where diagnostics collection cannot run.
+    vi.stubGlobal("crypto", {});
+    const payer = web3.Keypair.generate();
+
+    const { fetchMock } = await runBlockhashSwap(web3, payer);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    expect(record).toEqual({
+      event: "WALLET_MODIFIED_TRANSACTION",
+      diagnostics: "collection_failed",
+    });
+  });
+
+  it("stays silent for non-exact flag values and for an absent window", async () => {
+    const web3 = await import("@solana/web3.js");
+    const payer = web3.Keypair.generate();
+
+    await runBlockhashSwap(web3, payer); // no window at all
+    enableDiagnostics("?aeternaWalletDiag=0");
+    await runBlockhashSwap(web3, payer);
+    enableDiagnostics("?aeternaWalletDiag");
+    await runBlockhashSwap(web3, payer);
+    enableDiagnostics("?other=1&aeternaWalletDiag=0");
+    await runBlockhashSwap(web3, payer);
+
+    expect(readDiagRecords()).toHaveLength(0);
+  });
+
+  it("emits no signatures, raw messages, base64 payloads or secrets", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    const payer = web3.Keypair.generate();
+    const fetchMock = installSerializableFetch();
+    const replacementBlockhash = web3.Keypair.generate().publicKey.toBase58();
+
+    let preparedMessageBytes: Uint8Array | null = null;
+    let returnedMessageBytes: Uint8Array | null = null;
+    let signatureBytes: Uint8Array | null = null;
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          preparedMessageBytes = Uint8Array.from(original.serializeMessage());
+          const modified = new web3.Transaction().add(
+            ...original.instructions
+          );
+          modified.feePayer = original.feePayer!;
+          modified.recentBlockhash = replacementBlockhash;
+          modified.sign(payer);
+          const returned = web3.Transaction.from(modified.serialize());
+          signatureBytes = Uint8Array.from(returned.signature!);
+          returnedMessageBytes = Uint8Array.from(returned.serializeMessage());
+          return returned;
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    const serialized = JSON.stringify(record);
+    const toHex = (bytes: Uint8Array) =>
+      Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const toBase64 = (bytes: Uint8Array) =>
+      btoa(String.fromCharCode(...bytes));
+    const preparedBytes = preparedMessageBytes!;
+    const returnedBytes = returnedMessageBytes!;
+    const signature = signatureBytes!;
+
+    expect(serialized).not.toContain(toHex(preparedBytes));
+    expect(serialized).not.toContain(toHex(returnedBytes));
+    expect(serialized).not.toContain(toBase64(preparedBytes));
+    expect(serialized).not.toContain(toBase64(returnedBytes));
+    expect(serialized).not.toContain(toHex(signature));
+    expect(serialized).not.toContain(toBase64(signature));
+    expect(serialized).not.toContain(toHex(payer.secretKey));
+    expect(serialized).not.toContain(toBase64(payer.secretKey));
+    expect(serialized).not.toContain(payer.publicKey.toBase58());
+
+    // The record still carries the useful, public diagnostic structure.
+    expect(serialized).toContain(record.prepared!.messageSha256);
+    expect(serialized).toContain(replacementBlockhash);
+  });
+});

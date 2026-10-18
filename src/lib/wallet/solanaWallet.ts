@@ -537,6 +537,320 @@ function readReturnedMessageBytes(transaction: unknown): Uint8Array | null {
 }
 
 /**
+ * TEMPORARY, OPT-IN diagnostics for the message-identity guard.
+ *
+ * The guard below refuses a wallet-returned message without recording any
+ * evidence about the difference. With `?aeternaWalletDiag=1` appended to
+ * the URL, ONE structured, privacy-filtered object is emitted through
+ * `console.warn` at the moment of a refusal; without that exact flag
+ * nothing is collected, stored or logged.
+ *
+ * Diagnostics are decoupled from the guard: any failure to collect them is
+ * swallowed and can never change the refusal, and the comparison itself
+ * still runs on the FROZEN `preparedMessage` bytes versus the message
+ * bytes taken from the object the wallet returned.
+ *
+ * Never emitted: signatures, serialized messages, base64 payloads,
+ * account keys, secrets. Only lengths, SHA-256 fingerprints, legacy
+ * header bytes, the public recentBlockhash, program IDs and per-
+ * instruction data lengths/hashes. No storage, no network, no telemetry.
+ */
+const WALLET_MESSAGE_DIAG_PARAM = "aeternaWalletDiag"
+
+function isWalletMessageDiagEnabled(): boolean {
+  if (typeof window === "undefined") return false
+  try {
+    return (
+      new URLSearchParams(window.location.search).get(
+        WALLET_MESSAGE_DIAG_PARAM
+      ) === "1"
+    )
+  } catch {
+    return false
+  }
+}
+
+function walletDiagBytesToHex(bytes: Uint8Array): string {
+  let hex = ""
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0")
+  return hex
+}
+
+async function walletDiagSha256Hex(bytes: Uint8Array): Promise<string> {
+  const data = new Uint8Array(bytes)
+  const digest = await crypto.subtle.digest("SHA-256", data)
+  return walletDiagBytesToHex(new Uint8Array(digest))
+}
+
+interface WalletDiagInstructionSide {
+  index: number
+  programId: string
+  accountCount: number
+  dataLength: number
+  dataSha256: string
+}
+
+interface WalletDiagMessageSide {
+  messageLength: number
+  messageSha256: string
+  header: [number, number, number] | null
+  accountKeyCount: number | null
+  accountKeyFingerprints: Array<{ index: number; sha256: string }> | null
+  recentBlockhash: string | null
+  instructionCount: number | null
+  instructions: WalletDiagInstructionSide[] | null
+  parseError: "message_not_parseable" | null
+}
+
+interface WalletDiagCompiledInstruction {
+  programIdIndex: number
+  accounts: number[]
+  data: Uint8Array
+}
+
+interface WalletDiagParsedMessage {
+  header: [number, number, number]
+  accountKeys: import("@solana/web3.js").PublicKey[]
+  recentBlockhash: string
+  instructions: WalletDiagCompiledInstruction[]
+}
+
+/**
+ * Parses ONE message byte sequence with the real @solana/web3.js parser
+ * (never a hand-rolled decoder) and derives the reportable side fields.
+ * A parse failure is reported inside the record, not thrown.
+ */
+async function parseWalletDiagMessage(messageBytes: Uint8Array): Promise<{
+  parsed: WalletDiagParsedMessage | null
+  side: WalletDiagMessageSide
+}> {
+  const messageSha256 = await walletDiagSha256Hex(messageBytes)
+  const unparseable: WalletDiagMessageSide = {
+    messageLength: messageBytes.length,
+    messageSha256,
+    header: null,
+    accountKeyCount: null,
+    accountKeyFingerprints: null,
+    recentBlockhash: null,
+    instructionCount: null,
+    instructions: null,
+    parseError: "message_not_parseable",
+  }
+
+  try {
+    const { Message, Transaction } = await import("@solana/web3.js")
+    const message = Message.from(messageBytes)
+    // `Transaction.populate` decompiles the compiled instructions with the
+    // library's own base58 decoding, so instruction data is raw bytes.
+    const populated = Transaction.populate(message)
+    const instructions: WalletDiagCompiledInstruction[] =
+      message.instructions.map((compiled, index) => {
+        const transactionInstruction = populated.instructions[index]
+        if (!transactionInstruction) {
+          throw new Error("decompiled instruction is missing")
+        }
+        return {
+          programIdIndex: compiled.programIdIndex,
+          accounts: Array.from(compiled.accounts),
+          data: new Uint8Array(transactionInstruction.data),
+        }
+      })
+    const header: [number, number, number] = [
+      message.header.numRequiredSignatures,
+      message.header.numReadonlySignedAccounts,
+      message.header.numReadonlyUnsignedAccounts,
+    ]
+
+    return {
+      parsed: {
+        header,
+        accountKeys: message.accountKeys,
+        recentBlockhash: message.recentBlockhash,
+        instructions,
+      },
+      side: {
+        messageLength: messageBytes.length,
+        messageSha256,
+        header,
+        accountKeyCount: message.accountKeys.length,
+        accountKeyFingerprints: await Promise.all(
+          message.accountKeys.map(async (key, index) => ({
+            index,
+            sha256: await walletDiagSha256Hex(key.toBytes()),
+          }))
+        ),
+        recentBlockhash: message.recentBlockhash,
+        instructionCount: instructions.length,
+        instructions: await Promise.all(
+          instructions.map(async (instruction, index) => ({
+            index,
+            programId:
+              message.accountKeys[instruction.programIdIndex]?.toBase58() ??
+              "unknown",
+            accountCount: instruction.accounts.length,
+            dataLength: instruction.data.length,
+            dataSha256: await walletDiagSha256Hex(instruction.data),
+          }))
+        ),
+        parseError: null,
+      },
+    }
+  } catch {
+    return { parsed: null, side: unparseable }
+  }
+}
+
+function walletDiagInstructionsEqual(
+  a: WalletDiagCompiledInstruction[],
+  b: WalletDiagCompiledInstruction[]
+): boolean {
+  if (a.length !== b.length) return false
+  return a.every((instruction, index) => {
+    const other = b[index]
+    if (!other) return false
+    return (
+      instruction.programIdIndex === other.programIdIndex &&
+      instruction.accounts.length === other.accounts.length &&
+      instruction.accounts.every(
+        (account, accountIndex) => account === other.accounts[accountIndex]
+      ) &&
+      messageBytesEqual(instruction.data, other.data)
+    )
+  })
+}
+
+function walletDiagInstructionFingerprint(
+  instruction: WalletDiagCompiledInstruction
+): string {
+  return [
+    instruction.programIdIndex,
+    instruction.accounts.join(","),
+    walletDiagBytesToHex(instruction.data),
+  ].join(":")
+}
+
+/**
+ * Best-effort structural classification of the most specific difference.
+ * Returns "unknown" whenever the combination is not unambiguous — never a
+ * guess. Instruction-level differences take precedence because account-key
+ * changes are a derived consequence of them.
+ */
+function classifyWalletMessageMismatch(
+  prepared: WalletDiagParsedMessage,
+  returned: WalletDiagParsedMessage
+): string {
+  if (prepared.instructions.length !== returned.instructions.length) {
+    return "instruction_count"
+  }
+  if (
+    !walletDiagInstructionsEqual(prepared.instructions, returned.instructions)
+  ) {
+    const preparedFingerprints = prepared.instructions
+      .map(walletDiagInstructionFingerprint)
+      .sort()
+    const returnedFingerprints = returned.instructions
+      .map(walletDiagInstructionFingerprint)
+      .sort()
+    if (preparedFingerprints.join("|") === returnedFingerprints.join("|")) {
+      return "instruction_order"
+    }
+    const structureEqual = prepared.instructions.every((instruction, index) => {
+      const other = returned.instructions[index]
+      if (!other) return false
+      return (
+        instruction.programIdIndex === other.programIdIndex &&
+        instruction.accounts.length === other.accounts.length &&
+        instruction.accounts.every(
+          (account, accountIndex) => account === other.accounts[accountIndex]
+        )
+      )
+    })
+    return structureEqual ? "instruction_data" : "instruction_structure"
+  }
+
+  const accountKeysEqual =
+    prepared.accountKeys.length === returned.accountKeys.length &&
+    prepared.accountKeys.every((key, index) => {
+      const other = returned.accountKeys[index]
+      return other !== undefined && key.equals(other)
+    })
+  if (!accountKeysEqual) return "account_keys"
+
+  const headerEqual =
+    prepared.header[0] === returned.header[0] &&
+    prepared.header[1] === returned.header[1] &&
+    prepared.header[2] === returned.header[2]
+  if (!headerEqual) return "message_header"
+
+  if (prepared.recentBlockhash !== returned.recentBlockhash) {
+    return "recent_blockhash"
+  }
+
+  return "unknown"
+}
+
+/** Offset of the first differing byte; null only for identical inputs. */
+function firstDifferingMessageByteOffset(
+  a: Uint8Array,
+  b: Uint8Array
+): number | null {
+  const sharedLength = Math.min(a.length, b.length)
+  for (let index = 0; index < sharedLength; index++) {
+    if (a[index] !== b[index]) return index
+  }
+  return a.length === b.length ? null : sharedLength
+}
+
+/**
+ * Emits exactly ONE structured record. Called only when the guard is
+ * about to refuse AND the URL flag is present; every failure inside is
+ * contained so the refusal itself can never be affected.
+ */
+async function emitWalletMessageMismatchDiagnostics(
+  preparedMessage: Uint8Array,
+  returnedMessage: Uint8Array | null
+): Promise<void> {
+  let record: Record<string, unknown>
+  try {
+    const prepared = await parseWalletDiagMessage(preparedMessage)
+    if (!returnedMessage) {
+      record = {
+        event: "WALLET_MODIFIED_TRANSACTION",
+        cause: "returned_message_unreadable",
+        firstDifferingOffset: null,
+        prepared: prepared.side,
+        returned: null,
+      }
+    } else {
+      const returned = await parseWalletDiagMessage(returnedMessage)
+      record = {
+        event: "WALLET_MODIFIED_TRANSACTION",
+        cause:
+          prepared.parsed && returned.parsed
+            ? classifyWalletMessageMismatch(prepared.parsed, returned.parsed)
+            : "unknown",
+        firstDifferingOffset: firstDifferingMessageByteOffset(
+          preparedMessage,
+          returnedMessage
+        ),
+        prepared: prepared.side,
+        returned: returned.side,
+      }
+    }
+  } catch {
+    record = {
+      event: "WALLET_MODIFIED_TRANSACTION",
+      diagnostics: "collection_failed",
+    }
+  }
+  try {
+    console.warn(record)
+  } catch {
+    // Diagnostics must never change the refusal.
+  }
+}
+
+/**
  * Signs the canonical payment WITHOUT sending it.
  *
  * Returns the transaction signature (computed from the signed
@@ -611,6 +925,12 @@ export async function signSolanaUSDCPayment({
    */
   const returnedMessage = readReturnedMessageBytes(signed)
   if (!returnedMessage || !messageBytesEqual(preparedMessage, returnedMessage)) {
+    if (isWalletMessageDiagEnabled()) {
+      await emitWalletMessageMismatchDiagnostics(
+        preparedMessage,
+        returnedMessage
+      )
+    }
     throw new WalletModifiedTransactionError()
   }
 
