@@ -85,6 +85,19 @@ import {
 
 /* ================= SHARED GATE COPY ================= */
 
+/**
+ * The PERMANENT explanation shown under the primary action on the pristine
+ * Home (`ready`).
+ *
+ * It states the FIRST step the button performs — an entitlement check — so
+ * the first page never reads as if a previous payment was started or is
+ * awaiting confirmation. The automatic Stage B.1 recovery is untouched: it
+ * still runs on its own, and its transient "previous payment attempt" copy
+ * remains on the $1 step (`needs-payment`), where that fact is real.
+ */
+const GATE_READY_HINT =
+  "First, we'll check whether you already have the right to create a capsule.";
+
 // Short, non-technical error text for the inline status line. The raw
 // controller error code stays in state (support/debug) and is never
 // rendered. Same contract the inline /create gate used (PATCH-2K-B).
@@ -1367,8 +1380,15 @@ export default function CreateAccessGate() {
           servicePaymentRuntime.error ?? servicePaymentRuntime.verificationError
         );
       default:
-        // ready — the recovery status, or plain Create Capsule.
-        return attemptCheck;
+        /**
+         * ready — the pristine Home. The PERMANENT first-step hint is shown
+         * instead of the former dynamic "previous payment attempt" copy: the
+         * first page must never read as if a payment was started or is
+         * awaiting confirmation. Nothing about the recovery itself changes —
+         * it still runs on its own; it simply no longer prints on this
+         * surface (the $1 step keeps the real attempt status).
+         */
+        return GATE_READY_HINT;
     }
   })();
 

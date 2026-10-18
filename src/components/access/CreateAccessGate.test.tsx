@@ -1688,13 +1688,22 @@ describe("Home Access Gate", () => {
       screen.queryByRole("button", { name: "Check again (no payment)" })
     ).toBeNull();
 
-    // With NO click at all, the check ran and reported the proven release.
+    // With NO click at all, the check ran and the PROVEN release cleared the
+    // saved pointer.
     await waitFor(() => {
-      expect(screen.getByRole("status").textContent).toContain(
-        "window expired and nothing was sent"
-      );
+      expect(readPendingPaymentAttempt()).toBeNull();
     });
 
+    // The first page carries ONLY the permanent first-step hint — the
+    // previous-attempt copy is never surfaced under CREATE CAPSULE.
+    expect(screen.getByRole("status").textContent).toContain(
+      "already have the right to create a capsule"
+    );
+    expect(screen.queryByText(/previous payment attempt/i)).toBeNull();
+    expect(screen.queryByText(/window expired/i)).toBeNull();
+
+    // Read-only reconciliation only: no wallet request of any kind.
+    expect(fetchCallsTo("/api/solana/rpc").length).toBeGreaterThan(0);
     expect(signMessageMock).not.toHaveBeenCalled();
     expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
     expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
@@ -1743,17 +1752,27 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    await waitFor(() => {
-      expect(screen.getByRole("status").textContent).toContain(
-        "previous payment is confirmed"
-      );
-    });
+    // The automatic read-only re-check of the SAME transaction runs with no
+    // click; the verifier CONFIRMS it, but the $1 step has not been entered
+    // with the paying wallet yet, so nothing is completed from here.
+    await waitFor(
+      () => expect(fetchCallsTo("/api/service-payment/verify")).toHaveLength(1),
+      { timeout: 5000 }
+    );
+
+    // The first page keeps the permanent first-step hint: the previous
+    // payment is never announced under CREATE CAPSULE.
+    expect(screen.getByRole("status").textContent).toContain(
+      "already have the right to create a capsule"
+    );
+    expect(screen.queryByText(/previous payment/i)).toBeNull();
 
     // Nothing new was sent; the single saved attempt is preserved for the
     // automatic completion at the $1 step.
     expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
     expect(fetchCallsTo("/api/solana/broadcast")).toHaveLength(0);
     expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
     expect(readPendingPaymentAttempt()?.transactionId).not.toBeNull();
   });
 
@@ -2571,6 +2590,37 @@ describe("Home Access Gate", () => {
     expect(screen.getByTestId("admission").textContent).toBe(
       `${WALLET_ACCOUNT}|${CREATOR_CREDIT_ID}`
     );
+  });
+
+  /**
+   * The FIRST page carries a PERMANENT explanation of the step the button
+   * performs. It must never read as if a previous payment was started or is
+   * awaiting confirmation — the automatic recovery's "previous attempt" copy
+   * belongs to the $1 step, not to the pristine Home.
+   */
+  it("B1.15 — the pristine Home shows the permanent FIRST-STEP hint and never the previous-attempt copy", async () => {
+    setPhantom(true);
+    connectWallet();
+
+    render(tree());
+
+    expect(screen.getByRole("status").textContent).toBe(
+      "First, we'll check whether you already have the right to create a capsule."
+    );
+    // No claim about a previous payment anywhere on the first page.
+    expect(
+      screen.queryByText(
+        /previous payment attempt|previous payment is confirmed|window expired/i
+      )
+    ).toBeNull();
+
+    // The hint promises a CHECK: nothing ran before the creator asks for it.
+    expect(fetchCallsTo("/api/creator/credit-status")).toHaveLength(0);
+    expect(signMessageMock).not.toHaveBeenCalled();
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("create-route")).toBeNull();
+    // The primary action itself is unchanged.
+    expect(screen.getByRole("button", { name: GATE_BUTTON })).toBeTruthy();
   });
 });
 
