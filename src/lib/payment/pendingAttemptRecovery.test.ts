@@ -534,3 +534,80 @@ describe("pending-attempt reconciliation — bounded transient retries", () => {
     expect(readPendingPaymentAttempt()?.transactionId).toBe(TX);
   });
 });
+
+describe("pending-attempt reconciliation — the DEFAULT proxy transport on the wire", () => {
+  /**
+   * The injected-transport tests above cannot catch a mistyped Solana
+   * PARAMETER: a real RPC rejects `getSignatureStatuses` without the
+   * exact field `searchTransactionHistory` ("Invalid params: missing
+   * field `searchTransactionHistory`"), the proxy relays that as HTTP
+   * 502, and the ABSENCE proof can then never complete — the pointer is
+   * kept forever and the gate keeps showing the previous-attempt copy.
+   * These assertions capture the REAL transport's JSON-RPC envelopes.
+   */
+  it("asks getSignatureStatuses for the RECORDED transaction with the exact Solana field name", async () => {
+    seedPendingRecord({ lastValidBlockHeight: EXPIRED_HEIGHT });
+
+    type CapturedRpc = {
+      url: string;
+      httpMethod: string;
+      rpcMethod: unknown;
+      id: unknown;
+      params: unknown;
+    };
+    const captured: CapturedRpc[] = [];
+
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "null")) as {
+        id?: unknown;
+        method?: unknown;
+        params?: unknown;
+      };
+      captured.push({
+        url: String(url),
+        httpMethod: String(init?.method),
+        rpcMethod: body.method,
+        id: body.id,
+        params: body.params,
+      });
+      const result =
+        body.method === "getBlockHeight"
+          ? EXPIRED_HEIGHT + PENDING_ATTEMPT_RECONCILE_MARGIN_BLOCKS + 1
+          : body.method === "getSignatureStatuses"
+            ? SILENT_HISTORY
+            : null; // getTransaction → absent
+      return {
+        ok: true,
+        json: async () => ({ jsonrpc: "2.0", id: body.id, result }),
+      };
+    }) as unknown as typeof fetch;
+
+    const outcome = await reconcileStalePendingPaymentAttempt({ fetchImpl });
+
+    // The whole release path ran on the REAL transport.
+    expect(outcome.status).toBe("released");
+    expect(readPendingPaymentAttempt()).toBeNull();
+
+    expect(captured.map((entry) => entry.rpcMethod)).toEqual([
+      "getBlockHeight",
+      "getSignatureStatuses",
+      "getTransaction",
+    ]);
+    expect(captured.every((entry) => entry.url === "/api/solana/rpc")).toBe(
+      true
+    );
+    expect(captured.every((entry) => entry.httpMethod === "POST")).toBe(true);
+    // The same envelope id production showed on the failing lookup.
+    expect(captured[1]!.id).toBe("aeterna-pending-recovery-2");
+
+    // The signature lookup: the recorded transaction, history search ON,
+    // and EXACTLY the options object the Solana RPC accepts.
+    expect(captured[1]!.params).toEqual([
+      [TX],
+      { searchTransactionHistory: true },
+    ]);
+
+    // The mistyped field name must not appear anywhere on the wire.
+    expect(JSON.stringify(captured)).not.toContain("searchHistory");
+  });
+});

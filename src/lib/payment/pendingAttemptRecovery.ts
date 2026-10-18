@@ -386,7 +386,7 @@ export async function reconcileStalePendingPaymentAttempt(
   const statusRead = await readWithTransientRetry(
     transport,
     "getSignatureStatuses",
-    [[record.transactionId], { searchHistory: true }],
+    [[record.transactionId], { searchTransactionHistory: true }],
     maxReadAttempts,
     retryDelayMs
   );

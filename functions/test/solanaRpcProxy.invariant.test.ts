@@ -181,7 +181,7 @@ describe("/api/solana/rpc — read-only JSON-RPC transport", () => {
 
     const params = [
       ["5YvEKgAAexampleSignatureStringForHistorySearch11"],
-      { searchHistory: true },
+      { searchTransactionHistory: true },
     ];
     const response = await onRequestPost(
       contextFor({
