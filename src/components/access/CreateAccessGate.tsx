@@ -175,9 +175,21 @@ function describeGateError(raw: string | null): string {
    */
   if (
     code.includes("INVALID_INSTRUCTION_COUNT") ||
-    code.includes("UNEXPECTED_INSTRUCTION_COUNT")
+    code.includes("UNEXPECTED_INSTRUCTION_COUNT") ||
+    code.includes("UNEXPECTED_PRIORITY_FEE_INSTRUCTION")
   ) {
     return "Your wallet's transaction was rejected by our server before it was submitted — the transaction format did not match what this payment expects. If a payment is still being checked, wait for that result before paying again.";
+  }
+  /**
+   * SERVER-SIDE PRIORITY-FEE POLICY REFUSAL.
+   *
+   * The wallet's own fee instructions asked for more SOL than the
+   * payment's bounded policy allows; the server refused the signed
+   * transaction BEFORE binding anything and BEFORE calling
+   * `sendTransaction` (a proven pre-send refusal — nothing was sent).
+   */
+  if (code.includes("PRIORITY_FEE_TOO_HIGH")) {
+    return "The network fee your wallet added is above the limit this payment allows, so nothing was sent. Lower the priority fee in your wallet settings and try again.";
   }
   /**
    * WALLET-SIDE MESSAGE-IDENTITY REFUSAL.

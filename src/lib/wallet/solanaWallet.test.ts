@@ -553,10 +553,14 @@ describe("sendSolanaUSDCPayment — settlement ATA provisioning", () => {
 
 /* ================= WALLET MESSAGE-IDENTITY GUARD =================
  *
- * `signSolanaUSDCPayment` must accept ONLY the exact message it prepared
- * for the wallet: the signature checks prove that the wallet signed the
- * message it RETURNED, but not that the returned message is the SAME one.
- * A wallet can force a different message (added/removed instructions, an
+ * `signSolanaUSDCPayment` must accept ONLY the message it prepared for
+ * the wallet, with ONE structural exception: canonical, fee-only
+ * priority-fee instructions the wallet added on the ComputeBudget
+ * program (exactly what Phantom does automatically, see the
+ * "wallet-added priority fees" block below). The signature checks prove
+ * that the wallet signed the message it RETURNED, but not that the
+ * returned message is the SAME one. A wallet can force a different
+ * message (added/removed instructions, changed accounts or amounts, an
  * adjusted fee, another blockhash) and sign it correctly.
  *
  * Every scenario below runs the REAL serialization path — the builder's
@@ -640,7 +644,7 @@ describe("signSolanaUSDCPayment — wallet message-identity guard", () => {
     expect(result.signature.length).toBeGreaterThan(0);
   });
 
-  it("B: extra instructions (5 total, validly signed) are refused with WALLET_MODIFIED_TRANSACTION", async () => {
+  it("B: MORE compute-budget instructions than the sanctioned priority-fee pair (3) are refused with WALLET_MODIFIED_TRANSACTION", async () => {
     const web3 = await import("@solana/web3.js");
     installSerializableFetch();
 
@@ -653,9 +657,12 @@ describe("signSolanaUSDCPayment — wallet message-identity guard", () => {
         publicKey: payer.publicKey.toBase58(),
         signTransaction: async (transaction: unknown) => {
           const original = transaction as WalletTx;
-          // A DIFFERENT message: the prepared instructions plus three
-          // program-level ones a wallet could add — signed with the SAME
-          // fee-payer key, so the signature is genuinely valid over it.
+          // A DIFFERENT message: the prepared instructions plus THREE
+          // ComputeBudget instructions, signed with the SAME fee-payer
+          // key so the signature is genuinely valid over it. The
+          // documented wallet behavior is at most the fee PAIR (a
+          // compute-unit limit and a price); a third fee instruction is
+          // beyond it and must still be refused.
           const modified = new web3.Transaction().add(
             web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
             web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 501 }),
@@ -745,6 +752,527 @@ describe("signSolanaUSDCPayment — wallet message-identity guard", () => {
     expect(urls.some((url) => url.includes("/api/solana/broadcast"))).toBe(
       false
     );
+  });
+});
+
+/**
+ * WALLET-ADDED PRIORITY FEES (Phantom)
+ *
+ * Phantom automatically inserts its priority-fee pair — a ComputeBudget
+ * `setComputeUnitLimit` and `setComputeUnitPrice` — at index 0 of a
+ * legacy dApp transaction that carries no signatures and no priority-fee
+ * instructions of its own, then signs THAT message
+ * (docs.phantom.com/developer-powertools/solana-priority-fees).
+ *
+ * The message-identity guard ACCEPTS exactly that documented, fee-only
+ * addition — the injected instructions have ZERO account metas, and every
+ * prepared instruction must still match byte-for-byte — and still refuses
+ * anything else.
+ */
+describe("signSolanaUSDCPayment — wallet-added priority fees (Phantom)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00Z"));
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const VALID_BLOCKHASH = "11111111111111111111111111111111";
+  const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111";
+
+  type WalletTx = import("@solana/web3.js").Transaction;
+
+  function installSerializableFetch() {
+    return installFetchMock(
+      buildFetchImplementation({
+        destinationAtaExists: false,
+        blockhash: VALID_BLOCKHASH,
+      })
+    );
+  }
+
+  /**
+   * The documented Phantom shape:
+   * [ComputeBudget limit, ComputeBudget price, ...dApp instructions] —
+   * the fee-only pair is inserted AT INDEX 0 and the resulting message is
+   * what gets signed.
+   */
+  function returnPhantomSigned(
+    web3: typeof import("@solana/web3.js"),
+    transaction: unknown,
+    payer: import("@solana/web3.js").Keypair,
+    options: {
+      includeLimit?: boolean;
+      includePrice?: boolean;
+      limitUnits?: number;
+      priceMicroLamports?: number;
+    } = {}
+  ): WalletTx {
+    const original = transaction as WalletTx;
+    const injected = new web3.Transaction();
+    if (options.includeLimit ?? true) {
+      injected.add(
+        web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: options.limitUnits ?? 200_000,
+        })
+      );
+    }
+    if (options.includePrice ?? true) {
+      injected.add(
+        web3.ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: options.priceMicroLamports ?? 5_000,
+        })
+      );
+    }
+    injected.add(...original.instructions);
+    injected.feePayer = original.feePayer!;
+    injected.recentBlockhash = original.recentBlockhash!;
+    injected.sign(payer);
+    return web3.Transaction.from(injected.serialize());
+  }
+
+  function decodeBroadcast(
+    web3: typeof import("@solana/web3.js"),
+    result: { signedTransactionBase64: string }
+  ): WalletTx {
+    return web3.Transaction.from(
+      Uint8Array.from(Buffer.from(result.signedTransactionBase64, "base64"))
+    );
+  }
+
+  it("P1: the documented fee pair at index 0 is accepted and every payment meta is unchanged", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    let preparedInstructionMetas: string[][] = [];
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) => {
+        const original = transaction as WalletTx;
+        preparedInstructionMetas = original.instructions.map((instruction) =>
+          instruction.keys.map((key) => key.pubkey.toBase58())
+        );
+        return returnPhantomSigned(web3, transaction, payer);
+      },
+    });
+
+    const broadcast = decodeBroadcast(web3, result);
+    // The wallet's fee-only pair, then the UNCHANGED payment.
+    expect(broadcast.instructions).toHaveLength(4);
+    expect(broadcast.instructions[0]!.programId.toBase58()).toBe(
+      COMPUTE_BUDGET_PROGRAM
+    );
+    expect(broadcast.instructions[1]!.programId.toBase58()).toBe(
+      COMPUTE_BUDGET_PROGRAM
+    );
+    expect(broadcast.instructions[2]!.programId.toBase58()).toBe(
+      ASSOCIATED_TOKEN_PROGRAM
+    );
+    expect(broadcast.instructions[3]!.programId.toBase58()).toBe(TOKEN_PROGRAM);
+    // Every account meta of both payment instructions is EXACTLY the one
+    // AETERNA prepared — same keys, same order.
+    expect(
+      broadcast.instructions
+        .slice(2)
+        .map((instruction) =>
+          instruction.keys.map((key) => key.pubkey.toBase58())
+        )
+    ).toEqual(preparedInstructionMetas);
+    expect(
+      decodeTransferAmount(
+        broadcast.instructions[3] as unknown as InstructionView
+      )
+    ).toBe(1_000_000n);
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("P2: a wallet that adds only the compute-unit price is accepted", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) =>
+        returnPhantomSigned(web3, transaction, payer, { includeLimit: false }),
+    });
+
+    const broadcast = decodeBroadcast(web3, result);
+    expect(broadcast.instructions).toHaveLength(3);
+    expect(broadcast.instructions[0]!.programId.toBase58()).toBe(
+      COMPUTE_BUDGET_PROGRAM
+    );
+    expect(broadcast.instructions[1]!.programId.toBase58()).toBe(
+      ASSOCIATED_TOKEN_PROGRAM
+    );
+    expect(broadcast.instructions[2]!.programId.toBase58()).toBe(TOKEN_PROGRAM);
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("P3: fee instructions APPENDED after the payment are accepted too (position-independent)", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) => {
+        const original = transaction as WalletTx;
+        const parsed = web3.Transaction.from(
+          original.serialize({
+            requireAllSignatures: false,
+            verifySignatures: false,
+          })
+        );
+        parsed.add(
+          web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 })
+        );
+        parsed.partialSign(payer);
+        return web3.Transaction.from(parsed.serialize());
+      },
+    });
+
+    const broadcast = decodeBroadcast(web3, result);
+    expect(broadcast.instructions).toHaveLength(3);
+    expect(broadcast.instructions[2]!.programId.toBase58()).toBe(
+      COMPUTE_BUDGET_PROGRAM
+    );
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  /**
+   * A refusal harness for a wallet that injects a DAMAGED/foreign
+   * instruction in front of the prepared payment, signs the result with
+   * the genuine fee-payer key (so the signature is valid) and returns it.
+   */
+  async function expectRefusalWithInjectedInstruction(
+    buildInjected: (
+      web3: typeof import("@solana/web3.js"),
+      original: WalletTx,
+      payer: import("@solana/web3.js").Keypair
+    ) => WalletTx
+  ) {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    let caught: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) =>
+          buildInjected(web3, transaction as WalletTx, payer),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(WalletModifiedTransactionError);
+    expect((caught as WalletModifiedTransactionError).code).toBe(
+      "WALLET_MODIFIED_TRANSACTION"
+    );
+  }
+
+  it("P4: a fee instruction that carries account metas is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const injected = new web3.Transaction().add(
+        new web3.TransactionInstruction({
+          programId: new web3.PublicKey(COMPUTE_BUDGET_PROGRAM),
+          keys: [
+            { pubkey: payer.publicKey, isSigner: false, isWritable: false },
+          ],
+          data: Buffer.from([2, 0x40, 0x0d, 0x03, 0x00]),
+        }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P5: an unknown ComputeBudget tag is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const injected = new web3.Transaction().add(
+        new web3.TransactionInstruction({
+          programId: new web3.PublicKey(COMPUTE_BUDGET_PROGRAM),
+          keys: [],
+          data: Buffer.from([9, 1, 2, 3, 4]),
+        }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P6: a compute-unit limit above the protocol maximum is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const data = Buffer.alloc(5);
+      data[0] = 2;
+      // 1_400_001 = 0x00155CC1 little-endian: one unit above the cap.
+      data[1] = 0xc1;
+      data[2] = 0x5c;
+      data[3] = 0x15;
+      data[4] = 0x00;
+      const injected = new web3.Transaction().add(
+        new web3.TransactionInstruction({
+          programId: new web3.PublicKey(COMPUTE_BUDGET_PROGRAM),
+          keys: [],
+          data,
+        }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P7: the fee allowance cannot smuggle a changed payment amount", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const instructions = original.instructions.map((instruction) => {
+        if (instruction.programId.toBase58() !== TOKEN_PROGRAM) {
+          return instruction;
+        }
+        const data = Buffer.from(instruction.data);
+        data.writeBigUInt64LE(999_999n, 1);
+        return new web3.TransactionInstruction({
+          programId: instruction.programId,
+          keys: instruction.keys,
+          data,
+        });
+      });
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+        ...instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P8: a foreign extra instruction next to the fee pair is still refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+        web3.SystemProgram.transfer({
+          fromPubkey: payer.publicKey,
+          toPubkey: web3.Keypair.generate().publicKey,
+          lamports: 1,
+        }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P9: the fee allowance cannot smuggle a different blockhash", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = "11111111111111111111111111111112";
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  /**
+   * PRIORITY-FEE POLICY (see MAX_WALLET_PRIORITY_FEE_LAMPORTS in
+   * `solanaWallet.ts`): the accepted worst case is
+   * `ceil(units × price / 1_000_000)` lamports, where `units` is the
+   * wallet's own compute-unit limit or — when it sets none — the protocol
+   * MAXIMUM of 1 400 000 CU. A missing limit must NOT be bounded by
+   * 200 000 CU: the runtime charges the limit the message REQUESTS, and
+   * without a `setComputeUnitLimit` instruction that is the per-instruction
+   * default — 400 000 CU for this payment (ATA-create + transfer) — so the
+   * guard deliberately bounds the missing-limit case by the protocol
+   * maximum. The boundary values below pin both ends EXACTLY, and P18 pins
+   * the price-only injection the flat-200 000-CU bound wrongly allowed.
+   */
+  it("P10: a limit/price pair whose worst-case priority fee is under the policy cap is accepted", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) =>
+        returnPhantomSigned(web3, transaction, payer, {
+          limitUnits: 1_400_000,
+          priceMicroLamports: 714_285,
+        }),
+    });
+
+    // ceil(1_400_000 × 714_285 / 1_000_000) = 999_999 lamports ≤ the cap.
+    const broadcast = decodeBroadcast(web3, result);
+    expect(broadcast.instructions).toHaveLength(4);
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("P11: a price-only injection whose worst-case fee exactly equals the cap is accepted", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    // With no limit instruction the guard bounds the fee by the protocol
+    // MAXIMUM of 1 400 000 CU (the payment itself defaults to 400 000 CU
+    // because it also carries the ATA-create instruction):
+    // ceil(1_400_000 × 714_285 / 1_000_000) = 999_999 lamports ≤ the cap.
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) =>
+        returnPhantomSigned(web3, transaction, payer, {
+          includeLimit: false,
+          priceMicroLamports: 714_285,
+        }),
+    });
+
+    const broadcast = decodeBroadcast(web3, result);
+    expect(broadcast.instructions).toHaveLength(3);
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("P12: a price-only injection one micro-lamport above the policy cap is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 714_286,
+        }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P13: a limit/price pair whose worst-case priority fee exceeds the cap is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+        web3.ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 714_286,
+        }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P14: an astronomically high compute-unit price (u64 max) is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const data = Buffer.alloc(9);
+      data[0] = 3;
+      data.writeBigUInt64LE(18_446_744_073_709_551_615n, 1);
+      const injected = new web3.Transaction().add(
+        new web3.TransactionInstruction({
+          programId: new web3.PublicKey(COMPUTE_BUDGET_PROGRAM),
+          keys: [],
+          data,
+        }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P15: a duplicated compute-unit limit is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P16: a duplicated compute-unit price is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+        web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 2 }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P17: a limit-only injection (no price) is accepted — no SOL priority fee is requested", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) =>
+        returnPhantomSigned(web3, transaction, payer, {
+          includePrice: false,
+        }),
+    });
+
+    const broadcast = decodeBroadcast(web3, result);
+    expect(broadcast.instructions).toHaveLength(3);
+    expect(broadcast.instructions[0]!.programId.toBase58()).toBe(
+      COMPUTE_BUDGET_PROGRAM
+    );
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("P18: the price-only injection the old flat-200 000-CU bound wrongly allowed is refused", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      /**
+       * 5 000 000 µL/CU was accepted while a missing limit was mis-bounded
+       * as 200 000 CU (ceil(200 000 × 5 000 000 / 1_000_000) = 1 000 000
+       * lamports = the cap). This payment carries TWO payable instructions
+       * (ATA-create + transfer), so the true missing-limit default is
+       * 400 000 CU and the real charge would be 2 000 000 lamports —
+       * double the 0.001 SOL policy. The protocol-maximum bound refuses it.
+       */
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 5_000_000,
+        }),
+        ...original.instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
   });
 });
 
@@ -952,7 +1480,11 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
     enableDiagnostics();
     const payer = web3.Keypair.generate();
 
-    // (a) One extra instruction (ComputeBudget) in front of the originals.
+    // (a) One extra NON-priority-fee instruction (a System transfer) in
+    // front of the originals. A canonical ComputeBudget fee pair would be
+    // a legitimate Phantom enhancement, so a genuinely foreign extra
+    // instruction must be used to exercise the refusal classification.
+    const extraDestination = web3.Keypair.generate().publicKey;
     const fetchA = installSerializableFetch();
     let thrownA: unknown;
     try {
@@ -961,7 +1493,11 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
         signTransaction: async (transaction: unknown) => {
           const original = transaction as WalletTx;
           const modified = new web3.Transaction().add(
-            web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+            web3.SystemProgram.transfer({
+              fromPubkey: payer.publicKey,
+              toPubkey: extraDestination,
+              lamports: 1,
+            }),
             ...original.instructions
           );
           modified.feePayer = original.feePayer!;
@@ -982,7 +1518,7 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
       recordA.prepared!.instructionCount! + 1
     );
     expect(recordA.returned!.instructions![0]!.programId).toBe(
-      "ComputeBudget111111111111111111111111111111"
+      "11111111111111111111111111111111"
     );
     expect(recordA.returned!.accountKeyFingerprints).not.toEqual(
       recordA.prepared!.accountKeyFingerprints

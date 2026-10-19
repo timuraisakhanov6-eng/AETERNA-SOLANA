@@ -492,6 +492,15 @@ async function buildServicePaymentTransaction({
  * signed bytes can reach the controller or `/api/solana/broadcast`, and
  * no pending attempt is recorded for it.
  *
+ * ONE exception exists, enforced structurally rather than textually (see
+ * `walletMessageIsAcceptable`): a wallet may add canonical, fee-only
+ * priority-fee instructions on the ComputeBudget program — Phantom does
+ * this automatically for every unsigned dApp transaction — while EVERY
+ * payment instruction, resolved account, account role and the blockhash
+ * must still match the prepared message exactly, and the worst-case
+ * priority fee those instructions can request stays within the payment's
+ * bounded SOL policy (0.001 SOL, see `MAX_WALLET_PRIORITY_FEE_LAMPORTS`).
+ *
  * `code` is a stable, structured marker for callers; classification must
  * never rely on matching the error text.
  */
@@ -533,6 +542,299 @@ function readReturnedMessageBytes(transaction: unknown): Uint8Array | null {
     return message instanceof Uint8Array ? message : null
   } catch {
     return null
+  }
+}
+
+/**
+ * Canonical ComputeBudget program. Instructions on it configure FEES and
+ * COMPUTE LIMITS only: they cannot move tokens, touch a token account or
+ * change which accounts any other instruction reads.
+ */
+const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111"
+
+/** ComputeBudget tag of `setComputeUnitLimit` (tag byte + u32 LE). */
+const COMPUTE_BUDGET_SET_UNIT_LIMIT = 2
+/** ComputeBudget tag of `setComputeUnitPrice` (tag byte + u64 LE). */
+const COMPUTE_BUDGET_SET_UNIT_PRICE = 3
+/** Protocol maximum compute-unit limit; anything higher is not canonical. */
+const MAX_COMPUTE_UNIT_LIMIT = 1_400_000
+/**
+ * Phantom inserts exactly its priority-fee pair (a compute-unit limit and
+ * a compute-unit price). Anything BEYOND that pair — more than two fee
+ * instructions, or the same fee tag twice — is not the documented
+ * behavior and is refused.
+ */
+const MAX_WALLET_PRIORITY_FEE_INSTRUCTIONS = 2
+/**
+ * PRIORITY-FEE POLICY — the absolute worst-case priority fee (in
+ * lamports) that the wallet's own fee instructions may request:
+ * 1_000_000 lamports = 0.001 SOL.
+ *
+ * A fee injection bounds its cost only through the product
+ * `compute_unit_limit × compute_unit_price`: the protocol charges
+ * `ceil(compute_unit_limit × compute_unit_price / 1_000_000)` lamports on
+ * the limit the message REQUESTS — the wallet's own limit when it sets
+ * one, otherwise the protocol's per-instruction default (up to 200 000 CU
+ * per instruction, clamped by the runtime to `MAX_COMPUTE_UNIT_LIMIT`).
+ * That default is NOT a flat 200 000 CU: this payment carries one or two
+ * payable instructions (the USDC transfer, plus the ATA-create when the
+ * settlement token account is absent), so its default is 200 000 or
+ * 400 000 CU. A missing wallet limit is therefore bounded here by the
+ * protocol MAXIMUM (1 400 000 CU) rather than by the default formula, so
+ * the ceiling holds for every instruction mix the runtime could charge
+ * and never depends on runtime accounting details. Without a ceiling, a
+ * wallet could name an arbitrarily large price and turn a $1 payment into
+ * an unbounded SOL loss. The policy caps the worst case the message can
+ * request; it is evaluated with ceiling integer arithmetic so the
+ * accepted maximum can never round up past this constant on-chain.
+ *
+ * This is an acceptance CEILING, not a target: Phantom's automatic
+ * injections under normal network conditions sit orders of magnitude
+ * below it, and a wallet asking for more fails closed — the refusal
+ * happens before anything is broadcast and nothing is sent.
+ */
+const MAX_WALLET_PRIORITY_FEE_LAMPORTS = 1_000_000n
+
+/** Little-endian u32 read (bounds guaranteed by the caller). */
+function readU32LE(data: Uint8Array, offset: number): number {
+  return (
+    (data[offset]! |
+      (data[offset + 1]! << 8) |
+      (data[offset + 2]! << 16) |
+      (data[offset + 3]! << 24)) >>>
+    0
+  )
+}
+
+/** Little-endian u64 read (bounds guaranteed by the caller). */
+function readU64LE(data: Uint8Array, offset: number): bigint {
+  let value = 0n
+  for (let i = 7; i >= 0; i--) {
+    value = (value << 8n) | BigInt(data[offset + i]!)
+  }
+  return value
+}
+
+/**
+ * `true` only when the returned message is BYTE-IDENTICAL to the prepared
+ * one, or differs from it by nothing except canonical wallet-added
+ * priority-fee instructions on the ComputeBudget program.
+ *
+ * Rationale — documented wallet behavior, not a relaxation of the
+ * payment's identity: Phantom automatically inserts a compute-unit limit
+ * and a compute-unit price instruction into dApp transactions that carry
+ * no signatures and no priority-fee instructions of their own, and signs
+ * THAT message (docs.phantom.com/developer-powertools/solana-priority-fees).
+ * Both instructions are fee-only:
+ *
+ *   - they have ZERO account metas, so they cannot reference, let alone
+ *     move, any token account;
+ *   - only the two canonical fee tags are accepted (`setComputeUnitLimit`
+ *     with a protocol-valid limit, and `setComputeUnitPrice`), at most
+ *     ONE instruction of each, and the worst-case priority fee they can
+ *     request — `ceil(limit × price / 1_000_000)` lamports, using the
+ *     protocol MAXIMUM of 1 400 000 CU when the wallet sets no limit — may
+ *     not exceed `MAX_WALLET_PRIORITY_FEE_LAMPORTS` (0.001 SOL);
+ *   - every instruction AETERNA prepared must still match exactly —
+ *     same program, same RESOLVED account keys in the same order, same
+ *     data bytes — the fee payer must be unchanged, the blockhash must be
+ *     unchanged, the signer count must be unchanged, and every prepared
+ *     account key must keep its exact signer/writable role;
+ *   - the ONLY account key the wallet may append is the ComputeBudget
+ *     program itself, read-only and unsigned, and only when it actually
+ *     added such a fee instruction.
+ *
+ * Everything else — a single changed account, amount, mint, authority,
+ * destination, blockhash or instruction — still fails closed, and an
+ * unparseable message is never acceptable.
+ */
+async function walletMessageIsAcceptable(
+  preparedMessage: Uint8Array,
+  returnedMessage: Uint8Array
+): Promise<boolean> {
+  if (messageBytesEqual(preparedMessage, returnedMessage)) return true
+  try {
+    const { Message, PublicKey } = await import("@solana/web3.js")
+    const prepared = Message.from(preparedMessage)
+    const returned = Message.from(returnedMessage)
+
+    const preparedPayer = prepared.accountKeys[0]
+    const returnedPayer = returned.accountKeys[0]
+    if (
+      !preparedPayer ||
+      !returnedPayer ||
+      !preparedPayer.equals(returnedPayer)
+    ) {
+      return false
+    }
+    if (prepared.recentBlockhash !== returned.recentBlockhash) return false
+    if (
+      returned.header.numRequiredSignatures !==
+      prepared.header.numRequiredSignatures
+    ) {
+      return false
+    }
+
+    const computeBudget = new PublicKey(COMPUTE_BUDGET_PROGRAM)
+    const kept: Array<{
+      program: string
+      accounts: string[]
+      data: Uint8Array
+    }> = []
+    let priorityFeeInstructions = 0
+    let walletUnitLimit: number | null = null
+    let walletUnitPrice: bigint | null = null
+
+    for (const instruction of returned.compiledInstructions) {
+      const programKey = returned.accountKeys[instruction.programIdIndex]
+      if (!programKey) return false
+      if (programKey.equals(computeBudget)) {
+        const isCanonicalLimit =
+          instruction.data.length === 5 &&
+          instruction.data[0] === COMPUTE_BUDGET_SET_UNIT_LIMIT &&
+          readU32LE(instruction.data, 1) <= MAX_COMPUTE_UNIT_LIMIT
+        const isCanonicalPrice =
+          instruction.data.length === 9 &&
+          instruction.data[0] === COMPUTE_BUDGET_SET_UNIT_PRICE
+        if (
+          instruction.accountKeyIndexes.length !== 0 ||
+          (!isCanonicalLimit && !isCanonicalPrice)
+        ) {
+          return false
+        }
+        priorityFeeInstructions += 1
+        if (priorityFeeInstructions > MAX_WALLET_PRIORITY_FEE_INSTRUCTIONS) {
+          return false
+        }
+        /**
+         * At most ONE instruction per fee tag: the documented wallet
+         * shape is a single limit/price pair, and a duplicated tag would
+         * make the priority-fee policy ambiguous (which of the values
+         * would the network actually charge?).
+         */
+        if (isCanonicalLimit) {
+          if (walletUnitLimit !== null) return false
+          walletUnitLimit = readU32LE(instruction.data, 1)
+        } else {
+          if (walletUnitPrice !== null) return false
+          walletUnitPrice = readU64LE(instruction.data, 1)
+        }
+        continue
+      }
+      const accounts: string[] = []
+      for (const accountIndex of instruction.accountKeyIndexes) {
+        const accountKey = returned.accountKeys[accountIndex]
+        if (!accountKey) return false
+        accounts.push(accountKey.toBase58())
+      }
+      kept.push({
+        program: programKey.toBase58(),
+        accounts,
+        data: new Uint8Array(instruction.data),
+      })
+    }
+
+    /**
+     * PRIORITY-FEE POLICY — see `MAX_WALLET_PRIORITY_FEE_LAMPORTS`.
+     *
+     * The worst case the wallet's own instructions can request is
+     * `ceil(units × price / 1_000_000)` lamports, where `units` is the
+     * wallet's limit or — when it set none — the protocol MAXIMUM of
+     * 1 400 000 CU: a missing limit is charged against the protocol's
+     * per-instruction default (200 000 CU per payable instruction here,
+     * i.e. up to 400 000 CU), and bounding that case by the maximum keeps
+     * the cap independent of the default's accounting. Anything above the
+     * policy ceiling refuses the whole message: the fee exception is never
+     * a blank cheque for SOL.
+     */
+    if (priorityFeeInstructions > 0) {
+      const policyUnits =
+        walletUnitLimit ?? MAX_COMPUTE_UNIT_LIMIT
+      const policyPrice = walletUnitPrice ?? 0n
+      const worstCasePriorityFeeLamports =
+        (BigInt(policyUnits) * policyPrice + 999_999n) / 1_000_000n
+      if (worstCasePriorityFeeLamports > MAX_WALLET_PRIORITY_FEE_LAMPORTS) {
+        return false
+      }
+    }
+
+    const preparedInstructions = prepared.compiledInstructions
+    if (kept.length !== preparedInstructions.length) return false
+    /**
+     * The bytes may differ from the prepared ones ONLY because the wallet
+     * added its canonical fee instruction(s). Without at least one such
+     * instruction the message is refused even when it still resolves to
+     * the same payment — the exception exists for the documented wallet
+     * behavior, not as a general "semantically equal" allowance.
+     */
+    if (priorityFeeInstructions === 0) return false
+    for (let index = 0; index < kept.length; index++) {
+      const preparedInstruction = preparedInstructions[index]!
+      const preparedProgram =
+        prepared.accountKeys[preparedInstruction.programIdIndex]
+      if (
+        !preparedProgram ||
+        preparedProgram.toBase58() !== kept[index]!.program
+      ) {
+        return false
+      }
+      if (
+        preparedInstruction.accountKeyIndexes.length !==
+        kept[index]!.accounts.length
+      ) {
+        return false
+      }
+      for (
+        let account = 0;
+        account < preparedInstruction.accountKeyIndexes.length;
+        account++
+      ) {
+        const preparedAccount =
+          prepared.accountKeys[preparedInstruction.accountKeyIndexes[account]!]
+        if (
+          !preparedAccount ||
+          preparedAccount.toBase58() !== kept[index]!.accounts[account]
+        ) {
+          return false
+        }
+      }
+      if (
+        !messageBytesEqual(
+          new Uint8Array(preparedInstruction.data),
+          kept[index]!.data
+        )
+      ) {
+        return false
+      }
+    }
+
+    for (const [index, preparedKey] of prepared.accountKeys.entries()) {
+      const found = returned.accountKeys.findIndex((key) =>
+        key.equals(preparedKey)
+      )
+      if (found < 0) return false
+      if (returned.isAccountSigner(found) !== prepared.isAccountSigner(index)) {
+        return false
+      }
+      if (returned.isAccountWritable(found) !== prepared.isAccountWritable(index)) {
+        return false
+      }
+    }
+    for (const [index, returnedKey] of returned.accountKeys.entries()) {
+      const wasPrepared = prepared.accountKeys.some((key) =>
+        key.equals(returnedKey)
+      )
+      if (wasPrepared) continue
+      if (priorityFeeInstructions === 0) return false
+      if (!returnedKey.equals(computeBudget)) return false
+      if (returned.isAccountSigner(index) || returned.isAccountWritable(index)) {
+        return false
+      }
+    }
+
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -917,14 +1219,21 @@ export async function signSolanaUSDCPayment({
    *
    * The signature checks above only prove that the wallet signed the
    * message it RETURNED; they cannot see that the returned message is a
-   * different one. Only a full byte comparison of the prepared and the
-   * returned message can, so ANY difference — or a message that cannot
-   * be read at all — ends the payment path here with the typed
-   * `WALLET_MODIFIED_TRANSACTION` refusal. The signed bytes never reach
-   * the controller and never reach `/api/solana/broadcast`.
+   * different one. `walletMessageIsAcceptable` therefore accepts only
+   * the byte-identical prepared message, or one that differs solely by
+   * canonical wallet-added fee-only priority-fee instructions within the
+   * bounded SOL policy (the documented, deterministic Phantom behavior).
+   * ANY other difference —
+   * or a message that cannot be read at all — ends the payment path here
+   * with the typed `WALLET_MODIFIED_TRANSACTION` refusal. The signed
+   * bytes never reach the controller and never reach
+   * `/api/solana/broadcast`.
    */
   const returnedMessage = readReturnedMessageBytes(signed)
-  if (!returnedMessage || !messageBytesEqual(preparedMessage, returnedMessage)) {
+  const acceptable =
+    returnedMessage !== null &&
+    (await walletMessageIsAcceptable(preparedMessage, returnedMessage))
+  if (!acceptable) {
     if (isWalletMessageDiagEnabled()) {
       await emitWalletMessageMismatchDiagnostics(
         preparedMessage,

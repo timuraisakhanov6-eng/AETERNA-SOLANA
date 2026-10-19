@@ -26,6 +26,7 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  TransactionInstruction,
 } from "@solana/web3.js";
 import {
   createAssociatedTokenAccountInstruction,
@@ -754,7 +755,7 @@ describe("broadcast refusal classification (broadcastAttempted)", () => {
     return tx.serialize().toString("base64");
   }
 
-  /** A shape-level refusal: 3 instructions (parseable, above the canonical 2). */
+  /** A shape-level refusal: 3 NON-priority-fee instructions (parseable, above the canonical 2). */
   function threeInstructionTransaction() {
     const tx = new Transaction().add(
       createAssociatedTokenAccountInstruction(
@@ -772,7 +773,13 @@ describe("broadcast refusal classification (broadcastAttempted)", () => {
         [payer],
         TOKEN_PROGRAM_ID
       ),
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 500 })
+      // A THIRD payment-shape instruction (not a canonical ComputeBudget
+      // fee instruction — those are tolerated by design).
+      SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: Keypair.generate().publicKey,
+        lamports: 1,
+      })
     );
     tx.feePayer = payer.publicKey;
     tx.recentBlockhash = BLOCKHASH;
@@ -874,5 +881,514 @@ describe("broadcast refusal classification (broadcastAttempted)", () => {
     // ...and the signature stays bound, so a retry can only ever resume
     // THIS transaction instead of sending a second transfer.
     expect(await boundSignature(env)).toBe(signature);
+  });
+});
+
+/**
+ * WALLET-ADDED PRIORITY FEES (PHANTOM)
+ *
+ * Phantom automatically inserts its priority-fee pair — a
+ * `setComputeUnitLimit` and a `setComputeUnitPrice` on the ComputeBudget
+ * program, in that order, at index 0 — into a legacy dApp transaction
+ * that carries no signatures and no priority-fee instructions of its
+ * own, then signs the resulting message
+ * (docs.phantom.com/developer-powertools/solana-priority-fees).
+ *
+ * The endpoint therefore tolerates EXACTLY that fee-only pair — zero
+ * account metas, canonical payloads, at most two instructions — and
+ * nothing else. Every payment invariant is still validated unchanged
+ * from the compiled message, as the refusal cases below prove.
+ */
+describe("strict broadcast — wallet-added priority fees (Phantom)", () => {
+  const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111";
+
+  /**
+   * The canonical payment with Phantom's documented fee pair inserted
+   * BEFORE the payment instructions (exactly the shape Phantom signs),
+   * or with a damaged fee instruction for the refusal cases.
+   */
+  function signedWithPriorityFee(options: {
+    includeAtaCreate?: boolean;
+    includeLimit?: boolean;
+    includePrice?: boolean;
+    limitUnits?: number;
+    priceMicroLamports?: number;
+    duplicateFee?: "limit" | "price";
+    amount?: bigint;
+    destination?: PublicKey;
+    damaged?: "accounts" | "unknown-tag" | "oversized-limit" | "huge-price";
+  } = {}): { base64: string; signature: string } {
+    const destination = options.destination ?? destinationAta;
+    const tx = new Transaction();
+
+    if (options.damaged === "accounts") {
+      tx.add(
+        new TransactionInstruction({
+          programId: new PublicKey(COMPUTE_BUDGET_PROGRAM),
+          keys: [
+            { pubkey: payer.publicKey, isSigner: false, isWritable: false },
+          ],
+          data: Buffer.from([2, 0x40, 0x0d, 0x03, 0x00]),
+        })
+      );
+    } else if (options.damaged === "unknown-tag") {
+      tx.add(
+        new TransactionInstruction({
+          programId: new PublicKey(COMPUTE_BUDGET_PROGRAM),
+          keys: [],
+          data: Buffer.from([9, 1, 2, 3, 4]),
+        })
+      );
+    } else if (options.damaged === "oversized-limit") {
+      const data = Buffer.alloc(5);
+      data[0] = 2;
+      // 1_400_001 = 0x00155CC1 little-endian: one unit above the cap.
+      data[1] = 0xc1;
+      data[2] = 0x5c;
+      data[3] = 0x15;
+      data[4] = 0x00;
+      tx.add(
+        new TransactionInstruction({
+          programId: new PublicKey(COMPUTE_BUDGET_PROGRAM),
+          keys: [],
+          data,
+        })
+      );
+    } else if (options.damaged === "huge-price") {
+      const data = Buffer.alloc(9);
+      data[0] = 3;
+      // u64::MAX micro-lamports per compute unit — an absurd priority fee.
+      data.writeBigUInt64LE(18_446_744_073_709_551_615n, 1);
+      tx.add(
+        new TransactionInstruction({
+          programId: new PublicKey(COMPUTE_BUDGET_PROGRAM),
+          keys: [],
+          data,
+        })
+      );
+    } else if (options.duplicateFee === "limit") {
+      // TWO limits, no price: 4 instructions total — within the strict
+      // parser's bound, so the refusal must come from the fee-tag rule.
+      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }));
+    } else if (options.duplicateFee === "price") {
+      // TWO prices, no limit: same reasoning.
+      tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }));
+      tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 2 }));
+    } else {
+      if (options.includeLimit ?? true) {
+        tx.add(
+          ComputeBudgetProgram.setComputeUnitLimit({
+            units: options.limitUnits ?? 200_000,
+          })
+        );
+      }
+      if (options.includePrice ?? true) {
+        tx.add(
+          ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: options.priceMicroLamports ?? 5_000,
+          })
+        );
+      }
+    }
+
+    if (options.includeAtaCreate ?? true) {
+      tx.add(
+        createAssociatedTokenAccountInstruction(
+          payer.publicKey,
+          destination,
+          settlement,
+          mint,
+          TOKEN_PROGRAM_ID
+        )
+      );
+    }
+    tx.add(
+      createTransferInstruction(
+        sourceAta,
+        destination,
+        payer.publicKey,
+        options.amount ?? 1_000_000n,
+        [payer],
+        TOKEN_PROGRAM_ID
+      )
+    );
+    tx.feePayer = payer.publicKey;
+    tx.recentBlockhash = BLOCKHASH;
+    tx.sign(payer);
+    return {
+      base64: tx.serialize().toString("base64"),
+      signature: base58Encode(new Uint8Array(tx.signatures[0]!.signature)),
+    };
+  }
+
+  it("accepts the documented fee pair inserted before the payment (ATA-create + transfer)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64, signature } = signedWithPriorityFee();
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, unknown>)["signature"]).toBe(
+      signature
+    );
+    expect(rpcCalls.map(methodOf)).toEqual(["getGenesisHash", "sendTransaction"]);
+    // The RPC receives the SAME signed bytes that were validated — the
+    // wallet's fee pair included.
+    const rpcBody = rpcCalls[1]!.body as Record<string, unknown>;
+    const params = rpcBody["params"] as unknown[];
+    expect(params[0]).toBe(base64);
+  });
+
+  it("accepts the fee pair without the ATA-create instruction", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64 } = signedWithPriorityFee({ includeAtaCreate: false });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts a price-only injection (a wallet may add just the price)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64 } = signedWithPriorityFee({ includeLimit: false });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a priority-fee instruction that carries account metas", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: signedWithPriorityFee({ damaged: "accounts" }).base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_PRIORITY_FEE_INSTRUCTION");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("rejects an unknown ComputeBudget tag", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: signedWithPriorityFee({ damaged: "unknown-tag" })
+        .base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_PRIORITY_FEE_INSTRUCTION");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("rejects a compute-unit limit above the protocol maximum", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: signedWithPriorityFee({ damaged: "oversized-limit" })
+        .base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_PRIORITY_FEE_INSTRUCTION");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("rejects MORE than the sanctioned fee pair (3 compute-budget instructions)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const tx = new Transaction().add(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 500 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 2 }),
+      createTransferInstruction(
+        sourceAta,
+        destinationAta,
+        payer.publicKey,
+        1_000_000n,
+        [payer],
+        TOKEN_PROGRAM_ID
+      )
+    );
+    tx.feePayer = payer.publicKey;
+    tx.recentBlockhash = BLOCKHASH;
+    tx.sign(payer);
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: tx.serialize().toString("base64"),
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("still rejects a wrong amount even with the fee pair", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: signedWithPriorityFee({ amount: 999_999n }).base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_AMOUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("still rejects a foreign destination even with the fee pair", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: signedWithPriorityFee({
+        destination: getAssociatedTokenAddressSync(
+          mint,
+          Keypair.generate().publicKey,
+          false
+        ),
+      }).base64,
+    });
+
+    expect(res.status).toBe(400);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  /**
+   * PRIORITY-FEE POLICY (see MAX_WALLET_PRIORITY_FEE_LAMPORTS in
+   * `functions/api/solana/broadcast.ts`): the accepted worst case is
+   * `ceil(units × price / 1_000_000)` lamports, where `units` is the
+   * wallet's own compute-unit limit or — when it sets none — the protocol
+   * MAXIMUM of 1 400 000 CU. A missing limit must NOT be bounded by
+   * 200 000 CU: the runtime charges the limit the message REQUESTS, and
+   * without a `setComputeUnitLimit` instruction that is the per-instruction
+   * default — 400 000 CU for this payment (ATA-create + transfer). The
+   * boundary values below pin both ends EXACTLY, every refusal is
+   * classified as a proven pre-send one, and the regression case pins the
+   * price-only injection the flat-200 000-CU bound wrongly allowed.
+   */
+  it("accepts a limit/price pair whose worst-case priority fee is under the policy cap", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    // ceil(1_400_000 × 714_285 / 1_000_000) = 999_999 lamports ≤ the cap.
+    const { base64 } = signedWithPriorityFee({
+      limitUnits: 1_400_000,
+      priceMicroLamports: 714_285,
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts a price-only injection whose worst-case fee is exactly the policy cap", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    // With no limit instruction the guard bounds the fee by the protocol
+    // MAXIMUM of 1 400 000 CU (the payment itself defaults to 400 000 CU:
+    // ATA-create + transfer):
+    // ceil(1_400_000 × 714_285 / 1_000_000) = 999_999 lamports ≤ the cap.
+    const { base64 } = signedWithPriorityFee({
+      includeLimit: false,
+      priceMicroLamports: 714_285,
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts a limit-only injection (no price ⇒ no SOL priority fee)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64 } = signedWithPriorityFee({ includePrice: false });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("refuses a price-only injection one micro-lamport above the policy cap (proven pre-send)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    // ceil(1_400_000 × 714_286 / 1_000_000) = 1_000_001 lamports > the cap.
+    const { base64 } = signedWithPriorityFee({
+      includeLimit: false,
+      priceMicroLamports: 714_286,
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("PRIORITY_FEE_TOO_HIGH");
+    expect(data["broadcastAttempted"]).toBe(false);
+    // The refusal happened BEFORE any RPC call and BEFORE any binding:
+    // the attempt is still payable with a correctly-priced transaction.
+    expect(rpcCalls).toHaveLength(0);
+    const resolved = await call(
+      env.CREDIT_OP_COORDINATOR,
+      `identity:${IDENTITY}`,
+      {
+        op: "identity-resolve-intent",
+        creatorIdentityId: IDENTITY,
+        paymentIntentId: INTENT,
+      }
+    );
+    expect(resolved.data["broadcastSignature"]).toBeNull();
+  });
+
+  it("refuses the price-only injection the old flat-200 000-CU bound wrongly allowed (proven pre-send)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    /**
+     * At 5 000 000 µL/CU the two-payable-instruction payment defaults to
+     * 400 000 CU (ATA-create + transfer), so the old 200 000-CU bound
+     * under-counted the real charge by 2× — 2 000 000 lamports instead of
+     * the 1 000 000-lamport policy cap. The fixed policy bounds the
+     * missing-limit case by the protocol maximum (1 400 000 CU) and
+     * refuses this injection as a proven pre-send one.
+     */
+    const { base64 } = signedWithPriorityFee({
+      includeLimit: false,
+      priceMicroLamports: 5_000_000,
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("PRIORITY_FEE_TOO_HIGH");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses a limit/price pair whose worst-case priority fee exceeds the policy cap", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64 } = signedWithPriorityFee({
+      limitUnits: 1_400_000,
+      priceMicroLamports: 714_286,
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("PRIORITY_FEE_TOO_HIGH");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses an astronomically high compute-unit price (u64 max)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: signedWithPriorityFee({ damaged: "huge-price" })
+        .base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("PRIORITY_FEE_TOO_HIGH");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses a duplicated compute-unit limit", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64 } = signedWithPriorityFee({ duplicateFee: "limit" });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_PRIORITY_FEE_INSTRUCTION");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses a duplicated compute-unit price", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64 } = signedWithPriorityFee({ duplicateFee: "price" });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_PRIORITY_FEE_INSTRUCTION");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
   });
 });

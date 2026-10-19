@@ -13,7 +13,13 @@
  *   3. re-derives the expected Associated Token Accounts and validates
  *      EVERY instruction (program, account metas, amount, mint,
  *      destination) — not by string search, but from the compiled
- *      message;
+ *      message. The ONE tolerated addition is the canonical, fee-only
+ *      ComputeBudget priority-fee pair that Phantom inserts into
+ *      unsigned dApp transactions: it has ZERO account metas, may not
+ *      exceed one instruction per fee tag, its worst-case priority fee
+ *      stays within the payment's bounded SOL policy (0.001 SOL), and it
+ *      changes nothing about the payment — any other extra instruction
+ *      or account is still refused;
  *   4. resolves the creator identity SERVER-SIDE from the payment intent
  *      (the identity coordinator's intent index) and requires the
  *      transaction's payer to be that identity's on-chain account;
@@ -45,6 +51,7 @@ import {
   parseLegacyTransaction,
   verifyTransactionSignature,
 } from "../../lib/solana/legacyTransaction";
+import type { ParsedInstruction } from "../../lib/solana/legacyTransaction";
 import { getCreatorIdentity } from "../../../src/lib/creator/creatorIdentityStore";
 
 export interface SolanaBroadcastEnv {
@@ -93,6 +100,52 @@ const SOLANA_MAINNET_BETA_GENESIS_HASH =
 const MAX_TRANSACTION_BYTES = 1232;
 /** SPL Token `Transfer` instruction tag. */
 const SPL_TOKEN_TRANSFER = 3;
+/**
+ * Canonical ComputeBudget program — the ONLY extra program a signed
+ * payment may carry, and only through its two fee-only instructions
+ * below (see `isCanonicalPriorityFeeInstruction`).
+ */
+const COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
+/** ComputeBudget tag of `setComputeUnitLimit` (tag byte + u32 LE). */
+const COMPUTE_BUDGET_SET_UNIT_LIMIT = 2;
+/** ComputeBudget tag of `setComputeUnitPrice` (tag byte + u64 LE). */
+const COMPUTE_BUDGET_SET_UNIT_PRICE = 3;
+/** Protocol maximum compute-unit limit; anything higher is not canonical. */
+const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+/**
+ * Phantom inserts exactly its priority-fee pair (a compute-unit limit and
+ * a compute-unit price) into unsigned dApp transactions that have no
+ * priority-fee instructions. Anything BEYOND that pair — more than two
+ * fee instructions, or the same fee tag twice — is not the documented
+ * behavior and is refused.
+ */
+const MAX_WALLET_PRIORITY_FEE_INSTRUCTIONS = 2;
+/**
+ * PRIORITY-FEE POLICY — the absolute worst-case priority fee (in
+ * lamports) that the wallet's own fee instructions may request:
+ * 1_000_000 lamports = 0.001 SOL.
+ *
+ * A fee injection bounds its cost only through the product
+ * `compute_unit_limit × compute_unit_price`: the protocol charges
+ * `ceil(compute_unit_limit × compute_unit_price / 1_000_000)` lamports on
+ * the limit the message REQUESTS — the wallet's own limit when it sets
+ * one, otherwise the protocol's per-instruction default (up to 200 000 CU
+ * per instruction, clamped by the runtime to `MAX_COMPUTE_UNIT_LIMIT`).
+ * That default is NOT a flat 200 000 CU: this payment carries one or two
+ * payable instructions (the USDC transfer, plus the ATA-create when the
+ * settlement token account is absent), so its default is 200 000 or
+ * 400 000 CU. A missing wallet limit is therefore bounded here by the
+ * protocol MAXIMUM (1 400 000 CU) rather than by the default formula, so
+ * the ceiling holds for every instruction mix the runtime could charge
+ * and never depends on runtime accounting details. Without a ceiling, a
+ * wallet could name an arbitrarily large price and turn a $1 payment into
+ * an unbounded SOL loss. This mirrors the client guard in
+ * `src/lib/wallet/solanaWallet.ts` and is evaluated with ceiling integer
+ * arithmetic, so the accepted maximum can never round up past this
+ * constant on-chain. A wallet asking for more is refused before anything
+ * is bound or broadcast.
+ */
+const MAX_WALLET_PRIORITY_FEE_LAMPORTS = 1_000_000n;
 /**
  * The canonical ATA-create instruction carries EMPTY data (verified
  * against the installed @solana/spl-token builder, which passes
@@ -179,6 +232,49 @@ function readU64LE(data: Uint8Array, offset: number): bigint {
     value = (value << 8n) | BigInt(data[offset + i]!);
   }
   return value;
+}
+
+function readU32LE(data: Uint8Array, offset: number): number {
+  return (
+    (data[offset]! |
+      (data[offset + 1]! << 8) |
+      (data[offset + 2]! << 16) |
+      (data[offset + 3]! << 24)) >>>
+    0
+  );
+}
+
+/**
+ * A canonical wallet-added PRIORITY-FEE instruction: the ComputeBudget
+ * program carries exactly one of the two fee-only tags with its exact
+ * payload length, and — critically — ZERO account metas, so the
+ * instruction cannot reference (let alone move) any token account.
+ *
+ * This is the ONLY instruction shape a wallet may add to the canonical
+ * payment on top of the builder's own instructions. It mirrors the
+ * client-side guard in `src/lib/wallet/solanaWallet.ts`: Phantom
+ * automatically inserts this limit/price pair (in that order, at index
+ * 0) into unsigned dApp transactions that have no priority-fee
+ * instructions of their own, then signs the resulting message — so a
+ * byte-identity check that ignores this documented fee-only pair would
+ * refuse every legitimate Phantom payment.
+ *
+ * Shape alone is not acceptance: the caller additionally requires at
+ * most ONE instruction per fee tag and applies the priority-fee policy
+ * (see `MAX_WALLET_PRIORITY_FEE_LAMPORTS`).
+ */
+function isCanonicalPriorityFeeInstruction(
+  instruction: ParsedInstruction
+): boolean {
+  if (instruction.accountIndexes.length !== 0) return false;
+  const data = instruction.data;
+  if (data.length === 5 && data[0] === COMPUTE_BUDGET_SET_UNIT_LIMIT) {
+    return readU32LE(data, 1) <= MAX_COMPUTE_UNIT_LIMIT;
+  }
+  if (data.length === 9 && data[0] === COMPUTE_BUDGET_SET_UNIT_PRICE) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -416,13 +512,87 @@ export async function onRequestPost(
   const ataProgramBytes = base58Decode(ASSOCIATED_TOKEN_PROGRAM_ID);
   const systemProgramBytes = base58Decode(SYSTEM_PROGRAM_ID);
 
-  const instructions = parsed.instructions;
-  if (instructions.length < 1 || instructions.length > 2) {
+  /**
+   * Split the compiled instructions into the canonical payment and the
+   * wallet-added priority-fee pair.
+   *
+   * Phantom (and only the documented fee-only pattern below) may insert
+   * up to two canonical ComputeBudget instructions — its priority-fee
+   * limit + price — into an otherwise unsigned dApp transaction. They
+   * cannot move tokens, so they are tolerated HERE and only here; every
+   * remaining instruction must still be the exact canonical payment.
+   */
+  const computeBudgetProgramBytes = base58Decode(COMPUTE_BUDGET_PROGRAM_ID);
+  const paymentInstructions: ParsedInstruction[] = [];
+  let priorityFeeInstructionCount = 0;
+  let walletUnitLimit: number | null = null;
+  let walletUnitPrice: bigint | null = null;
+  for (const instruction of parsed.instructions) {
+    if (
+      sameBytes(
+        parsed.accountKeys[instruction.programIdIndex]!,
+        computeBudgetProgramBytes
+      )
+    ) {
+      if (!isCanonicalPriorityFeeInstruction(instruction)) {
+        return fail(origin, 400, "UNEXPECTED_PRIORITY_FEE_INSTRUCTION", false);
+      }
+      priorityFeeInstructionCount += 1;
+      if (
+        priorityFeeInstructionCount > MAX_WALLET_PRIORITY_FEE_INSTRUCTIONS
+      ) {
+        return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+      }
+      /**
+       * At most ONE instruction per fee tag: the documented wallet shape
+       * is a single limit/price pair, and a duplicated tag would make the
+       * priority-fee policy ambiguous.
+       */
+      if (instruction.data[0] === COMPUTE_BUDGET_SET_UNIT_LIMIT) {
+        if (walletUnitLimit !== null) {
+          return fail(origin, 400, "UNEXPECTED_PRIORITY_FEE_INSTRUCTION", false);
+        }
+        walletUnitLimit = readU32LE(instruction.data, 1);
+      } else {
+        if (walletUnitPrice !== null) {
+          return fail(origin, 400, "UNEXPECTED_PRIORITY_FEE_INSTRUCTION", false);
+        }
+        walletUnitPrice = readU64LE(instruction.data, 1);
+      }
+      continue;
+    }
+    paymentInstructions.push(instruction);
+  }
+  /**
+   * PRIORITY-FEE POLICY — see `MAX_WALLET_PRIORITY_FEE_LAMPORTS`.
+   *
+   * The worst case the wallet's own instructions can request is
+   * `ceil(units × price / 1_000_000)` lamports, where `units` is the
+   * wallet's own limit or — when it set none — the protocol MAXIMUM of
+   * 1 400 000 CU: a missing limit is charged against the protocol's
+   * per-instruction default (200 000 CU per payable instruction here,
+   * i.e. up to 400 000 CU), and bounding that case by the maximum keeps
+   * the cap independent of the default's accounting. Anything above the
+   * policy ceiling is a proven pre-send refusal: nothing is bound and
+   * nothing is broadcast.
+   */
+  if (priorityFeeInstructionCount > 0) {
+    const policyUnits =
+      walletUnitLimit ?? MAX_COMPUTE_UNIT_LIMIT;
+    const policyPrice = walletUnitPrice ?? 0n;
+    const worstCasePriorityFeeLamports =
+      (BigInt(policyUnits) * policyPrice + 999_999n) / 1_000_000n;
+    if (worstCasePriorityFeeLamports > MAX_WALLET_PRIORITY_FEE_LAMPORTS) {
+      return fail(origin, 400, "PRIORITY_FEE_TOO_HIGH", false);
+    }
+  }
+  if (paymentInstructions.length < 1 || paymentInstructions.length > 2) {
     return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
   }
 
-  const transferInstruction = instructions[instructions.length - 1]!;
-  const ataCreateInstruction = instructions.length === 2 ? instructions[0]! : null;
+  const transferInstruction = paymentInstructions[paymentInstructions.length - 1]!;
+  const ataCreateInstruction =
+    paymentInstructions.length === 2 ? paymentInstructions[0]! : null;
 
   // ---- optional canonical ATA-create (only when the settlement ATA is absent)
   if (ataCreateInstruction) {
@@ -507,6 +677,14 @@ export async function onRequestPost(
       SYSTEM_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
+  }
+  /**
+   * The ComputeBudget program key becomes legitimate ONLY when the
+   * wallet actually added its canonical fee instruction(s); an unused
+   * stray key is still refused below.
+   */
+  if (priorityFeeInstructionCount > 0) {
+    allowedKeys.push(COMPUTE_BUDGET_PROGRAM_ID);
   }
   const allowed = new Set(allowedKeys);
   for (const key of parsed.accountKeys) {
