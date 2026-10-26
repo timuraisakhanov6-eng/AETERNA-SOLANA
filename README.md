@@ -31,6 +31,7 @@ Capsule Manifests become immutable after sealing.
 
 ## Hostile Storage
 Security derives from cryptographic verification, not storage trust.
+Released implementations store capsule data on Irys as immutable, ciphertext-only objects.
 
 ## Emergency Runtime
 Emergency Runtime preserves validation parity, decrypt ordering, Heartbeat behavior, and fail-closed behavior.
@@ -44,12 +45,8 @@ One verified AETERNA Service Payment of exactly 1 USDC grants exactly one Creato
 
 ## Active Documentation
 
-Active AI documentation:
-- `AI/AI_CONSTITUTION.md`
-- `AI/04_AGENT_RULES.md`
-- `AI/07_PROJECT_GLOSSARY.md`
-
 Active canonical documentation:
+- `docs/canonical/AETERNA_GLOSSARY.md`
 - `docs/canonical/AETERNA_COMPLETE_ENGINEERING_MODEL.md`
 - `docs/canonical/AETERNA_COMPLETE_PROJECT_LOGIC.md`
 - `docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md`
@@ -70,7 +67,9 @@ Active canonical documentation:
 - `docs/canonical/VAULT_EVOLUTION.md`
 
 Operational documentation:
+- `SECURITY.md`
 - `HARDENING.md`
+- `DEPLOYMENT.md`
 - `DISASTER_RECOVERY.md`
 
 Proposed changes:

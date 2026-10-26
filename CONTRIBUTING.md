@@ -40,12 +40,10 @@ Recommended reading:
 
 | Document | Purpose |
 |---|---|
-| Master Protocol | Canonical protocol specification |
-| Complete System Logic | Canonical protocol behavior |
-| Canonical Specifications | Domain-specific specifications |
-| Threat Model | Security assumptions |
-| Audit Methodology | Canonical audit process |
-| Cryptographic Specifications | Cryptographic architecture |
+| Complete System Logic (`docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md`) | Canonical protocol specification and behavior |
+| Canonical Specifications (`docs/canonical/`) | Domain-specific specifications |
+| SECURITY.md | Security assumptions and Model 01 time boundary |
+| INVARIANTS.md (`docs/canonical/INVARIANTS.md`) | Canonical security invariants |
 
 Protocol understanding is required before modifying security-sensitive code.
 

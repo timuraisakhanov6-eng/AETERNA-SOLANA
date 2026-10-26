@@ -244,6 +244,34 @@ The exact chain transaction format is rail-specific.
 For the active Solana rail, this is SPL Token transfer evidence.
 For future rails, the exact format remains implementation-selection PENDING.
 
+### 10.4 Released Solana transaction-validation protections
+
+Released implementation (verified against the released source; src/lib/wallet/solanaWallet.ts, functions/api/solana/broadcast.ts, functions/lib/solana/legacyTransaction.ts). These protections are factual descriptions of the released code, not new policy.
+
+Client message-identity guard. After the wallet returns a signed message, the client requires it to be byte-identical to the message AETERNA prepared. The only accepted alternative is the narrowly defined Phantom delta described below. Anything else — a single changed account, amount, mint, authority, destination, blockhash, or instruction — raises WalletModifiedTransactionError (code WALLET_MODIFIED_TRANSACTION) and the signed bytes never leave the browser. An unparseable returned message is never acceptable. Optional diagnostics (dumping the structured difference) are enabled only with `?aeternaWalletDiag=1`.
+
+Phantom allowance (bounded). The wallet may:
+
+- append at most two ComputeBudget instructions — one `setComputeUnitLimit` (limit must not exceed 1,400,000 CU) and one `setComputeUnitPrice`;
+- the worst-case priority fee they can request, ceil(limit × price / 1,000,000) lamports using the protocol maximum of 1,400,000 CU when the wallet sets no limit, must not exceed MAX_WALLET_PRIORITY_FEE_LAMPORTS = 1,000,000 lamports (0.001 SOL);
+- append Lighthouse assertions ONLY as the exact two-instruction pair, in order, after the payment: AssertAccountInfoMulti on the payer (KnownOwner(System), DataLength==0), then AssertTokenAccountMulti on the transfer's source token account (Amount >= lower bound, Delegate == null, DelegatedAmount <= 0, TokenAccountOwnerIsDerived). The Lighthouse program is L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95. Unknown versions, variants, discriminators, values, extra assertions, extra accounts, duplicates, or a different order are refused. These assertions are read-only: they cannot move tokens, and the payment transfer itself is still compared exactly;
+- every instruction AETERNA prepared must still match exactly — same program, same resolved account keys in the same order, same data bytes; the fee payer, blockhash, and signer count must be unchanged; every prepared account key must keep its exact signer/writable role;
+- the only account keys the wallet may append are the ComputeBudget and Lighthouse program IDs, each unsigned and read-only, and only when the corresponding instructions were actually added.
+
+Server validation contract — POST /api/solana/broadcast. The server independently re-validates everything before broadcasting:
+
+- strict legacy-message parsing with a hard cap of six instructions (MAX_LEGACY_INSTRUCTIONS = 6; zero instructions or seven or more are rejected with INVALID_INSTRUCTION_COUNT);
+- exactly one required signature (a message with numRequiredSignatures !== 1 is refused);
+- the payment must be an SPL Token transfer of exactly SERVICE_PAYMENT_ATOMIC = 1,000,000 atomic units (1 USDC) of mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v to the settlement address 6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu (UNEXPECTED_AMOUNT otherwise); optional ATA-create for the settlement account is recognized;
+- the RPC endpoint is server-configured only, and mainnet-beta is proven via genesis hash before any submission;
+- the priority-fee ceiling is re-enforced server-side (PRIORITY_FEE_TOO_HIGH);
+- the Lighthouse pair, if present, is re-validated independently: info first, token second, exactly two, and the token-assertion target must equal the transfer's source ATA resolved by address;
+- a per-account signer/writable privilege table is enforced: no unknown, duplicate, or differently-privileged account keys; ComputeBudget and Lighthouse program keys are legitimate only when their instructions were actually added, and stray keys are refused;
+- the creator identity is resolved server-side, and the payment signature is bound atomically through the CreditOperationCoordinator before submission; a refused binding means sendTransaction is never called;
+- on any rejection the endpoint fails closed and nothing is broadcast. Every refusal carries an explicit broadcastAttempted flag: false means the request was refused before sendTransaction was ever called; true means the refusal happened at or after the RPC call, so the on-chain outcome is unknown.
+
+Provenance limitation: these protections are documented from the released candidate source. The exact original 27-byte Phantom assertion payload observed during development was not independently recovered (a synthetic fixture was used during development), and the deployed Worker bytes were not independently downloaded; the server-side description reflects the released source, not a byte-level verification of the deployed Worker.
+
 ## 11. CREATOR CREDIT BOUNDARY
 
 The Wallet/Payment Architecture grants Creator Credit.
@@ -335,10 +363,8 @@ The canonical human-readable flow is:
 14. User completes the Irys publication flow.
 15. Successful publication + Seal consumes the Credit.
 
-This document does NOT promise:
+The released implementation (see §10.4) pins the active Solana rail to exactly one payment transaction with exactly one signature. This document still does NOT promise:
 
-- one transaction;
-- one signature;
 - one wallet provider at the protocol layer (Model 01 intentionally supports a single wallet provider; see AETERNA_WALLET_PROVIDER_SELECTION_SPEC.md §4.1);
 - instant Irys publication;
 
@@ -386,7 +412,7 @@ The following decisions remain unresolved:
 - supported asset allowlist;
 - blockchain/network set;
 - settlement recipient model;
-- payment transaction format;
+- payment transaction format (resolved for the active Solana rail by the released implementation; see §10.4);
 - exact Irys browser flow;
 - exact Irys wallet/signing flow;
 - whether AETERNA $1 and Irys publication can be combined in one

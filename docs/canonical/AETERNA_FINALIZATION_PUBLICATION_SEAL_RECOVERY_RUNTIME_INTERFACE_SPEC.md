@@ -319,7 +319,8 @@ Seal Verification Record:
 
 ### 5.3 Storage Neutrality
 
-Exact Cloudflare KV schema is implementation-selection PENDING.
+Released implementation (verified against the released source): the authoritative verification records are stored in the KV namespaces `PUBLICATION_VERIFICATIONS` and `SEAL_VERIFICATIONS`, and Credit state decisions (reserve / finalize / recover) are serialized by the `CreditOperationCoordinator` Durable Object bound as `CREDIT_OP_COORDINATOR` (functions/do/creditOperationCoordinator.ts, wrangler.toml).
+
 The architecture MUST preserve these uniqueness boundaries regardless of storage implementation.
 
 ---
@@ -349,6 +350,17 @@ Conceptual recovery request:
 - capsuleId;
 - creatorIdentityId.
 
+Released implementation — signed owner proof (D3, functions/api/creator/recover-lifecycle.ts):
+
+Knowing the identifiers above, being on an allowed Origin, and passing the rate limit are NOT authority. The recovery request MUST additionally carry a signed owner proof produced with the EXISTING identity scheme (the same SIWS / EIP-191 challenge + wallet signature scheme the payment flow uses — no new password, secret, or ownership model):
+
+- challengeId — a challenge previously issued via /api/creator/issue-challenge;
+- network — "solana" or an EVM network;
+- account — the creator's wallet account (base58-decoded 32-byte public key for Solana, or a 0x-prefixed 20-byte address for EVM);
+- signature — the wallet signature over the challenge message.
+
+The endpoint verifies the signature (Solana: Ed25519 verification with the verification key bound to the claimed account; EVM: recovered address must equal the claimed account), resolves the server-side creator identity for that account, and requires it to equal BOTH the claimed creatorIdentityId AND the owner recorded on the lifecycle index. A request with missing or incomplete proof fields is rejected with 403 OWNER_PROOF_REQUIRED. Only then is the Durable Object asked to decide; the CreditOperationCoordinator remains the sole authority for the Credit state itself.
+
 Server MUST determine:
 - current authoritative lifecycle state;
 - current authoritative publication state;
@@ -375,6 +387,35 @@ Recovery authority MUST be serialized server-side against:
 - new lifecycle reservation authority.
 
 Only one authority may succeed for a given Credit at a time.
+
+---
+
+## 6A. RECIPIENT `recovering` PRESENTATION STATE (UI, PRESENTATION-ONLY)
+
+Two unrelated concepts share similar names and MUST NOT be confused:
+
+- Creator credit/lifecycle recovery — the server authority flow of §6 (functions/api/creator/recover-lifecycle.ts, CreditOperationCoordinator). It restores or resumes a Creator Credit lifecycle.
+- Recipient `recovering` presentation state — a client UI state of the capsule view (src/pages/capsule/CapsuleController.tsx, CapsuleView.tsx). It is presentation-only and grants no authority. This section documents the UI state.
+
+Entry conditions (all MUST hold; verified against the released source):
+
+- the open attempt failed with a failure classified "retryable" by classifyOpenFailure() (src/lib/capsule/openFailure.ts) — the OPEN decision was never made because Trusted Time or the vault bytes could not be obtained, and nothing was decrypted. Unclassifiable failures default to "retryable"; this default preserves the capability, it does NOT weaken authorization, because every retry re-runs the full pipeline;
+- Trusted Time has authoritatively established for this attempt that opening is due (nowUtc >= effectiveOpenAt) — the internal openDue flag;
+- a recipient capability secret is present in this tab;
+- no creator-authority capability is present.
+
+If any condition fails, the normal SEALED presentation is kept.
+
+Presentation: an amber pulsing lock icon with the role="status" text "Capsule could not be loaded. Retrying…" (CapsuleView.tsx). No vault content is rendered.
+
+Fail-closed guarantees:
+
+- the state is presentation-only; it never authorizes decryption or content display;
+- every retry re-runs the complete pipeline: Trusted Time → manifest validation → integrity verification (size and vaultSha256) → decryption; content remains hidden until all steps succeed;
+- terminal failures (invalid capability, AES-GCM authentication failure, integrity or size violation) are classified "terminal", are never retried, and never reach the `recovering` state;
+- the recipient capability secret is restored to the in-tab reference so the existing bounded retry mechanism (5 s interval / focus / visibility) can re-attempt opening without a page reload; a stale or unmounted runtime never receives the capability.
+
+A genuinely future-sealed capsule never enters this state: when Trusted Time authoritatively confirms nowUtc < effectiveOpenAt, the normal SEALED presentation is shown (this is the only path that may display SEALED before an open attempt).
 
 ---
 
@@ -443,12 +484,16 @@ Missing responsibility:
 - no Credit finalization transition CONSUMING -> CONSUMED;
 - no binding of Seal result to Creator Identity/lifecycleId/Credit state.
 
+IMPLEMENTATION STATUS (released source): the missing items are now implemented OUTSIDE seal.ts in the dedicated endpoint functions/api/seal/verify.ts, which establishes the authoritative Seal verification record in the SEAL_VERIFICATIONS KV namespace, requires prior publication verification (PUBLICATION_VERIFICATIONS), and is bound to lifecycle/capsule/Creator Identity. Finalization remains a separate authority (functions/api/creator/finalize-credit.ts).
+
 Future contract:
 - Seal endpoint remains the irreversible event boundary;
 - after manifest commit, Seal endpoint records authoritative Seal verification result;
 - finalization remains a separate authority after Seal verification is established.
 
 ### 8.2 functions/api/upload.ts
+
+NOTE (released source): no functions/api/upload.ts exists in the released source. The upload surface is functions/api/upload-token.ts (upload authorization) together with functions/api/capsule/prepared.ts and functions/api/capsule/seal.ts (prepared-container ingestion and manifest commit).
 
 Current responsibility:
 - upload-token validation;
@@ -471,6 +516,8 @@ Missing responsibility:
 - no binding of publication result to lifecycle/capsule/Creator Identity;
 - no publication state transition to VERIFIED for downstream finalization.
 
+IMPLEMENTATION STATUS (released source): the missing items are now implemented in functions/api/publication/verify.ts and functions/api/publication/claim.ts, which maintain the authoritative publication verification record in the PUBLICATION_VERIFICATIONS KV namespace, bind it to lifecycle/capsule/Creator Identity, and transition publication state to VERIFIED for downstream finalization.
+
 Future contract:
 - upload/publication result becomes authoritative input for publication verification;
 - publication verification endpoint/interface consumes publication outcome and transitions publication state to VERIFIED.
@@ -487,6 +534,8 @@ Missing responsibility:
 - no Seal verification interface;
 - no finalization endpoint;
 - no recovery authority interface.
+
+IMPLEMENTATION STATUS (released source): finalization is implemented in functions/api/creator/finalize-credit.ts and recovery in functions/api/creator/recover-lifecycle.ts; both delegate the Credit state decision to the CreditOperationCoordinator Durable Object (functions/do/creditOperationCoordinator.ts, binding CREDIT_OP_COORDINATOR), which serializes reserve / finalize / recover operations per Credit. reserve-lifecycle.ts delegates its own reservation decision to the same coordinator (op "reserve"). The two verification interfaces live in functions/api/publication/verify.ts and functions/api/seal/verify.ts.
 
 Future contract:
 - reserve-lifecycle continues to own reservation semantics;
@@ -507,14 +556,14 @@ Missing state stores/interfaces:
 - finalization audit record;
 - recovery state/history.
 
-Exact storage naming/schema remains implementation-selection PENDING.
+IMPLEMENTATION STATUS (released source): the verification stores are implemented as the KV namespaces PUBLICATION_VERIFICATIONS and SEAL_VERIFICATIONS, and the Credit state records (including finalization and recovery decisions) are held by the CreditOperationCoordinator Durable Object bound as CREDIT_OP_COORDINATOR. The remaining audit/history surface of the listed items is not separately implemented as named stores.
 
 ---
 
 ## 9. SECURITY ATTACK MODEL
 
 A. Fake publication ID
-PENDING — blocked in interface by requiring authoritative source verification; exact verifier/provider PENDING.
+PASS (released source) — blocked by requiring authoritative source verification, implemented in functions/api/publication/verify.ts against the authoritative Irys Node/API; gateway propagation is used only as an availability signal, never as standalone finality authority.
 
 B. Another capsule publication
 PASS — publication evidence MUST be bound to exact lifecycle/capsule/Creator Identity.
@@ -576,7 +625,7 @@ Explicit ambiguities remaining in canonical documentation:
 - exact recovery timeout/policy;
 - exact Cloudflare data-store schema for publication/Seal/finalization/recovery records.
 
-This document marks these PENDING and defines minimum safe interface contracts.
+IMPLEMENTATION STATUS (released source): the first, second, and fourth items are now implemented (functions/api/publication/verify.ts with functions/api/publication/claim.ts; functions/api/seal/verify.ts; the PUBLICATION_VERIFICATIONS / SEAL_VERIFICATIONS KV namespaces and the CREDIT_OP_COORDINATOR Durable Object). The released recovery flow is evidence-based with no timers; no heartbeat/reconciliation mechanism is implemented, so the recovery timeout/policy item remains PENDING by design (see §6.3).
 
 ### 10.3 Contradictions
 
@@ -587,17 +636,22 @@ If a contradiction is discovered later, it MUST be reported explicitly.
 
 ## 11. IMPLEMENTATION PENDING DECISIONS
 
-- exact Irys publication verification provider/adapter;
-- exact publication finality threshold;
-- exact Seal verification adapter/implementation;
-- exact recovery timeout/policy, if any;
-- exact heartbeat/reconciliation mechanism, if any;
-- exact Cloudflare KV keys/schema for publication, Seal, finalization, recovery state;
-- exact route names/endpoint surface for publication verification, finalization, recovery.
+IMPLEMENTATION STATUS (released source): the following items are no longer pending — they are implemented in the released source:
+- Irys publication verification provider/adapter — functions/api/publication/verify.ts (authoritative Irys Node/API);
+- Seal verification adapter/implementation — functions/api/seal/verify.ts (SEAL_VERIFICATIONS);
+- Cloudflare KV keys/schema for publication and Seal verification state — PUBLICATION_VERIFICATIONS and SEAL_VERIFICATIONS; Credit state records in the CREDIT_OP_COORDINATOR Durable Object;
+- route names/endpoint surface — /api/publication/verify, /api/publication/claim, /api/seal/verify, /api/creator/finalize-credit, /api/creator/reserve-lifecycle, /api/creator/recover-lifecycle.
+
+Still pending (no released implementation found):
+- exact publication finality threshold details for the Irys rail;
+- exact recovery timeout/policy, if any (recovery is evidence-based; no timers implemented);
+- exact heartbeat/reconciliation mechanism, if any.
 
 ---
 
 ## 12. MINIMUM IMPLEMENTATION WORK REQUIRED
+
+IMPLEMENTATION STATUS (released source): items 1–4 are implemented in the released source (functions/api/publication/verify.ts + claim.ts, functions/api/seal/verify.ts, functions/api/creator/finalize-credit.ts, functions/api/creator/recover-lifecycle.ts, CreditOperationCoordinator Durable Object); item 5 is satisfied without changes to crypto, storage, manifest, Vault, or Emergency Runtime semantics. The list below is retained as the original design record.
 
 1. Implement authoritative publication verification interface:
    - server-side verifier boundary;

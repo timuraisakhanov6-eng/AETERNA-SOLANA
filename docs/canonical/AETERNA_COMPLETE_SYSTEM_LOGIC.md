@@ -223,6 +223,17 @@ become immutable after the ciphertext is created
 
 Loss of these values makes recovery impossible. Recovery would violate ciphertext continuity.
 
+Released heartbeat capability handling (verified against the released source; src/lib/heartbeat/deriveCreatorAuthorityFragment.ts, src/lib/heartbeat/confirmPresence.ts, src/lib/capsule/parseCapsuleCapability.ts, functions/api/heartbeat.ts, functions/api/capsule/seal.ts):
+
+The root creator capability creatorAuthority remains the sole source of confirmation authority. The released implementation does not transmit creatorAuthority itself for liveness confirmations. Instead, it derives a separate, dedicated confirmation capability from it:
+
+- creatorAuthorityFragment = HKDF-SHA256(key = creatorAuthority (exactly 32 bytes), salt = "aeterna-heartbeat-authority", info = empty, output = 256 bits), rendered as lowercase HEX64. The salt intentionally equals the HKDF domain namespace; this is canonicalized and changing it would break existing capability links. The fragment carries confirmation authority ONLY.
+- Transport: the fragment is embedded in the creator capability URL fragment — Creator Link /capsule/:id#recipientSecret&c=creatorAuthorityFragment and Creator Authority Link /capsule/:id#c=creatorAuthorityFragment (the link parser accepts #HEX64, #HEX64&c=HEX64, and #c=HEX64 forms). Confirm Presence sends it as the creatorAuthorityFragment field of the heartbeat POST body.
+- Server validation and storage: at sealing time, seal endpoint stores ONLY the SHA-256 digest of the fragment, as {"digest": ...} in the AUTHORITY_TOKENS KV namespace keyed by capsuleId (with a TTL). The heartbeat endpoint requires both capsuleId and a HEX64 creatorAuthorityFragment; it hashes the presented fragment with SHA-256 and compares digests. The plaintext fragment is never persisted and never compared against server-side; an absent record or a digest mismatch fails closed (403 INVALID_FRAGMENT).
+- Request binding (as confirmed in source): the capability record is keyed by capsuleId, the request must present that capsuleId, and the manifest stored for that capsuleId is loaded to compute effectiveOpenAt. The endpoint does not itself bind the request to creator identity or lifecycle records; the capsule-scoped fragment digest is the binding. Replay protection is monotonic: a confirmation at or before the recorded lastConfirmedAt is rejected (409). Confirmations are refused once nowUtc >= effectiveOpenAt (409) and outside the canonical availability window (409).
+- Confirmation record: the released HeartbeatRecord is {capsuleId, lastConfirmedAt, updatedAt, version: 1} — the documented fields plus bookkeeping fields; it never contains secrets.
+- Authority model: this is a derivation of confirmation authority from creator authority, not a new authority model. The server remains non-custodial: it holds only a digest, cannot reconstruct the fragment or the creator capability, and cannot originate confirmations.
+
 Vault Preparation
 Invoked by: prepareVault()
 prepareVault() does not create secret, saltBase, or capsuleId. prepareVault() only assembles Vault V2 and serializes it into vaultBytes, using values already generated upstream — recipientSecret, creatorAuthority, saltBase (via capability generators) and capsuleId (generated independently, before PREPARED).
@@ -234,6 +245,19 @@ sha256(ciphertext)
 ↓
 return encryptedPayload + vaultSha256
 Note: generateSaltBase() runs earlier — in the capability generator block — and is not part of prepareEncryptedCapsule(). generateVaultKey() also runs earlier, after capability generation, and is reused by both media encryption and prepareEncryptedCapsule().
+
+Released implementation parameters (verified against the released source; src/lib/crypto/constants.ts, generateVaultKey.ts, encryptVault.ts, deriveChunkIV.ts):
+
+- PBKDF2-HMAC-SHA256 iteration count: 600000.
+- Vault key salt material: DOMAIN_VAULT_SALT ("AETERNA_VAULT_SALT_V1") + 0x00 + saltBase (16 bytes, hex-decoded) + 0x00 + openAt (unsigned 64-bit big-endian) + 0x00 + capsuleId (UTF-8).
+- The salt material is hashed: salt = SHA-256(salt material).
+- Second domain-separation layer: the PBKDF2 salt = SHA-256(DOMAIN_VAULT_KEY ("AETERNA_VAULT_KEY_V1") + salt).
+- PBKDF2-HMAC-SHA256 with 600000 iterations derives a 256-bit AES-GCM key; the derived key is non-extractable.
+- Vault encryption uses AES-256-GCM with a random 96-bit IV generated per encryption and a 128-bit authentication tag. The vault associated data is exactly Uint8Array([1]).
+- The encrypted vault envelope is version 2 with the shape {"v":2,"iv":base64,"d":base64} — iv is the base64 of the 12-byte IV, d is the base64 of ciphertext plus tag. Unknown envelope versions fail closed.
+- Chunk IV derivation is deterministic: SHA-256(DOMAIN_CHUNK_IV ("AETERNA_CHUNK_IV_V1") + 0x00 + baseIV + 0x00 + chunk index (unsigned 32-bit big-endian)), truncated to the first 12 bytes (96 bits). A derived all-zero IV is rejected. Chunk IVs are not stored; they are re-derived from the chunk base IV (itself derived under the DOMAIN_CHUNK_BASE_IV domain label).
+- capsuleId and openAt participate in vault key derivation exactly through the salt material above; no other capsule data participates.
+
 Full pipeline:
 textgenerateCapsuleId()
 ↓
@@ -290,7 +314,7 @@ JavaScriptPreparedCapsule {
 }
 openAt and open authority:
 The sealed openAt value is determined by the creator before PREPARED and is a binding PBKDF2 vault-key derivation input (see INVARIANTS.md §2.2); it is therefore part of Ciphertext Authority and is immutable for the lifetime of the capsule.
-effectiveOpenAt is a separate, derived value computed by resolveEffectiveOpenAt() from sealed openAt, Trusted Time, and Heartbeat records. effectiveOpenAt belongs to Open Authority only and does not intersect with Ciphertext Authority.
+effectiveOpenAt is a separate, derived value computed by resolveEffectiveOpenAt() from sealed openAt, the sealed heartbeatInterval, and Heartbeat confirmation records (lastConfirmedAt). With no confirmation ever received, effectiveOpenAt equals sealed openAt; otherwise it is max(sealed openAt, lastConfirmedAt + renewal), where the renewal is the original opening interval for intervals of 30 days or less, and exactly 30 days for longer intervals. The boundary never moves backwards. Trusted Time is not a computation input: it is the trusted comparator used to evaluate the current time against the computed boundary. effectiveOpenAt belongs to Open Authority only and does not intersect with Ciphertext Authority.
 The sealed openAt value is established before PREPARED, alongside the other Ciphertext Authority inputs, and becomes immutable at that point in the same manner as those inputs.
 Changing sealed openAt after it is established is forbidden under all circumstances, including Heartbeat. The canonical Heartbeat Renewal Rules update effectiveOpenAt within Open Authority only and never touch sealed openAt or vault-key derivation.
 Sealed openAt is written to the Manifest after payment, but it is not created or modified at that point. The Manifest records the already-established value — it is not the source of openAt.
@@ -1168,12 +1192,12 @@ Storage settlement is invisible to creators.
 Revision History (carried forward, correctness confirmed)
 ✔ BOUNDED MEMORY LAW added...
 ✔ STREAMING RECONSTRUCTION LAW added...
-... (все предыдущие пункты сохранены)
+... (all earlier entries retained)
 ✔ rev6.3: Runtime Layer + Streaming Upload Law + Creator Experience Principle + pricing independence + Runtime Session Ownership.
-✔ Добавлены STREAMING PREVIEW LAW, STREAMING DOWNLOAD LAW, Builder Independence Principle, Creator Service Quote Authority и Server Business Authority.
-✔ Унифицированы PreparedCapsule consumers, PAYMENT VERIFIED description и Final Protocol Summary.
-✔ Добавлены DECRYPTED DATA LIFETIME LAW, уточнения Runtime Ownership, Streaming Reconstruction, Builder Independence и Runtime Session Lifetime.
-✔ Исправлен конфликт с Persistent Runtime. Заменены "should" → "shall" в Streaming Laws. Документ полностью согласован с текущей Runtime-архитектурой и Persistent Runtime Specification.
+✔ Added the STREAMING PREVIEW LAW, STREAMING DOWNLOAD LAW, Builder Independence Principle, Creator Service Quote Authority, and Server Business Authority.
+✔ Unified the PreparedCapsule consumers, the PAYMENT VERIFIED description, and the Final Protocol Summary.
+✔ Added the DECRYPTED DATA LIFETIME LAW, plus clarifications for Runtime Ownership, Streaming Reconstruction, Builder Independence, and Runtime Session Lifetime.
+✔ Fixed a conflict with Persistent Runtime. Replaced "should" with "shall" in the Streaming Laws. The document is now fully consistent with the current Runtime architecture and the Persistent Runtime Specification.
 ✔ v4.2 rev1: Heartbeat promoted to a full canonical specification ("Heartbeat Specification" section) covering purpose, the Heartbeat Window, Renewal Rules, interaction with Open Authority, and Emergency Runtime behavior. Expanded Heartbeat description in Core Entities. Updated Creator Path step to describe Presence availability rules. Added Heartbeat Window rule after Heartbeat Records. Added HEARTBEAT WINDOW stage to Capsule Lifecycle (conditional on heartbeatEnabled). Clarified Emergency Runtime's Confirm Presence exposure. Split "Trusted Time + Heartbeat" into "Trusted Time" → "Heartbeat Window Evaluation" → resolveEffectiveOpenAt() in the Final Protocol Summary. No changes to Ciphertext Authority, Vault, Manifest, PreparedCapsule, Runtime, Storage, Business Layer, Payment, Streaming, Crypto, or Capability Authority sections.
 ✔ v4.2 rev2 (wording clarifications, no protocol change): "Interaction with Open Authority" now states explicitly that Heartbeat records never modify the originally sealed openAt value and only influence the effective opening time computed by Open Authority. Capsule Lifecycle diagram now labels HEARTBEAT WINDOW as "(optional, only when Heartbeat is enabled)" directly under the stage name for clarity.
 ✔ v4.2 rev3 (terminology rule, no protocol change): established that this document (Complete System Logic) uses the canonical protocol term "Heartbeat" exclusively; the user-facing label "Confirm Presence" is glossed once at first mention ("Heartbeat (user-facing: Confirm Presence)") and is otherwise reserved for the Emergency Runtime action/status distinction ("Heartbeat status" vs "Confirm Presence" as the button label), which is intentionally left unchanged. Renewal Rule examples now say "Heartbeat confirmation" instead of "Confirm Presence." The Human-readable Product Description remains the sole document using "Confirm Presence" as its primary term. Note: this revision does NOT make Heartbeat mandatory or remove the heartbeatEnabled opt-in — that would be a protocol-level change and was not applied pending confirmation.

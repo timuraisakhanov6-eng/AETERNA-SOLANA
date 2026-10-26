@@ -65,6 +65,10 @@ Optional fields MAY be introduced only when:
 
 Optional fields MUST NOT weaken invariant enforcement.
 
+Manifest V1 defines the following optional field:
+
+- description (public; when present it MUST be a string of at most 500 characters; otherwise validation fails closed)
+
 ---
 
 # 6. HEARTBEAT FIELDS
@@ -93,6 +97,18 @@ Extensions MUST:
 Unknown extensions MUST fail closed when required by security semantics.
 
 Mandatory integrity extensions defined by the current canonical Manifest version remain protocol-stable.
+
+Legacy compatibility:
+
+`ext.chunkPointers` is accepted as a legacy extension field for backward compatibility.
+
+Each pointer value MUST pass storage-pointer validation.
+
+If validation fails, the manifest fails closed.
+
+After successful validation, the legacy compatibility data is removed from the loaded manifest before the manifest is frozen.
+
+Released runtimes therefore do not read chunk locations from the manifest.
 
 ---
 

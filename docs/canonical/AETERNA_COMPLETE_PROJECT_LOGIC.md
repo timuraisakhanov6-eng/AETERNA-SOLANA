@@ -367,21 +367,15 @@ Instead of the main page, Emergency Runtime launches automatically.
 
 What the user sees
 
-They see essentially the same CapsuleView.
-The same design. The same buttons. The same capabilities.
-The only difference is that an independent backup implementation is used, one that is compatible with the main protocol and uses the same cryptographic formats for the Vault and Manifest.
+The emergency page is a separate fallback interface, not a visually identical copy of the main CapsuleView.
+It follows the same protocol behavior, not the same full feature set: it uses the same cryptographic formats for the Vault and Manifest and follows the same validation and decrypt ordering.
 
 If the creator's link is opened
 
-Emergency Runtime detects that this is the Creator Link.
-It shows:
-
-Confirm Presence (if it's currently available according to the canonical rules);
-Creator Link;
-Recipient Link;
-Print.
-
-The Confirm Presence button works exactly the same way as on the main site.
+Emergency Runtime detects creator authority.
+It shows the effective opening date and time, and a Confirm Presence button (only if presence confirmation is currently available according to the canonical rules).
+The Confirm Presence action follows the canonical Heartbeat rules.
+The emergency interface does not provide link management or print controls.
 
 If the recipient's link is opened
 
@@ -390,7 +384,7 @@ An ordinary waiting page is shown, with no owner-only features.
 
 If the opening time hasn't arrived yet
 
-Emergency Runtime shows the same waiting page as the main site.
+Emergency Runtime shows the waiting page with the effective opening date and time.
 
 If the opening time has already arrived
 
@@ -402,7 +396,7 @@ retrieves the encrypted Vault via the Manifest;
 decrypts it locally;
 opens the contents.
 
-To the user, everything looks exactly as if the main site were still running.
+After a successful opening, the decrypted contents are displayed directly on the emergency page.
 
 Storage logic
 

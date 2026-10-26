@@ -112,6 +112,7 @@ desktop.ini
 /*.timestamp-*.mjs
 /.git.*
 /.workbuddy-ai/
+/AI/
 coverage/
 .playwright/
 test-results/

@@ -197,6 +197,30 @@ Solana finality considerations:
 
 The exact numeric threshold is NOT invented in this document.
 
+### 7.2.1 Current Released Implementation Behavior
+
+This subsection documents the behavior actually implemented in the released source (functions/lib/storage/solanaUsdcVerifier.ts, functions/lib/solana/rpc.ts, caller functions/api/storage/verify-payment.ts). It is an implementation FACT, not a ratified canonical policy: the formally required confirmation/finality threshold above remains PENDING IMPLEMENTATION POLICY, and adopting the behavior below as the canonical threshold requires an explicit ratification decision.
+
+Transaction retrieval:
+
+- The verifier fetches the transaction via the RPC method getTransaction with commitment "confirmed", encoding "jsonParsed", and maxSupportedTransactionVersion 0, over a bounded retry loop for transient RPC errors with a per-request timeout and an overall deadline.
+- An RPC failure yields RPC_UNAVAILABLE: fail closed; retrying verification may succeed.
+
+Classification of transaction status:
+
+- Transaction not retrievable (null result): the verifier checks getSignatureStatuses with searchTransactionHistory enabled. If the chain knows the signature but the provider cannot serve the transaction yet, the result is TRANSACTION_PENDING — a rejection that tells the caller retrying verification may succeed. If the signature is unknown to the status API, the result is TRANSACTION_NOT_FOUND — a definitive rejection of the verification attempt.
+- Transaction retrieved but meta.err is set: TRANSACTION_FAILED, with the on-chain error carried as details. Fail closed; never treated as payment evidence.
+- Retrieved and error-free: structural parsing must succeed (otherwise MALFORMED_TRANSACTION) and the parsed transfer must match every expected value exactly — payer, mint, amount, and destination (otherwise PAYER_MISMATCH, MINT_MISMATCH, AMOUNT_MISMATCH, DESTINATION_MISMATCH, or AMBIGUOUS_TRANSFER). All mismatches fail closed.
+
+Evidence required for verification success:
+
+- a JSON-parsed transaction containing an SPL Token transfer of exactly expectedAmountAtomic atomic units of the expected mint, from the expected payer, to the expected destination;
+- on success the verifier returns payment evidence including the amount and the slot/block time of the confirming observation.
+
+Caller behavior: the payment-verification endpoint re-verifies the submitted signature independently on every attempt, and on any verification failure it rejects and surfaces the verifier's exact reason. Every failed verification is fail-closed: no payment state advances and no Credit or entitlement is granted.
+
+De-facto finality level: the implementation treats an RPC-observable, error-free transaction at the "confirmed" commitment level as sufficient payment evidence. This is the implemented rule; it has not been formally ratified as the canonical finality threshold, and the policy question above remains open.
+
 ---
 
 ## 8. PAYMENT VERIFICATION RULE

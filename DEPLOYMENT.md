@@ -3,7 +3,7 @@
 Status: canonical operational documentation
 Authority: deployment governance
 Scope: production deployment + runtime integrity
-Compatibility: Master Protocol v4.3.2
+Compatibility: canonical protocol documentation (docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md)
 
 ---
 
@@ -163,13 +163,6 @@ Production payment systems MUST preserve:
 - payment verification ordering
 - upload-after-payment enforcement
 - transaction verification integrity
-
-Payment systems MUST preserve:
-
-- Creator Service Quote authority
-- payment verification ordering
-- upload-after-payment enforcement
-- transaction verification integrity
 - 1 USDC fixed service fee
 - one verified payment → at most one Creator Credit
 - frontend non-authority
@@ -301,7 +294,101 @@ Deployment security derives from preserving canonical protocol invariants.
 
 ---
 
-# 18. FINAL DEPLOYMENT PRINCIPLE
+# 18. RELEASE RUNBOOK
+
+This section records the deployment procedure evidenced by the October 2026
+release (see the repository release evidence: wrangler 4.152.0 Pages direct
+upload, deployment trigger `ad_hoc` on branch `main`). Commands below are
+taken from `package.json` and `wrangler.toml` in this repository.
+
+## 18.1 Deploy from a clean tree — never from dirty WIP
+
+The October 26, 2026 production deployment was uploaded with uncommitted
+working-tree changes (`commit_dirty: true` in the deployment metadata). The
+deployed bytes are therefore not fully reproducible from any Git commit.
+
+Before deploying:
+
+1. Run `git status --short`. If it is not empty, either commit the changes or
+   deploy from a separate, clean checkout of the exact commit you intend to
+   release (the release-recovery process used a dedicated candidate
+   directory for this reason).
+2. Never deploy from a directory that contains temporary or generated
+   material: `.release-recovery-*`, `.wb-*`, `dist-tmp-*`, `.tmp-*`,
+   `benchmarks/`, probe files (`vite.probe.config.ts`, `probe_bundle.js`,
+   `src/probe/`, `public/irys-probe.html`), or recovery archives. The
+   published output directory is `dist/` (`pages_build_output_dir` in
+   `wrangler.toml`); only what the build produces into `dist/` is uploaded.
+
+## 18.2 Local validation before release
+
+`package.json` provides:
+
+- `npm run release:verify` — the full release gate:
+  `typecheck:do` + `typecheck:broadcast` + `typecheck:emergency` + `build`
+  (SPA + runtime + emergency) + `test` (vitest) + `lint` (eslint).
+- `npm run typecheck` — full TypeScript check.
+- `npm run build` — produces `dist/` (SPA), the emergency runtime, and the
+  runtime bundle.
+
+Record the outputs of these steps with the release.
+
+## 18.3 Production build and deploy
+
+1. Run `npm run build` from the clean tree.
+2. Deploy the produced `dist/` with Wrangler Pages direct upload:
+
+   `npx wrangler pages deploy dist`
+
+   The project is `aeterna-solana` (`wrangler.toml`); production is served
+   from branch `main`. Confirm the exact flags with
+   `npx wrangler pages deploy --help` before first use. Preserve the command
+   output (it names the new deployment and its preview URL) with the release
+   evidence.
+
+## 18.4 Post-deployment verification
+
+Deployment success (the deploy command returned OK) is NOT proof that the
+expected source and assets were deployed. Verify explicitly:
+
+1. Fetch the production home page and confirm HTTP 200 and the expected
+   security headers (the October release captured these as
+   `deployment-headers-after.txt`).
+2. Fetch `/api/time` and confirm a JSON body of the form
+   `{"nowUtc": <integer milliseconds>}` — the Trusted Time endpoint.
+3. Fetch `/emergency.html` and confirm it loads.
+4. Source-level check: compute the SHA-256 of the built main bundle in
+   `dist/assets/` (e.g. `sha256sum dist/assets/index-*.js`) and compare it
+   against the same file fetched from the production URL. The October
+   release verified `dist/assets/index-Df9KUk0n.js` this way
+   (SHA-256 `514b022a…490270`). Hashes are recorded before deploying.
+
+## 18.5 Identifying a known-good deployment and rolling back
+
+- Every deployment has an id (for example
+  `e19a34f4-ca54-485d-94c3-d58424fb3bd8` for the October 26, 2026 release,
+  and `df65be24-8b37-4693-b1dc-ecc01f071160` for the previous known-good
+  one). Record the deployment id of every release.
+- A production deployment can be rolled back to a previous deployment via
+  the Cloudflare Pages API:
+  `POST /accounts/{account_id}/pages/projects/aeterna-solana/deployments/{deployment_id}/rollback`
+  where `{deployment_id}` is the known-good deployment to restore. The
+  account id is visible in the Cloudflare dashboard (it must not be treated
+  as a secret, but do not publish it).
+- Rollback re-points production at the old deployment's assets and
+  functions. A rollback must be verified with the same checks as §18.4.
+
+## 18.6 Verification after rollback
+
+1. Repeat the §18.4 checks (home page, headers, `/api/time`, emergency page).
+2. Confirm the served main-bundle hash matches the bundle recorded for the
+   deployment that was rolled back TO, not the deployment that was rolled
+   back FROM.
+3. Record the rollback completion in the release evidence.
+
+---
+
+# 19. FINAL DEPLOYMENT PRINCIPLE
 
 Protocol invariants override operational convenience.
 

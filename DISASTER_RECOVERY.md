@@ -3,7 +3,7 @@
 Status: canonical operational documentation
 Authority: protocol continuity governance
 Scope: infrastructure failure + runtime survivability
-Compatibility: Master Protocol v4.3.2
+Compatibility: canonical protocol documentation (docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md)
 
 ---
 
@@ -116,14 +116,14 @@ Trusted Time remains the canonical Open Authority time source.
 
 If Trusted Time becomes unavailable:
 
-- Emergency Runtime MAY use a local time guard
-- local time MUST NOT become protocol authority
+- Emergency Runtime fails closed and does not authorize opening
+- the local system clock MUST NOT be used as an opening authority
 - local time MUST NOT participate in cryptographic authority
 - local time MUST NOT modify Open Authority semantics
 
-Local time is a guard only.
+Opening without valid Trusted Time is forbidden.
 
-It is never protocol authority.
+Local time is never protocol authority.
 
 ---
 

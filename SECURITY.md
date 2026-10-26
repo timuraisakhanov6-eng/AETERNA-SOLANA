@@ -3,7 +3,7 @@
 Status: canonical operational security policy
 Authority: repository-wide operational security
 Scope: deployment + runtime + disclosure
-Compatibility: Master Protocol v4.3.2
+Compatibility: canonical protocol documentation (docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md; the earlier "Master Protocol v4.3.2" reference corresponds to no maintained document in this repository)
 
 ---
 
@@ -50,9 +50,14 @@ These guarantees are valid only within the canonical threat model.
 
 # 3. CANONICAL COMPATIBILITY
 
-This repository follows:
+This repository follows the canonical protocol documentation maintained in
+`docs/canonical/`, principally `AETERNA_COMPLETE_SYSTEM_LOGIC.md` (revision
+history carried in that document; latest revision at the time of writing:
+v4.3.1 rev1).
 
-**Master Protocol v4.3.2**
+An earlier revision of this section cited a "Master Protocol v4.3.2"; no
+document of that name or version exists in the repository, and none is
+promoted to canonical status here.
 
 Implementation components MUST remain compatible with the canonical protocol.
 
@@ -213,6 +218,68 @@ Security MUST preserve:
 - Bounded Memory
 
 Whole-capsule buffering MUST NOT become a protocol requirement.
+
+---
+
+# 12A. PAYMENT TRANSACTION SECURITY (RELEASED IMPLEMENTATION)
+
+This section summarizes verified behavior of the released implementation. It
+does not define new policy. For exact constants, account mappings, and the
+full server contract, see
+`docs/canonical/AETERNA_WALLET_PAYMENT_ARCHITECTURE_SPEC.md` §10.4.
+
+## 12A.1 Client-side transaction guard
+
+The payment transaction is constructed on the client. Before any signed byte
+leaves the browser, the wallet-returned signed message MUST be byte-identical
+to the prepared message, or match ONLY the narrowly defined Phantom delta
+(documented fee instructions plus the Lighthouse assertion pair). Any other
+modification raises `WalletModifiedTransactionError`
+(`WALLET_MODIFIED_TRANSACTION`) and nothing is sent. An unparseable returned
+message is never accepted.
+
+## 12A.2 Client/server boundary
+
+Client-side acceptance is necessary but never sufficient: the server endpoint
+`/api/solana/broadcast` independently re-validates everything — strict
+legacy-message parsing with a hard cap of six instructions, exactly one
+required signature, the exact 1 USDC SPL Token transfer to the canonical
+settlement address, a genesis-hash proof of mainnet-beta, the priority-fee
+ceiling (1,000,000 lamports), the ordered Lighthouse pair, and a per-account
+signer/writable privilege table — then binds the payment signature atomically
+through the CreditOperationCoordinator before broadcasting. Any rejection is
+fail-closed and nothing is broadcast; every refusal carries an explicit
+`broadcastAttempted` flag distinguishing "provably not submitted" from
+"on-chain outcome unknown".
+
+## 12A.3 Non-custodial capability handling
+
+The backend never receives recipientSecret, vault keys, or decrypt authority.
+For Heartbeat, the sealing endpoint persists ONLY the SHA-256 digest of the
+creator authority fragment (never the plaintext fragment), and the heartbeat
+endpoint verifies by digest comparison. See
+`AETERNA_COMPLETE_SYSTEM_LOGIC.md`, "Released heartbeat capability handling".
+
+## 12A.4 Trusted Time enforcement
+
+Unlock authorization derives exclusively from the server-provided Trusted
+Time (`/api/time`, server clock with sanity bounds). There is no local-time
+fallback for opening anywhere in the protocol; when Trusted Time cannot be
+verified, including in Emergency Runtime, the runtime fails closed and does
+not open.
+
+## 12A.5 Evidence limitations
+
+- Model 01 time boundary: a malicious client holding `recipientSecret` can
+  bypass the client-side opening-policy check (see §16). This is a stated
+  architectural property, not a new finding.
+- The original 27-byte Phantom token-assertion payload observed during
+  development was not independently recovered; a synthetic fixture was used
+  during development. The accepted Lighthouse assertion shape is documented
+  from the released source.
+- The deployed Worker bytes were not independently downloaded; server-side
+  descriptions reflect the released candidate source, not a byte-level
+  comparison of the deployed Worker.
 
 ---
 
@@ -391,4 +458,4 @@ Cryptographic correctness overrides application behavior.
 
 Fail-closed behavior overrides availability.
 
-The Master Protocol is authoritative over every implementation.
+The canonical protocol documentation (`docs/canonical/`) is authoritative over every implementation.

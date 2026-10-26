@@ -3,7 +3,7 @@
 Status: operational security guidance
 Authority: defensive hardening recommendations
 Scope: runtime + infrastructure hardening
-Compatibility: Master Protocol v4.3.2
+Compatibility: canonical protocol documentation (docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md)
 
 ---
 
@@ -154,6 +154,15 @@ Payment integrations SHOULD preserve:
 - fixed 1 USDC service fee
 
 Payment integrations MUST remain non-authoritative.
+
+In the released implementation, "strict transaction validation" concretely
+means: the client-side message-identity guard
+(`WalletModifiedTransactionError`), the bounded Phantom allowance (at most two
+ComputeBudget instructions, the exact ordered Lighthouse assertion pair), the
+six-instruction parser cap, the 1,000,000-lamport priority-fee ceiling, and
+the independent server-side re-validation in `/api/solana/broadcast`. See
+`docs/canonical/AETERNA_WALLET_PAYMENT_ARCHITECTURE_SPEC.md` §10.4 and
+`SECURITY.md` §12A.
 
 ---
 

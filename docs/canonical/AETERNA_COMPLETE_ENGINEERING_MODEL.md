@@ -162,21 +162,19 @@ Lower layers never redefine higher layers.
 
 # Engineering Reading Order
 
-Every engineer and every AI system shall understand AETERNA in the following order.
+Every engineer shall understand AETERNA in the following order.
 
-1. AI/AI_CONSTITUTION.md
+1. docs/canonical/AETERNA_COMPLETE_ENGINEERING_MODEL.md
 
-2. AI/
+2. docs/canonical/AETERNA_COMPLETE_PROJECT_LOGIC.md
 
-3. docs/canonical/AETERNA_COMPLETE_ENGINEERING_MODEL.md
+3. docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md
 
-4. docs/canonical/AETERNA_COMPLETE_PROJECT_LOGIC.md
+4. docs/canonical/AETERNA_GLOSSARY.md
 
-5. docs/canonical/AETERNA_COMPLETE_SYSTEM_LOGIC.md
+5. Applicable Canonical Specifications
 
-6. Applicable Canonical Specifications
-
-7. Source Code
+6. Source Code
 
 Implementation shall never become the primary source of understanding.
 

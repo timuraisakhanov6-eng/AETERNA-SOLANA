@@ -291,7 +291,7 @@ After publication, the data becomes permanent.
 
 ## 🖥 AETERNA Client (Browser-Side, User Environment)
 
-Crypto Layer and Runtime Layer are client-side protocol layers. They execute entirely inside the user's browser/local environment and are never hosted, executed, or accessible on the server. This is a protocol identity invariant (see AI/AI_CONSTITUTION.md Art. 6–7) and is not an infrastructure implementation detail that may be relocated.
+Crypto Layer and Runtime Layer are client-side protocol layers. They execute entirely inside the user's browser/local environment and are never hosted, executed, or accessible on the server. This is a protocol identity invariant (see the "Protocol Identity" laws in AETERNA_COMPLETE_ENGINEERING_MODEL.md and the cryptographic authority invariants in INVARIANTS.md, in particular §2.1 Recipient Secret Exclusivity) and is not an infrastructure implementation detail that may be relocated.
 
 ### Crypto Layer
 
@@ -371,7 +371,7 @@ Receives:
 Performs:
 - publishing the Vault via Storage Authority;
 - receiving vaultTxId;
-- publishing the media payload as ONE Container V1 DataItem and recording its container publication (the sole canonical media-publication surface; see AI/07_PROJECT_GLOSSARY.md and AETERNA_COMPLETE_SYSTEM_LOGIC.md);
+- publishing the media payload as ONE Container V1 DataItem and recording its container publication (the sole canonical media-publication surface; see docs/canonical/AETERNA_GLOSSARY.md and AETERNA_COMPLETE_SYSTEM_LOGIC.md);
 - creating Storage Authority;
 - passing the result to Seal.
 
@@ -447,7 +447,7 @@ Does not know:
 
 ## Authority Sequence in the Capsule Lifecycle
 
-Upload Token is an operational capability, not a protocol Authority, and is therefore not part of the Authority chain below (see AI/07_PROJECT_GLOSSARY.md).
+Upload Token is an operational capability, not a protocol Authority, and is therefore not part of the Authority chain below (see docs/canonical/AETERNA_GLOSSARY.md).
 
 ```
 Commercial Authority
