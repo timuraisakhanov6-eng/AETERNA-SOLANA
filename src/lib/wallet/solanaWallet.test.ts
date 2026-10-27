@@ -24,6 +24,7 @@ const SETTLEMENT_WALLET = "6Ku9wGoYBwGDBAK3D7XxoXMYosDBtoadGWUQg4aZ2MBu";
 const SETTLEMENT_USDC_ATA = "76vsLfHBGR5pHAMFeT9KwuB1HB4gKmPYhC7fpvs3h58Y";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
 
 const TOKEN_ACCOUNT_PATH = "/api/solana/token-account";
 const BLOCKHASH_PATH = "/api/solana/blockhash";
@@ -1276,13 +1277,462 @@ describe("signSolanaUSDCPayment — wallet-added priority fees (Phantom)", () =>
   });
 });
 
+/**
+ * PHANTOM LIGHTHOUSE ASSERTION PAIR (CLIENT GUARD)
+ *
+ * The server-side candidate accepts Phantom's exact read-only v2 assertion
+ * pair after the payment. The client guard must mirror that acceptance
+ * ceiling WITHOUT weakening the payment's identity: the pair is accepted
+ * only in order (AssertAccountInfoMulti on the fee payer, then
+ * AssertTokenAccountMulti on the prepared transfer's source ATA), with the
+ * exact reconstructed payload shapes, and only together with the unchanged
+ * prepared payment.
+ *
+ * These fixtures are RECONSTRUCTED from the recorded production diagnostic
+ * shape. They do not prove that the original production payload bytes —
+ * which were not independently recovered — were observed verbatim.
+ */
+describe("signSolanaUSDCPayment — Phantom Lighthouse assertion pair", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00Z"));
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const VALID_BLOCKHASH = "11111111111111111111111111111111";
+  const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111";
+
+  // Reconstructed v2 payloads (16 B info assertion, 27 B token assertion).
+  const PHANTOM_INFO_DATA = Buffer.from([
+    6, 4, 2, 3, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  ]);
+  const PHANTOM_TOKEN_DATA = Buffer.from([
+    10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
+    3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8,
+  ]);
+
+  type WalletTx = import("@solana/web3.js").Transaction;
+  type Web3 = typeof import("@solana/web3.js");
+
+  function installSerializableFetch() {
+    return installFetchMock(
+      buildFetchImplementation({
+        destinationAtaExists: false,
+        blockhash: VALID_BLOCKHASH,
+      })
+    );
+  }
+
+  function expectNoBroadcast(fetchMock: ReturnType<typeof installFetchMock>) {
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls.some((url) => url.includes("/api/solana/broadcast"))).toBe(
+      false
+    );
+  }
+
+  interface LighthouseOptions {
+    includeInfo?: boolean;
+    includeToken?: boolean;
+    reverseOrder?: boolean;
+    /** An extra (third) info assertion appended after the pair. */
+    duplicateInfo?: boolean;
+    /** An extra unknown-discriminator Lighthouse instruction. */
+    extraAssertion?: boolean;
+    infoTarget?: import("@solana/web3.js").PublicKey;
+    tokenTarget?: import("@solana/web3.js").PublicKey;
+    infoData?: Buffer;
+    tokenData?: Buffer;
+    /** Make the Lighthouse program key writable instead of read-only. */
+    lighthouseProgramWritable?: boolean;
+    /** Inserted before the prepared payment (the documented Phantom shape). */
+    beforePayment?: import("@solana/web3.js").TransactionInstruction[];
+    /** Inserted after the prepared payment, before the Lighthouse pair. */
+    beforePair?: import("@solana/web3.js").TransactionInstruction[];
+    /** A different transfer amount (outside the prepared payment). */
+    transferAmount?: bigint;
+    /** A different transfer source account. */
+    transferSource?: import("@solana/web3.js").PublicKey;
+    /** Downgrade the prepared source ATA from writable to read-only. */
+    transferSourceReadonly?: boolean;
+    blockhash?: string;
+  }
+
+  function returnWithLighthouse(
+    web3: Web3,
+    original: WalletTx,
+    payer: import("@solana/web3.js").Keypair,
+    options: LighthouseOptions = {}
+  ): WalletTx {
+    const transfer = original.instructions.find(
+      (instruction) =>
+        instruction.programId.toBase58() === TOKEN_PROGRAM &&
+        instruction.data[0] === 3
+    );
+    if (!transfer) throw new Error("prepared transfer instruction missing");
+
+    const sourceAta = options.transferSource ?? transfer.keys[0]!.pubkey;
+    const lighthouseProgram = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+
+    const preparedInstructions = original.instructions.map((instruction) => {
+      if (instruction.programId.toBase58() !== TOKEN_PROGRAM) {
+        return instruction;
+      }
+      let data = instruction.data;
+      if (options.transferAmount !== undefined) {
+        const mutated = Buffer.from(data);
+        mutated.writeBigUInt64LE(options.transferAmount, 1);
+        data = mutated;
+      }
+      const keys =
+        options.transferSource !== undefined ||
+        options.transferSourceReadonly === true
+          ? instruction.keys.map((key, index) => {
+              if (index !== 0) return key;
+              return {
+                ...key,
+                pubkey: sourceAta,
+                isWritable:
+                  options.transferSourceReadonly === true
+                    ? false
+                    : key.isWritable,
+              };
+            })
+          : instruction.keys;
+      return new web3.TransactionInstruction({
+        programId: instruction.programId,
+        keys,
+        data,
+      });
+    });
+
+    const infoInstruction = () =>
+      new web3.TransactionInstruction({
+        programId: lighthouseProgram,
+        keys: [
+          options.lighthouseProgramWritable
+            ? {
+                pubkey: lighthouseProgram,
+                isSigner: false,
+                isWritable: true,
+              }
+            : {
+                pubkey: options.infoTarget ?? payer.publicKey,
+                isSigner: false,
+                isWritable: false,
+              },
+        ],
+        data: options.infoData ?? PHANTOM_INFO_DATA,
+      });
+
+    const tokenInstruction = () =>
+      new web3.TransactionInstruction({
+        programId: lighthouseProgram,
+        keys: [
+          {
+            pubkey: options.tokenTarget ?? sourceAta,
+            isSigner: false,
+            isWritable: false,
+          },
+        ],
+        data: options.tokenData ?? PHANTOM_TOKEN_DATA,
+      });
+
+    const assertions: import("@solana/web3.js").TransactionInstruction[] = [];
+    if (options.includeInfo ?? true) assertions.push(infoInstruction());
+    if (options.includeToken ?? true) assertions.push(tokenInstruction());
+    if (options.reverseOrder) assertions.reverse();
+    if (options.duplicateInfo) assertions.push(infoInstruction());
+    if (options.extraAssertion) {
+      assertions.push(
+        new web3.TransactionInstruction({
+          programId: lighthouseProgram,
+          keys: [
+            {
+              pubkey: payer.publicKey,
+              isSigner: false,
+              isWritable: false,
+            },
+          ],
+          data: Buffer.from([12, 4]),
+        })
+      );
+    }
+
+    const modified = new web3.Transaction().add(
+      ...(options.beforePayment ?? []),
+      ...preparedInstructions,
+      ...(options.beforePair ?? []),
+      ...assertions
+    );
+    modified.feePayer = original.feePayer!;
+    modified.recentBlockhash =
+      options.blockhash ?? original.recentBlockhash!;
+    modified.sign(payer);
+    return web3.Transaction.from(modified.serialize());
+  }
+
+  async function attempt(
+    build: (web3: Web3, original: WalletTx, payer: import("@solana/web3.js").Keypair) => WalletTx
+  ) {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installSerializableFetch();
+    const payer = web3.Keypair.generate();
+    try {
+      const result = await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) =>
+          build(web3, transaction as WalletTx, payer),
+      });
+      return { web3, fetchMock, result };
+    } catch (error) {
+      return { web3, fetchMock, error };
+    }
+  }
+
+  async function expectRefusal(
+    build: (web3: Web3, original: WalletTx, payer: import("@solana/web3.js").Keypair) => WalletTx
+  ) {
+    const outcome = await attempt(build);
+    expect(outcome.error).toBeInstanceOf(WalletModifiedTransactionError);
+    expect((outcome.error as WalletModifiedTransactionError).code).toBe(
+      "WALLET_MODIFIED_TRANSACTION"
+    );
+    expectNoBroadcast(outcome.fetchMock);
+  }
+
+  it("L1: accepts the exact ordered info → token pair and broadcasts it unchanged", async () => {
+    const outcome = await attempt((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer)
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const broadcast = outcome.web3.Transaction.from(
+      Uint8Array.from(
+        Buffer.from(outcome.result!.signedTransactionBase64, "base64")
+      )
+    );
+    expect(broadcast.instructions).toHaveLength(4);
+    expect(broadcast.instructions[2]!.programId.toBase58()).toBe(
+      LIGHTHOUSE_PROGRAM
+    );
+    expect(broadcast.instructions[3]!.programId.toBase58()).toBe(
+      LIGHTHOUSE_PROGRAM
+    );
+    expect(Buffer.from(broadcast.instructions[2]!.data)).toEqual(
+      PHANTOM_INFO_DATA
+    );
+    expect(Buffer.from(broadcast.instructions[3]!.data)).toEqual(
+      PHANTOM_TOKEN_DATA
+    );
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("L1b: accepts the pair together with the documented fee pair", async () => {
+    const outcome = await attempt((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        beforePayment: [
+          web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+          web3.ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 375_000,
+          }),
+        ],
+      })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const broadcast = outcome.web3.Transaction.from(
+      Uint8Array.from(
+        Buffer.from(outcome.result!.signedTransactionBase64, "base64")
+      )
+    );
+    expect(broadcast.instructions).toHaveLength(6);
+    expect(broadcast.instructions[0]!.programId.toBase58()).toBe(
+      COMPUTE_BUDGET_PROGRAM
+    );
+    expect(broadcast.instructions[4]!.programId.toBase58()).toBe(
+      LIGHTHOUSE_PROGRAM
+    );
+    expect(broadcast.instructions[5]!.programId.toBase58()).toBe(
+      LIGHTHOUSE_PROGRAM
+    );
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("L1c: the token assertion's amount lower bound is the only variable field", async () => {
+    const tokenData = Buffer.from(PHANTOM_TOKEN_DATA);
+    tokenData.writeBigUInt64LE(1_000_000n, 4);
+
+    const outcome = await attempt((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { tokenData })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.result!.signature.length).toBeGreaterThan(0);
+  });
+
+  it("L2: a single info assertion is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { includeToken: false })
+    );
+  });
+
+  it("L3: a single token assertion is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { includeInfo: false })
+    );
+  });
+
+  it("L4: a reversed token → info pair is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { reverseOrder: true })
+    );
+  });
+
+  it("L5: a duplicated info assertion is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { duplicateInfo: true })
+    );
+  });
+
+  it("L6: a third/unknown Lighthouse assertion is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { extraAssertion: true })
+    );
+  });
+
+  it("L7: an info assertion targeting a non-payer account is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        infoTarget: web3.Keypair.generate().publicKey,
+      })
+    );
+  });
+
+  it("L8: a token assertion targeting a non-source account is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        tokenTarget: web3.Keypair.generate().publicKey,
+      })
+    );
+  });
+
+  it("L9: an info payload mutation is refused", async () => {
+    const infoData = Buffer.from(PHANTOM_INFO_DATA);
+    infoData[3] = 0;
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { infoData })
+    );
+  });
+
+  it("L10: a token payload mutation outside the amount wildcard is refused", async () => {
+    const tokenData = Buffer.from(PHANTOM_TOKEN_DATA);
+    tokenData[12] = 5;
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { tokenData })
+    );
+  });
+
+  it("L11: a token payload with trailing bytes is refused", async () => {
+    const tokenData = Buffer.concat([
+      Buffer.from(PHANTOM_TOKEN_DATA),
+      Buffer.from([0]),
+    ]);
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { tokenData })
+    );
+  });
+
+  it("L12: a writable Lighthouse program key is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        lighthouseProgramWritable: true,
+      })
+    );
+  });
+
+  it("L13: a prepared account downgraded from writable to read-only is refused", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        transferSourceReadonly: true,
+      })
+    );
+  });
+
+  it("L14: an unknown ComputeBudget tag is refused even with the pair", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        beforePair: [
+          new web3.TransactionInstruction({
+            programId: new web3.PublicKey(COMPUTE_BUDGET_PROGRAM),
+            keys: [],
+            data: Buffer.from([9, 1, 2, 3, 4]),
+          }),
+        ],
+      })
+    );
+  });
+
+  it("L15: an excessive ComputeBudget instruction count is refused even with the pair", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        beforePair: [
+          web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+          web3.ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 1,
+          }),
+          web3.ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 2,
+          }),
+        ],
+      })
+    );
+  });
+
+  it("L16: the pair cannot authorize a changed payment amount", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        transferAmount: 999_999n,
+      })
+    );
+  });
+
+  it("L17: the pair cannot authorize a changed source account", async () => {
+    await expectRefusal((web3, original, payer) => {
+      const transfer = original.instructions.find(
+        (instruction) =>
+          instruction.programId.toBase58() === TOKEN_PROGRAM &&
+          instruction.data[0] === 3
+      )!;
+      return returnWithLighthouse(web3, original, payer, {
+        transferSource: web3.Keypair.generate().publicKey,
+        tokenTarget: transfer.keys[0]!.pubkey,
+      });
+    });
+  });
+
+  it("L18: the pair cannot authorize a different blockhash", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        blockhash: "11111111111111111111111111111112",
+      })
+    );
+  });
+});
+
 /* ---------------------------------------------------------------------
  * TEMPORARY OPT-IN DIAGNOSTICS (WALLET_MODIFIED_TRANSACTION)
  *
  * With `?aeternaWalletDiag=1` the guard emits exactly ONE structured,
  * privacy-filtered `console.warn` record on a message mismatch; without
- * that exact flag nothing is collected or logged. The refusal itself and
- * the broadcast barrier are untouched.
+ * that exact flag nothing is collected or logged. For Lighthouse-program
+ * instructions only, the record also carries the referenced public
+ * addresses and that instruction's raw data so the assertion variant can
+ * be identified. The refusal itself and the broadcast barrier are
+ * untouched.
  * ------------------------------------------------------------------- */
 
 interface DiagMessageSide {

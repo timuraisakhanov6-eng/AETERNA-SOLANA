@@ -107,6 +107,15 @@ export interface ParsedLegacyTransaction {
 }
 
 /**
+ * Largest instruction count a canonical payment can legitimately have:
+ * optional ATA-create + SPL transfer (2), Phantom's priority-fee pair (2)
+ * and its exact Lighthouse assertion pair (2). The semantic validator
+ * still rejects every combination that is not the canonical shape; this
+ * is only the parser's hard DoS bound.
+ */
+const MAX_LEGACY_INSTRUCTIONS = 6;
+
+/**
  * Strict parse of a legacy (non-versioned) Solana transaction.
  *
  * Every length is bounded by the remaining buffer, and the parse must
@@ -138,9 +147,11 @@ export function parseLegacyTransaction(bytes: Uint8Array): ParsedLegacyTransacti
   if (numRequiredSignatures !== signatureCount) {
     throw new TransactionParseError("SIGNATURES_INCOMPLETE");
   }
+  // Header fields are counts, not offsets: readonly-signed is a SUBSET of
+  // the required signers, and readonly-unsigned is a subset of the remaining
+  // keys. Reject impossible headers before deriving account privileges.
   if (
-    numReadonlySigned + numRequiredSignatures >
-    256 ||
+    numReadonlySigned > numRequiredSignatures ||
     numReadonlyUnsigned > 256
   ) {
     throw new TransactionParseError("INVALID_HEADER");
@@ -154,14 +165,14 @@ export function parseLegacyTransaction(bytes: Uint8Array): ParsedLegacyTransacti
   for (let i = 0; i < keyCount; i++) {
     accountKeys.push(readBytes(bytes, r, 32));
   }
-  if (numRequiredSignatures + numReadonlySigned > keyCount) {
+  if (numRequiredSignatures + numReadonlyUnsigned > keyCount) {
     throw new TransactionParseError("INVALID_HEADER");
   }
 
   const recentBlockhash = readBytes(bytes, r, 32);
 
   const instructionCount = readCompactU16(bytes, r);
-  if (instructionCount < 1 || instructionCount > 4) {
+  if (instructionCount < 1 || instructionCount > MAX_LEGACY_INSTRUCTIONS) {
     throw new TransactionParseError("INVALID_INSTRUCTION_COUNT");
   }
   const instructions: ParsedInstruction[] = [];
@@ -202,6 +213,39 @@ export function parseLegacyTransaction(bytes: Uint8Array): ParsedLegacyTransacti
     recentBlockhash,
     instructions,
   };
+}
+
+/**
+ * Resolve an account-key entry's signer/writable privileges from the
+ * legacy message header and key-table order. The server uses this to
+ * compare REAL account privileges (not just addresses) with the canonical
+ * payment shape.
+ */
+export function getAccountPrivilege(
+  transaction: ParsedLegacyTransaction,
+  index: number
+): { isSigner: boolean; isWritable: boolean } {
+  if (
+    !Number.isInteger(index) ||
+    index < 0 ||
+    index >= transaction.accountKeys.length
+  ) {
+    throw new TransactionParseError("INVALID_ACCOUNT_INDEX");
+  }
+
+  const signedWritableCount =
+    transaction.numRequiredSignatures - transaction.numReadonlySigned;
+  const unsignedWritableCount =
+    transaction.accountKeys.length -
+    transaction.numRequiredSignatures -
+    transaction.numReadonlyUnsigned;
+  const isSigner = index < transaction.numRequiredSignatures;
+  const isWritable =
+    index < signedWritableCount ||
+    (index >= transaction.numRequiredSignatures &&
+      index < transaction.numRequiredSignatures + unsignedWritableCount);
+
+  return { isSigner, isWritable };
 }
 
 /** Ed25519 verification over the message bytes (WebCrypto). */

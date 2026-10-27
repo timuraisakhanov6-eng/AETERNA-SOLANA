@@ -13,13 +13,15 @@
  *   3. re-derives the expected Associated Token Accounts and validates
  *      EVERY instruction (program, account metas, amount, mint,
  *      destination) — not by string search, but from the compiled
- *      message. The ONE tolerated addition is the canonical, fee-only
- *      ComputeBudget priority-fee pair that Phantom inserts into
- *      unsigned dApp transactions: it has ZERO account metas, may not
- *      exceed one instruction per fee tag, its worst-case priority fee
- *      stays within the payment's bounded SOL policy (0.001 SOL), and it
- *      changes nothing about the payment — any other extra instruction
- *      or account is still refused;
+ *      message. The tolerated additions are the canonical, fee-only
+ *      ComputeBudget priority-fee pair and Phantom's exact Lighthouse v2
+ *      read-only assertion pair: the fee instructions have ZERO account
+ *      metas, may not exceed one instruction per fee tag, and stay within
+ *      the payment's bounded SOL policy (0.001 SOL); the two Lighthouse
+ *      instructions must be the terminal pair, decode to the exact recorded
+ *      payloads, target the payer and the transfer's source ATA, and carry
+ *      no signer/writable privileges. Any other extra instruction or
+ *      account is refused;
  *   4. resolves the creator identity SERVER-SIDE from the payment intent
  *      (the identity coordinator's intent index) and requires the
  *      transaction's payer to be that identity's on-chain account;
@@ -48,6 +50,7 @@ import {
   TransactionParseError,
   base58Encode,
   deriveAssociatedTokenAddress,
+  getAccountPrivilege,
   parseLegacyTransaction,
   verifyTransactionSignature,
 } from "../../lib/solana/legacyTransaction";
@@ -101,9 +104,10 @@ const MAX_TRANSACTION_BYTES = 1232;
 /** SPL Token `Transfer` instruction tag. */
 const SPL_TOKEN_TRANSFER = 3;
 /**
- * Canonical ComputeBudget program — the ONLY extra program a signed
- * payment may carry, and only through its two fee-only instructions
- * below (see `isCanonicalPriorityFeeInstruction`).
+ * Canonical ComputeBudget program — one of the two wallet-added programs
+ * and only through its two fee-only instructions below (see
+ * `isCanonicalPriorityFeeInstruction`); the other is the exact Lighthouse
+ * assertion pair. A bare program-id allowance is never accepted.
  */
 const COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
 /** ComputeBudget tag of `setComputeUnitLimit` (tag byte + u32 LE). */
@@ -242,6 +246,56 @@ function readU32LE(data: Uint8Array, offset: number): number {
       (data[offset + 3]! << 24)) >>>
     0
   );
+}
+
+/**
+ * Lighthouse v2 assertion program and the EXACT payloads Phantom appended
+ * to the production diagnostic transaction. The recorded SHA-256 values
+ * are:
+ *
+ *   info  (16 B): 39bb93d1a828d59455ba9e8b9679901d04086bcf0c44251af08e7e60383e7fbc
+ *   token (27 B): b4441240a9f8613e359bc99ff3ca06512982b4d7ef1db1378000d149e2bf5a5f
+ *
+ * Both are READ-ONLY assertions: they can make a transaction fail, but
+ * cannot move tokens or mutate an account. A matching program id alone is
+ * never accepted — the payload, order, account mapping and privileges are
+ * all validated below.
+ */
+const LIGHTHOUSE_PROGRAM_ID = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
+
+const PHANTOM_LIGHTHOUSE_INFO_DATA = new Uint8Array([
+  6, 4, 2,
+  3, 0, 0,
+  1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+
+const PHANTOM_LIGHTHOUSE_TOKEN_DATA = new Uint8Array([
+  10, 4, 4,
+  2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
+  3, 0, 0,
+  6, 0, 0, 0, 0, 0, 0, 0, 0, 5,
+  8,
+]);
+
+function isPhantomLighthouseInfoData(data: Uint8Array): boolean {
+  return sameBytes(data, PHANTOM_LIGHTHOUSE_INFO_DATA);
+}
+
+/**
+ * The ONLY variable field is the u64 Amount lower bound (bytes 4..11):
+ * Phantom derives it from the simulated post-transfer balance, so pinning
+ * one user's value would reject every other balance. The transfer itself
+ * remains byte-identical to the canonical payment, and every other
+ * discriminator, operator, option and value is fixed. The exact length
+ * check rejects trailing bytes.
+ */
+function isPhantomLighthouseTokenData(data: Uint8Array): boolean {
+  if (data.length !== PHANTOM_LIGHTHOUSE_TOKEN_DATA.length) return false;
+  for (let index = 0; index < data.length; index++) {
+    if (index >= 4 && index <= 11) continue;
+    if (data[index] !== PHANTOM_LIGHTHOUSE_TOKEN_DATA[index]) return false;
+  }
+  return true;
 }
 
 /**
@@ -523,17 +577,25 @@ export async function onRequestPost(
    * remaining instruction must still be the exact canonical payment.
    */
   const computeBudgetProgramBytes = base58Decode(COMPUTE_BUDGET_PROGRAM_ID);
+  const lighthouseProgramBytes = base58Decode(LIGHTHOUSE_PROGRAM_ID);
   const paymentInstructions: ParsedInstruction[] = [];
+  const lighthouseKinds: Array<"info" | "token"> = [];
+  let lighthouseTokenTargetIndex: number | null = null;
+  let sawLighthouse = false;
   let priorityFeeInstructionCount = 0;
   let walletUnitLimit: number | null = null;
   let walletUnitPrice: bigint | null = null;
   for (const instruction of parsed.instructions) {
-    if (
-      sameBytes(
-        parsed.accountKeys[instruction.programIdIndex]!,
-        computeBudgetProgramBytes
-      )
-    ) {
+    const programKey = parsed.accountKeys[instruction.programIdIndex]!;
+    if (sameBytes(programKey, computeBudgetProgramBytes)) {
+      /**
+       * Lighthouse is the terminal wallet suffix: once the first assertion
+       * appears, only the second assertion may follow. A fee instruction
+       * after (or between) them is not the observed Phantom shape.
+       */
+      if (sawLighthouse) {
+        return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+      }
       if (!isCanonicalPriorityFeeInstruction(instruction)) {
         return fail(origin, 400, "UNEXPECTED_PRIORITY_FEE_INSTRUCTION", false);
       }
@@ -561,6 +623,61 @@ export async function onRequestPost(
       }
       continue;
     }
+
+    if (sameBytes(programKey, lighthouseProgramBytes)) {
+      /**
+       * Lighthouse is the SECOND wallet-added program. It is read-only
+       * ONLY when its program key is an unsigned, read-only account; a
+       * writable or signer program key is not the documented assertion
+       * shape and is refused before any semantic decoding.
+       */
+      const programPrivilege = getAccountPrivilege(
+        parsed,
+        instruction.programIdIndex
+      );
+      if (programPrivilege.isSigner || programPrivilege.isWritable) {
+        return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+      }
+      if (instruction.accountIndexes.length !== 1) {
+        return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+      }
+      const targetIndex = instruction.accountIndexes[0]!;
+      const targetKey = parsed.accountKeys[targetIndex]!;
+      const data = instruction.data;
+      if (data[0] === 6) {
+        // AssertAccountInfoMulti v2, log level 4, on the PAYER.
+        if (!sameBytes(targetKey, payerBytes)) {
+          return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+        }
+        if (!isPhantomLighthouseInfoData(data)) {
+          return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+        }
+        lighthouseKinds.push("info");
+      } else if (data[0] === 10) {
+        // AssertTokenAccountMulti v2, log level 4, on the source ATA.
+        if (!isPhantomLighthouseTokenData(data)) {
+          return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+        }
+        lighthouseTokenTargetIndex = targetIndex;
+        lighthouseKinds.push("token");
+      } else {
+        return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+      }
+      if (lighthouseKinds.length > 2) {
+        return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+      }
+      sawLighthouse = true;
+      continue;
+    }
+
+    /**
+     * Lighthouse assertions must come AFTER every payable instruction:
+     * otherwise a later payment would be invisible to the assertion and
+     * the wallet-added suffix would no longer be the observed shape.
+     */
+    if (sawLighthouse) {
+      return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+    }
     paymentInstructions.push(instruction);
   }
   /**
@@ -587,6 +704,20 @@ export async function onRequestPost(
     }
   }
   if (paymentInstructions.length < 1 || paymentInstructions.length > 2) {
+    return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+  }
+  /**
+   * Lighthouse is either absent (the canonical payment) or appears as the
+   * exact ordered pair Phantom appends: info first, token second. One
+   * assertion, a duplicate, the reverse order, or more than two is not the
+   * observed transformation and is refused.
+   */
+  if (
+    lighthouseKinds.length !== 0 &&
+    (lighthouseKinds.length !== 2 ||
+      lighthouseKinds[0] !== "info" ||
+      lighthouseKinds[1] !== "token")
+  ) {
     return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
   }
 
@@ -663,34 +794,96 @@ export async function onRequestPost(
     return fail(origin, 400, "UNEXPECTED_TRANSFER_ACCOUNTS", false);
   }
 
-  // ---- no unknown accounts may ride along
-  const allowedKeys: string[] = [
-    payerAddress,
-    base58Encode(expectedSourceAta),
-    base58Encode(expectedDestinationAta),
-    TOKEN_PROGRAM_ID,
-  ];
+  /**
+   * The Lighthouse token assertion must read the SAME source ATA the
+   * validated transfer debits — resolved by address from the compiled
+   * transfer, never by a numeric index.
+   */
+  if (
+    lighthouseKinds.length === 2 &&
+    (lighthouseTokenTargetIndex === null ||
+      !sameBytes(
+        parsed.accountKeys[lighthouseTokenTargetIndex]!,
+        parsed.accountKeys[sourceIdx]!
+      ))
+  ) {
+    return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+  }
+
+  // ---- exact account-key table: no unknown, duplicate or differently
+  // privileged account may ride along
+  type ExpectedPrivilege = { isSigner: boolean; isWritable: boolean };
+  const expectedPrivileges = new Map<string, ExpectedPrivilege>();
+  expectedPrivileges.set(payerAddress, { isSigner: true, isWritable: true });
+  expectedPrivileges.set(base58Encode(expectedSourceAta), {
+    isSigner: false,
+    isWritable: true,
+  });
+  expectedPrivileges.set(base58Encode(expectedDestinationAta), {
+    isSigner: false,
+    isWritable: true,
+  });
+  expectedPrivileges.set(TOKEN_PROGRAM_ID, {
+    isSigner: false,
+    isWritable: false,
+  });
   if (ataCreateInstruction) {
-    allowedKeys.push(
-      SOLANA_SERVICE_SETTLEMENT_ADDRESS,
-      SOLANA_USDC_MINT,
-      SYSTEM_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    expectedPrivileges.set(SOLANA_SERVICE_SETTLEMENT_ADDRESS, {
+      isSigner: false,
+      isWritable: false,
+    });
+    expectedPrivileges.set(SOLANA_USDC_MINT, {
+      isSigner: false,
+      isWritable: false,
+    });
+    expectedPrivileges.set(SYSTEM_PROGRAM_ID, {
+      isSigner: false,
+      isWritable: false,
+    });
+    expectedPrivileges.set(ASSOCIATED_TOKEN_PROGRAM_ID, {
+      isSigner: false,
+      isWritable: false,
+    });
   }
   /**
-   * The ComputeBudget program key becomes legitimate ONLY when the
-   * wallet actually added its canonical fee instruction(s); an unused
-   * stray key is still refused below.
+   * The ComputeBudget and Lighthouse program keys become legitimate ONLY
+   * when the wallet actually added the exact instructions above; an
+   * unused stray key is refused below.
    */
   if (priorityFeeInstructionCount > 0) {
-    allowedKeys.push(COMPUTE_BUDGET_PROGRAM_ID);
+    expectedPrivileges.set(COMPUTE_BUDGET_PROGRAM_ID, {
+      isSigner: false,
+      isWritable: false,
+    });
   }
-  const allowed = new Set(allowedKeys);
-  for (const key of parsed.accountKeys) {
-    if (!allowed.has(base58Encode(key))) {
+  if (lighthouseKinds.length > 0) {
+    expectedPrivileges.set(LIGHTHOUSE_PROGRAM_ID, {
+      isSigner: false,
+      isWritable: false,
+    });
+  }
+
+  const seenAccountKeys = new Set<string>();
+  for (let index = 0; index < parsed.accountKeys.length; index++) {
+    const keyAddress = base58Encode(parsed.accountKeys[index]!);
+    if (seenAccountKeys.has(keyAddress)) {
       return fail(origin, 400, "UNEXPECTED_ACCOUNT", false);
     }
+    const expected = expectedPrivileges.get(keyAddress);
+    if (!expected) {
+      return fail(origin, 400, "UNEXPECTED_ACCOUNT", false);
+    }
+    const actual = getAccountPrivilege(parsed, index);
+    if (
+      actual.isSigner !== expected.isSigner ||
+      actual.isWritable !== expected.isWritable
+    ) {
+      return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
+    }
+    seenAccountKeys.add(keyAddress);
+  }
+  if (parsed.accountKeys.length !== expectedPrivileges.size) {
+    return fail(origin, 400, "UNEXPECTED_ACCOUNT", false);
   }
 
   /* ================= NETWORK GUARD ================= */

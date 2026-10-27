@@ -503,6 +503,15 @@ export default function CapsuleController({
 
       let tookSecretOwnership = false;
 
+      // PRESENTATION-ONLY FLAG.
+      //
+      // Set to true ONLY after trusted time has authoritatively
+      // established `nowUtc >= effectiveOpenAt` for THIS attempt. It
+      // never authorises decryption or content display; it only lets
+      // the retryable-failure presentation distinguish "opening is due,
+      // try again" from "trusted time has not decided yet".
+      let openDue = false;
+
 
       try {
 
@@ -546,6 +555,13 @@ export default function CapsuleController({
           return;
 
         }
+
+        // Trusted time has now authoritatively established that the
+        // capsule is due to open. This flag is consumed only by the
+        // retryable-failure presentation below; the actual open still
+        // requires the full validation/integrity/size/decryption
+        // pipeline in `openCapsule`.
+        openDue = true;
 
         if (!secretLocal) {
 
@@ -743,7 +759,24 @@ export default function CapsuleController({
             secretRef.current = secretLocal;
           }
 
-          commitSealed(manifest);
+          // A recipient whose open pipeline remains retryable must not
+          // see the ordinary SEALED landing/management card once trusted
+          // time has established that opening is due. This is a
+          // presentation-only state: no content is revealed and every
+          // retry still runs the full trusted-time/validation/decrypt
+          // pipeline. Authority management, missing capabilities,
+          // authoritative not-open outcomes, and failures raised before
+          // trusted time has decided retain the ordinary SEALED view.
+          if (
+            failureClass === "retryable" &&
+            openDue &&
+            secretLocal &&
+            !hasAuthorityCapability
+          ) {
+            commit({ status: "recovering", manifest });
+          } else {
+            commitSealed(manifest);
+          }
 
         }
 

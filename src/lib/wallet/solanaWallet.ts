@@ -595,6 +595,92 @@ const MAX_WALLET_PRIORITY_FEE_INSTRUCTIONS = 2
  */
 const MAX_WALLET_PRIORITY_FEE_LAMPORTS = 1_000_000n
 
+/**
+ * Phantom's transaction guard. Lighthouse instructions are READ-ONLY
+ * assertions: they can make a transaction fail, but they cannot move tokens
+ * or mutate an account. Only the exact v2 shapes Phantom was observed to
+ * append are recognized below; a matching program id alone is never enough.
+ */
+const LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
+
+/** SPL Token program, used to locate the prepared transfer's source ATA. */
+const SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+/**
+ * Phantom v2 Lighthouse payload fixtures, RECONSTRUCTED from the production
+ * diagnostic's recorded shape and hashes. The original production 27-byte
+ * token-assertion payload was not independently recovered; the fixtures
+ * below pin the accepted v2 shape rather than claim those exact remote
+ * bytes.
+ *
+ *   info  (16 B): 39bb93d1a828d59455ba9e8b9679901d04086bcf0c44251af08e7e60383e7fbc
+ *   token (27 B): b4441240a9f8613e359bc99ff3ca06512982b4d7ef1db1378000d149e2bf5a5f
+ *
+ * Info: AssertAccountInfoMulti(logLevel=4) on the payer:
+ *   KnownOwner(System) == Equal; DataLength == Equal(0)
+ *
+ * Token: AssertTokenAccountMulti(logLevel=4) on the source ATA:
+ *   Amount >= <post-transfer balance>; Delegate == null;
+ *   DelegatedAmount <= 0; TokenAccountOwnerIsDerived
+ */
+const PHANTOM_LIGHTHOUSE_INFO_DATA = new Uint8Array([
+  6, 4, 2,
+  3, 0, 0,
+  1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+])
+
+const PHANTOM_LIGHTHOUSE_TOKEN_DATA = new Uint8Array([
+  10, 4, 4,
+  2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
+  3, 0, 0,
+  6, 0, 0, 0, 0, 0, 0, 0, 0, 5,
+  8,
+])
+
+function isPhantomLighthouseInfoData(data: Uint8Array): boolean {
+  return messageBytesEqual(data, PHANTOM_LIGHTHOUSE_INFO_DATA)
+}
+
+/**
+ * The ONLY variable field is the u64 Amount lower bound: Phantom derives it
+ * from the simulated post-transfer balance, so pinning this particular
+ * user's 464418 would break every other balance. It is still a read-only
+ * assertion — the transfer itself remains byte-identical to the prepared
+ * payment — and every other discriminator, operator, option and value is
+ * fixed. Extra/trailing bytes are rejected by the exact length check.
+ */
+function isPhantomLighthouseTokenData(data: Uint8Array): boolean {
+  if (data.length !== PHANTOM_LIGHTHOUSE_TOKEN_DATA.length) return false
+  for (let index = 0; index < data.length; index++) {
+    // Bytes 4..11 are the runtime-specific Amount u64.
+    if (index >= 4 && index <= 11) continue
+    if (data[index] !== PHANTOM_LIGHTHOUSE_TOKEN_DATA[index]) return false
+  }
+  return true
+}
+
+/**
+ * Resolve the source token account from the PREPARED SPL Token transfer by
+ * address, never by a numeric index. The returned account-key table can be
+ * recompiled and reordered by the wallet, so index equality is not identity.
+ */
+function preparedTokenTransferSource(
+  prepared: import("@solana/web3.js").Message
+): string | null {
+  let source: string | null = null
+  for (const instruction of prepared.compiledInstructions) {
+    const program = prepared.accountKeys[instruction.programIdIndex]
+    if (!program || program.toBase58() !== SPL_TOKEN_PROGRAM) continue
+    // SPL Token `Transfer` (tag 3) is exactly 1 + 8 bytes.
+    if (instruction.data.length !== 9 || instruction.data[0] !== 3) continue
+    if (source !== null) return null
+    const sourceKey = prepared.accountKeys[instruction.accountKeyIndexes[0]!]
+    if (!sourceKey) return null
+    source = sourceKey.toBase58()
+  }
+  return source
+}
+
 /** Little-endian u32 read (bounds guaranteed by the caller). */
 function readU32LE(data: Uint8Array, offset: number): number {
   return (
@@ -618,17 +704,19 @@ function readU64LE(data: Uint8Array, offset: number): bigint {
 /**
  * `true` only when the returned message is BYTE-IDENTICAL to the prepared
  * one, or differs from it by nothing except canonical wallet-added
- * priority-fee instructions on the ComputeBudget program.
+ * priority-fee instructions and Phantom's exact Lighthouse v2 assertion
+ * pair.
  *
  * Rationale — documented wallet behavior, not a relaxation of the
  * payment's identity: Phantom automatically inserts a compute-unit limit
  * and a compute-unit price instruction into dApp transactions that carry
  * no signatures and no priority-fee instructions of their own, and signs
  * THAT message (docs.phantom.com/developer-powertools/solana-priority-fees).
- * Both instructions are fee-only:
+ * It may also append Lighthouse assertions that pin the payer and source
+ * token account. Both additions are bounded:
  *
- *   - they have ZERO account metas, so they cannot reference, let alone
- *     move, any token account;
+ *   - fee instructions have ZERO account metas, so they cannot reference,
+ *     let alone move, any token account;
  *   - only the two canonical fee tags are accepted (`setComputeUnitLimit`
  *     with a protocol-valid limit, and `setComputeUnitPrice`), at most
  *     ONE instruction of each, and the worst-case priority fee they can
@@ -640,9 +728,18 @@ function readU64LE(data: Uint8Array, offset: number): bigint {
  *     data bytes — the fee payer must be unchanged, the blockhash must be
  *     unchanged, the signer count must be unchanged, and every prepared
  *     account key must keep its exact signer/writable role;
- *   - the ONLY account key the wallet may append is the ComputeBudget
- *     program itself, read-only and unsigned, and only when it actually
- *     added such a fee instruction.
+ *   - Lighthouse is accepted ONLY as the exact two-instruction pair
+ *     Phantom was observed to append, in order, after the payment:
+ *     AssertAccountInfoMulti(payer) with KnownOwner(System) and
+ *     DataLength==0, then AssertTokenAccountMulti(source ATA) with
+ *     Amount>=<lower bound>, Delegate==null, DelegatedAmount<=0 and
+ *     TokenAccountOwnerIsDerived. Unknown versions, variants,
+ *     discriminators, values, extra assertions/accounts/instructions or
+ *     duplicates are refused. These are read-only assertions: they cannot
+ *     move tokens, and the transfer itself is still compared exactly;
+ *   - the ONLY account keys the wallet may append are the ComputeBudget
+ *     and Lighthouse programs, each read-only and unsigned, and only when
+ *     the corresponding instructions were actually added.
  *
  * Everything else — a single changed account, amount, mint, authority,
  * destination, blockhash or instruction — still fails closed, and an
@@ -676,6 +773,9 @@ async function walletMessageIsAcceptable(
     }
 
     const computeBudget = new PublicKey(COMPUTE_BUDGET_PROGRAM)
+    const lighthouse = new PublicKey(LIGHTHOUSE_PROGRAM)
+    const preparedTransferSource = preparedTokenTransferSource(prepared)
+    const lighthouseKinds: Array<"info" | "token"> = []
     const kept: Array<{
       program: string
       accounts: string[]
@@ -684,6 +784,7 @@ async function walletMessageIsAcceptable(
     let priorityFeeInstructions = 0
     let walletUnitLimit: number | null = null
     let walletUnitPrice: bigint | null = null
+    let sawLighthouse = false
 
     for (const instruction of returned.compiledInstructions) {
       const programKey = returned.accountKeys[instruction.programIdIndex]
@@ -721,6 +822,49 @@ async function walletMessageIsAcceptable(
         }
         continue
       }
+      if (programKey.equals(lighthouse)) {
+        /**
+         * The Lighthouse program account is a read-only, unsigned program
+         * key. A writable/signer role would be a different message from the
+         * documented Phantom shape and is refused.
+         */
+        if (
+          returned.isAccountSigner(instruction.programIdIndex) ||
+          returned.isAccountWritable(instruction.programIdIndex)
+        ) {
+          return false
+        }
+        if (instruction.accountKeyIndexes.length !== 1) return false
+        const target =
+          returned.accountKeys[instruction.accountKeyIndexes[0]!]
+        if (!target) return false
+        const data = new Uint8Array(instruction.data)
+
+        if (data[0] === 6) {
+          // AssertAccountInfoMulti on the fee payer: System-owned, no data.
+          if (!target.equals(preparedPayer)) return false
+          if (!isPhantomLighthouseInfoData(data)) return false
+          lighthouseKinds.push("info")
+        } else if (data[0] === 10) {
+          // AssertTokenAccountMulti on the prepared transfer's source ATA.
+          if (
+            preparedTransferSource === null ||
+            target.toBase58() !== preparedTransferSource ||
+            !isPhantomLighthouseTokenData(data)
+          ) {
+            return false
+          }
+          lighthouseKinds.push("token")
+        } else {
+          // Unknown Lighthouse version/variant/discriminator.
+          return false
+        }
+        if (lighthouseKinds.length > 2) return false
+        sawLighthouse = true
+        continue
+      }
+      // Lighthouse assertions are appended AFTER the prepared payment.
+      if (sawLighthouse) return false
       const accounts: string[] = []
       for (const accountIndex of instruction.accountKeyIndexes) {
         const accountKey = returned.accountKeys[accountIndex]
@@ -762,12 +906,28 @@ async function walletMessageIsAcceptable(
     if (kept.length !== preparedInstructions.length) return false
     /**
      * The bytes may differ from the prepared ones ONLY because the wallet
-     * added its canonical fee instruction(s). Without at least one such
-     * instruction the message is refused even when it still resolves to
-     * the same payment — the exception exists for the documented wallet
-     * behavior, not as a general "semantically equal" allowance.
+     * added its canonical fee instruction(s) and/or Phantom's exact
+     * Lighthouse v2 assertion pair. Without at least one such addition the
+     * message is refused even when it still resolves to the same payment —
+     * the exception exists for documented wallet behavior, not as a general
+     * "semantically equal" allowance.
      */
-    if (priorityFeeInstructions === 0) return false
+    if (priorityFeeInstructions === 0 && lighthouseKinds.length === 0) {
+      return false
+    }
+    /**
+     * Exactly two Lighthouse instructions, in this order, after the payment:
+     * AssertAccountInfoMulti(payer), then AssertTokenAccountMulti(source ATA).
+     * One alone, a duplicate, a reorder, or a third assertion is refused.
+     */
+    if (
+      lighthouseKinds.length !== 0 &&
+      (lighthouseKinds.length !== 2 ||
+        lighthouseKinds[0] !== "info" ||
+        lighthouseKinds[1] !== "token")
+    ) {
+      return false
+    }
     for (let index = 0; index < kept.length; index++) {
       const preparedInstruction = preparedInstructions[index]!
       const preparedProgram =
@@ -808,11 +968,20 @@ async function walletMessageIsAcceptable(
       }
     }
 
+    /**
+     * Account identity is by ADDRESS, not index: the wallet may recompile and
+     * reorder the account-key table. Every prepared key must occur exactly
+     * once (no aliasing through a duplicate key) and keep its exact role.
+     */
     for (const [index, preparedKey] of prepared.accountKeys.entries()) {
-      const found = returned.accountKeys.findIndex((key) =>
-        key.equals(preparedKey)
-      )
-      if (found < 0) return false
+      let found = -1
+      let occurrences = 0
+      for (const [returnedIndex, returnedKey] of returned.accountKeys.entries()) {
+        if (!returnedKey.equals(preparedKey)) continue
+        if (found < 0) found = returnedIndex
+        occurrences += 1
+      }
+      if (occurrences !== 1) return false
       if (returned.isAccountSigner(found) !== prepared.isAccountSigner(index)) {
         return false
       }
@@ -820,17 +989,30 @@ async function walletMessageIsAcceptable(
         return false
       }
     }
+
+    let computeBudgetKeys = 0
+    let lighthouseKeys = 0
     for (const [index, returnedKey] of returned.accountKeys.entries()) {
       const wasPrepared = prepared.accountKeys.some((key) =>
         key.equals(returnedKey)
       )
       if (wasPrepared) continue
-      if (priorityFeeInstructions === 0) return false
-      if (!returnedKey.equals(computeBudget)) return false
+      if (returnedKey.equals(computeBudget)) {
+        if (priorityFeeInstructions === 0) return false
+        computeBudgetKeys += 1
+      } else if (returnedKey.equals(lighthouse)) {
+        if (lighthouseKinds.length !== 2) return false
+        lighthouseKeys += 1
+      } else {
+        // No other account key may be appended.
+        return false
+      }
       if (returned.isAccountSigner(index) || returned.isAccountWritable(index)) {
         return false
       }
     }
+    if (computeBudgetKeys !== (priorityFeeInstructions > 0 ? 1 : 0)) return false
+    if (lighthouseKeys !== (lighthouseKinds.length > 0 ? 1 : 0)) return false
 
     return true
   } catch {

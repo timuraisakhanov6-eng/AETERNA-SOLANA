@@ -727,7 +727,7 @@ describe("strict broadcast — network guard", () => {
  * must never create a signature binding.
  */
 describe("broadcast refusal classification (broadcastAttempted)", () => {
-  /** A parse-level refusal: MORE instructions than the parser accepts (5). */
+  /** A parse-level refusal: MORE instructions than the parser accepts (7). */
   function overInstructionTransaction() {
     const tx = new Transaction().add(
       createAssociatedTokenAccountInstruction(
@@ -747,7 +747,9 @@ describe("broadcast refusal classification (broadcastAttempted)", () => {
       ),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
       ComputeBudgetProgram.setComputeUnitLimit({ units: 500 }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 2 })
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 2 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 3 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 4 })
     );
     tx.feePayer = payer.publicKey;
     tx.recentBlockhash = BLOCKHASH;
@@ -1390,5 +1392,451 @@ describe("strict broadcast — wallet-added priority fees (Phantom)", () => {
     expect(data["error"]).toBe("UNEXPECTED_PRIORITY_FEE_INSTRUCTION");
     expect(data["broadcastAttempted"]).toBe(false);
     expect(rpcCalls).toHaveLength(0);
+  });
+});
+
+/* ============================================================
+   RECONSTRUCTED VALIDATION FIXTURES - Phantom Lighthouse assertions
+
+   These tests are NOT the unavailable original production test
+   diff. They exercise the recovered server implementation against
+   RECONSTRUCTED Phantom assertion fixtures and their fail-closed
+   variants. The original production 27-byte token payload was not
+   independently recovered; these fixtures do not prove that exact
+   remote payload was accepted.
+   ============================================================ */
+
+const LIGHTHOUSE_PROGRAM =
+  "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
+
+/** Reconstructed 16-byte AssertAccountInfoMulti v2 fixture. */
+const PHANTOM_LIGHTHOUSE_INFO_DATA = Buffer.from([
+  6, 4, 2, 3, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+
+/**
+ * Reconstructed 27-byte AssertTokenAccountMulti v2 fixture. The original
+ * production payload was not independently recovered. Bytes 4..11 are the
+ * ONLY variable field (u64 amount lower bound); every other byte is pinned
+ * by the server.
+ */
+const PHANTOM_LIGHTHOUSE_TOKEN_DATA = Buffer.from([
+  10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
+  3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5,
+  8,
+]);
+
+function signedWithLighthouse(options: {
+  includeAtaCreate?: boolean;
+  includeFee?: boolean;
+  includeInfo?: boolean;
+  includeToken?: boolean;
+  reverseOrder?: boolean;
+  infoTarget?: PublicKey;
+  tokenTarget?: PublicKey;
+  infoData?: Buffer;
+  tokenData?: Buffer;
+  extraInfoAccount?: boolean;
+  /** Repeat the info assertion after the pair (a duplicate). */
+  duplicateInfo?: boolean;
+  /** Append an unknown-discriminator Lighthouse instruction. */
+  extraAssertion?: boolean;
+  /** Append an instruction on an unrelated program after the pair. */
+  foreignProgram?: boolean;
+  /** Make the Lighthouse program key writable instead of read-only. */
+  programWritable?: boolean;
+} = {}): { base64: string; signature: string } {
+  const tx = new Transaction();
+
+  if (options.includeFee ?? true) {
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 })
+    );
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitPrice({
+        microLamports: 375_000,
+      })
+    );
+  }
+
+  if (options.includeAtaCreate ?? true) {
+    tx.add(
+      createAssociatedTokenAccountInstruction(
+        payer.publicKey,
+        destinationAta,
+        settlement,
+        mint,
+        TOKEN_PROGRAM_ID
+      )
+    );
+  }
+
+  tx.add(
+    createTransferInstruction(
+      sourceAta,
+      destinationAta,
+      payer.publicKey,
+      1_000_000n,
+      [payer],
+      TOKEN_PROGRAM_ID
+    )
+  );
+
+  const lighthouse = new PublicKey(LIGHTHOUSE_PROGRAM);
+
+  const infoInstruction = new TransactionInstruction({
+    programId: lighthouse,
+    keys: options.programWritable
+      ? [
+          {
+            pubkey: lighthouse,
+            isSigner: false,
+            isWritable: true,
+          },
+        ]
+      : [
+          {
+            pubkey: options.infoTarget ?? payer.publicKey,
+            isSigner: false,
+            isWritable: false,
+          },
+          ...(options.extraInfoAccount
+            ? [
+                {
+                  pubkey: destinationAta,
+                  isSigner: false,
+                  isWritable: false,
+                },
+              ]
+            : []),
+        ],
+    data: options.infoData ?? PHANTOM_LIGHTHOUSE_INFO_DATA,
+  });
+
+  const tokenInstruction = new TransactionInstruction({
+    programId: lighthouse,
+    keys: [
+      {
+        pubkey: options.tokenTarget ?? sourceAta,
+        isSigner: false,
+        isWritable: false,
+      },
+    ],
+    data: options.tokenData ?? PHANTOM_LIGHTHOUSE_TOKEN_DATA,
+  });
+
+  const includeInfo = options.includeInfo ?? true;
+  const includeToken = options.includeToken ?? true;
+
+  if (options.reverseOrder) {
+    if (includeToken) tx.add(tokenInstruction);
+    if (includeInfo) tx.add(infoInstruction);
+  } else {
+    if (includeInfo) tx.add(infoInstruction);
+    if (includeToken) tx.add(tokenInstruction);
+  }
+
+  if (options.duplicateInfo) {
+    tx.add(infoInstruction);
+  }
+  if (options.extraAssertion) {
+    tx.add(
+      new TransactionInstruction({
+        programId: lighthouse,
+        keys: [
+          {
+            pubkey: payer.publicKey,
+            isSigner: false,
+            isWritable: false,
+          },
+        ],
+        data: Buffer.from([12, 4]),
+      })
+    );
+  }
+  if (options.foreignProgram) {
+    tx.add(
+      new TransactionInstruction({
+        programId: SystemProgram.programId,
+        keys: [],
+        data: Buffer.alloc(0),
+      })
+    );
+  }
+
+  tx.feePayer = payer.publicKey;
+  tx.recentBlockhash = BLOCKHASH;
+  tx.sign(payer);
+
+  return {
+    base64: tx.serialize().toString("base64"),
+    signature: base58Encode(
+      new Uint8Array(tx.signatures[0]!.signature)
+    ),
+  };
+}
+
+async function postLighthouse(
+  env: Env,
+  options: Parameters<typeof signedWithLighthouse>[0] = {}
+) {
+  const { base64 } = signedWithLighthouse(options);
+  return post(env, {
+    paymentIntentId: INTENT,
+    creatorIdentityId: IDENTITY,
+    signedTransaction: base64,
+  });
+}
+
+/** The attempt's own record: is a transaction signature bound to it? */
+async function boundSignature(env: Env): Promise<unknown> {
+  const resolved = await call(
+    env.CREDIT_OP_COORDINATOR,
+    `identity:${IDENTITY}`,
+    {
+      op: "identity-resolve-intent",
+      creatorIdentityId: IDENTITY,
+      paymentIntentId: INTENT,
+    }
+  );
+  return resolved.data["broadcastSignature"];
+}
+
+describe("candidate validation - Phantom Lighthouse assertion pair", () => {
+  it("accepts the exact ordered info -> token pair after the payment", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env);
+
+    expect(res.status).toBe(200);
+    expect(rpcCalls.map(methodOf)).toEqual([
+      "getGenesisHash",
+      "sendTransaction",
+    ]);
+
+    const sentBody = rpcCalls[1]!.body as Record<string, unknown>;
+    const params = sentBody["params"] as unknown[];
+    const sent = Transaction.from(
+      Buffer.from(String(params[0]), "base64")
+    );
+
+    expect(sent.instructions).toHaveLength(6);
+    expect(sent.instructions[4]!.programId.toBase58()).toBe(
+      LIGHTHOUSE_PROGRAM
+    );
+    expect(sent.instructions[5]!.programId.toBase58()).toBe(
+      LIGHTHOUSE_PROGRAM
+    );
+    expect(Buffer.from(sent.instructions[4]!.data)).toEqual(
+      PHANTOM_LIGHTHOUSE_INFO_DATA
+    );
+    expect(Buffer.from(sent.instructions[5]!.data)).toEqual(
+      PHANTOM_LIGHTHOUSE_TOKEN_DATA
+    );
+  });
+
+  it("accepts the pair when the optional fee pair and ATA-create are absent", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, {
+      includeFee: false,
+      includeAtaCreate: false,
+    });
+
+    expect(res.status).toBe(200);
+    expect(rpcCalls.map(methodOf)).toEqual([
+      "getGenesisHash",
+      "sendTransaction",
+    ]);
+    const sentBody = rpcCalls[1]!.body as Record<string, unknown>;
+    const params = sentBody["params"] as unknown[];
+    const sent = Transaction.from(
+      Buffer.from(String(params[0]), "base64")
+    );
+    expect(sent.instructions).toHaveLength(3);
+  });
+
+  it("accepts a different token-assertion u64 amount lower bound only", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const tokenData = Buffer.from(PHANTOM_LIGHTHOUSE_TOKEN_DATA);
+    tokenData.writeBigUInt64LE(123_456_789n, 4);
+
+    const res = await postLighthouse(env, { tokenData });
+
+    expect(res.status).toBe(200);
+    expect(rpcCalls.map(methodOf)).toEqual([
+      "getGenesisHash",
+      "sendTransaction",
+    ]);
+  });
+
+  it("refuses the pair in reverse order (token -> info)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, { reverseOrder: true });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses a single assertion (info only or token only)", async () => {
+    for (const options of [
+      { includeToken: false },
+      { includeInfo: false },
+    ]) {
+      const env = buildEnv();
+      await reserveAttempt(env);
+      const res = await postLighthouse(env, options);
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as Record<string, unknown>;
+      expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+      expect(data["broadcastAttempted"]).toBe(false);
+      expect(rpcCalls).toHaveLength(0);
+    }
+  });
+
+  it("refuses a tampered info payload", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const infoData = Buffer.from(PHANTOM_LIGHTHOUSE_INFO_DATA);
+    infoData[6] = 2;
+
+    const res = await postLighthouse(env, { infoData });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses a tampered token payload outside bytes 4..11", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const tokenData = Buffer.from(PHANTOM_LIGHTHOUSE_TOKEN_DATA);
+    tokenData[12] = 5;
+
+    const res = await postLighthouse(env, { tokenData });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses a token assertion aimed at the destination ATA", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, {
+      tokenTarget: destinationAta,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses an info assertion aimed at the source ATA", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, {
+      infoTarget: sourceAta,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses an extra account on the info assertion", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, {
+      extraInfoAccount: true,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses a duplicated info assertion after the pair", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, {
+      duplicateInfo: true,
+      includeFee: false,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+    expect(await boundSignature(env)).toBeNull();
+  });
+
+  it("refuses a third/unknown Lighthouse assertion", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, {
+      extraAssertion: true,
+      includeFee: false,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+    expect(await boundSignature(env)).toBeNull();
+  });
+
+  it("refuses an unknown program appended after the assertion pair", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, {
+      foreignProgram: true,
+      includeFee: false,
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+    expect(await boundSignature(env)).toBeNull();
+  });
+
+  it("refuses a writable Lighthouse program key", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+
+    const res = await postLighthouse(env, { programWritable: true });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+    expect(await boundSignature(env)).toBeNull();
   });
 });

@@ -485,6 +485,7 @@ describe("3. fail-closed — never `opened` without a proven successful open", (
     );
 
     expectFailClosedSealed();
+    expect(sequence()).not.toContain("recovering");
     expect(openCapsule).not.toHaveBeenCalled();
   });
 
@@ -500,6 +501,8 @@ describe("3. fail-closed — never `opened` without a proven successful open", (
     );
 
     expectFailClosedSealed();
+    expect(sequence()).not.toContain("recovering");
+    expect(openCapsule).not.toHaveBeenCalled();
   });
 
   it("no capability in this tab → fail-closed SEALED, not a permanent loader", async () => {
@@ -517,21 +520,41 @@ describe("3. fail-closed — never `opened` without a proven successful open", (
     expect(openCapsule).not.toHaveBeenCalled();
   });
 
-  it("a generic open failure → fail-closed SEALED, never opened", async () => {
+  it("a retryable expired-recipient read failure → recovery UI, never SEALED or opened", async () => {
     (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       nowUtc: OPEN_AT + 1000,
     });
     (openCapsule as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("[AETERNA] Range read failed")
+      retryableOpenError("STORAGE_READ_FAILED")
     );
 
     renderController({ secret: SECRET });
+
+    await waitFor(() => expect(sequence()).toContain("recovering"));
+
+    expectFailClosedRecovering();
+    expect(openCapsule).toHaveBeenCalledTimes(1);
+  });
+
+  it("a retryable failure in the creator/authority view keeps the SEALED management card", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: OPEN_AT + 1000,
+    });
+    (openCapsule as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      retryableOpenError("STORAGE_READ_FAILED")
+    );
+
+    renderController({
+      secret: SECRET,
+      creatorAuthorityFragment: "a".repeat(64),
+    });
 
     await waitFor(() =>
       expect(screen.getByLabelText("Capsule sealed")).toBeTruthy()
     );
 
     expectFailClosedSealed();
+    expect(sequence()).not.toContain("recovering");
   });
 
   it("INVALID_SECRET stays terminal — the error view, not SEALED", async () => {
