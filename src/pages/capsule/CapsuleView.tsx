@@ -48,6 +48,7 @@ export type CapsuleViewState =
       onCreate?: () => void;
     }
   | { status: "checking" }
+  | { status: "recovering" }
   | { status: "opening" }
   | {
       status: "opened";
@@ -269,6 +270,19 @@ export default function CapsuleView({ state, className }: Props) {
         <LockIcon size={48} className="text-amber-500 animate-pulse" />
         <p className="text-sm tracking-wider uppercase text-muted-foreground font-medium">
           Opening capsule…
+        </p>
+      </div>
+    );
+  }
+
+  /* ===== RECOVERING ??? retryable recipient failure, still fail-closed ===== */
+
+  if (state.status === "recovering") {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground gap-4 p-6">
+        <LockIcon size={48} className="text-amber-500 animate-pulse" />
+        <p role="status" className="text-sm tracking-wider uppercase text-muted-foreground font-medium text-center">
+          Capsule could not be loaded. Retrying…
         </p>
       </div>
     );

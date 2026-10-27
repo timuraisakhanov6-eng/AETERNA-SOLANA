@@ -34,6 +34,7 @@ type Props = {
 type InternalState =
   | { status: "loading" }
   | { status: "checking"; manifest: ManifestV1 }
+  | { status: "recovering"; manifest: ManifestV1 }
   | { status: "preview"; manifest: ManifestV1 }
   | {
       status: "opened";
@@ -965,6 +966,7 @@ export default function CapsuleController({
   const stateMatchesRoute =
     (state.status === "preview" ||
       state.status === "checking" ||
+      state.status === "recovering" ||
       state.status === "opened") &&
     state.manifest.capsuleId === capsuleId;
 
@@ -1321,6 +1323,21 @@ export default function CapsuleController({
       <CapsuleView
         state={{
           status: "checking",
+        }}
+      />
+    );
+
+  }
+
+  if (
+    state.status === "recovering" &&
+    stateMatchesRoute
+  ) {
+
+    return (
+      <CapsuleView
+        state={{
+          status: "recovering",
         }}
       />
     );

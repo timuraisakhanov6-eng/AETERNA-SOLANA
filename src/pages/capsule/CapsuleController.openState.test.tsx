@@ -201,6 +201,19 @@ function expectFailClosedSealed(): void {
   expect(screen.getByLabelText("Capsule sealed")).toBeTruthy();
 }
 
+/** Retryable recipient recovery stays closed without the SEALED landing card. */
+function expectFailClosedRecovering(): void {
+  const seq = sequence();
+  expect(seq).not.toContain("opened");
+  expect(seq).not.toContain("preview");
+  expect(seq[seq.length - 1]).toBe("recovering");
+  expect(screen.getByRole("status").textContent).toContain(
+    "Capsule could not be loaded. Retrying…"
+  );
+  expect(screen.queryByLabelText("Capsule sealed")).toBeNull();
+  expect(screen.queryByTestId("capsule-opened")).toBeNull();
+}
+
 /**
  * Invariant B — the successful-open path.
  *
@@ -224,7 +237,9 @@ function expectTerminalError(): void {
   expect(seq).not.toContain("preview");
 }
 
-function renderController(props: { secret?: string } = {}) {
+function renderController(
+  props: { secret?: string; creatorAuthorityFragment?: string } = {}
+) {
   return render(
     createElement(
       MemoryRouter,
@@ -232,6 +247,9 @@ function renderController(props: { secret?: string } = {}) {
       createElement(CapsuleController, {
         capsuleId: CAPSULE_ID,
         ...(props.secret !== undefined ? { secret: props.secret } : {}),
+        ...(props.creatorAuthorityFragment !== undefined
+          ? { creatorAuthorityFragment: props.creatorAuthorityFragment }
+          : {}),
       } as never)
     )
   );
