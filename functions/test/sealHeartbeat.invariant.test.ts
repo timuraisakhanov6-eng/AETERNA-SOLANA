@@ -27,6 +27,7 @@ vi.mock("@/lib/heartbeat/deriveCreatorAuthorityFragment", () => ({
 }));
 
 import { sealCapsuleCore } from "@/lib/capsule/sealCapsuleCore";
+import { SEAL_FAILURE_MESSAGE } from "@/lib/capsule/sealDiagnostic";
 
 /* ───────────────── constants ───────────────── */
 
@@ -234,16 +235,21 @@ describe("sealCapsuleCore heartbeatInterval contract", () => {
     expect(publicationCalls).toHaveLength(1);
   });
 
-  it("does not clamp or round sub-minute open windows", async () => {
+  it("rejects sub-day open windows before any seal request (one-day minimum)", async () => {
+    // The canonical seal bounds (client assertHeartbeatConsistency and
+    // the seal endpoint's HEARTBEAT_INTERVAL_MIN) require
+    // heartbeatInterval >= 1 day. A sub-minute window must therefore be
+    // refused by the client-side consistency guard BEFORE the network:
+    // no seal request is ever sent. The raw-milliseconds contract for
+    // VALID windows stays covered by the 1/30/365-day tests above.
     const ninetySeconds = 90_000;
     const h = buildHarness(ninetySeconds);
 
-    await sealCapsuleCore(h.params as never);
-
-    expect(h.sealRequests).toHaveLength(1);
-    expect(h.sealRequests[0]!.manifest.heartbeatInterval).toBe(
-      ninetySeconds
+    await expect(sealCapsuleCore(h.params as never)).rejects.toThrow(
+      SEAL_FAILURE_MESSAGE
     );
+
+    expect(h.sealRequests).toHaveLength(0);
   });
 
   it("emits canonical millisecond intervals for 1 / 30 / 365 day windows", async () => {

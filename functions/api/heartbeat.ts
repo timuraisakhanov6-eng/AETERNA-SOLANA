@@ -149,6 +149,24 @@ export async function onRequestPost(
 
   const { request, env } = ctx;
 
+  // Abuse-mitigation: the established fixed-window limiter, applied
+  // BEFORE any body parsing, validation, or KV work — mirroring the
+  // broadcast and storage-verification endpoints. Fail-open by
+  // contract: an unknown client IP is never rate-limited. This guard
+  // is abuse protection only and is NOT a replacement for the
+  // capability checks below.
+  const ip = getClientIp(request);
+
+  if (!ip || !rateLimit(ip)) {
+    return new Response(
+      JSON.stringify({ ok: false, code: "TOO_MANY_REQUESTS" }),
+      {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      }
+    );
+  }
+
   let body: unknown;
 
 

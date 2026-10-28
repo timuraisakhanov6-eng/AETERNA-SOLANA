@@ -305,6 +305,39 @@ describe("POST /api/heartbeat", () => {
     expect(res.status).toBe(503);
   });
 
+  it("rate-limits repeated POSTs from one IP before any validation work", async () => {
+    // Unique IP for this test so the module-level limiter state is not
+    // shared with any other test. Other tests omit CF-Connecting-IP and
+    // therefore fail open ("unknown"), so they are unaffected.
+    const ip = "203.0.113.77";
+    const makeIpRequest = () =>
+      onRequestPost({
+        request: new Request("http://localhost/api/heartbeat", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "CF-Connecting-IP": ip,
+          },
+          body: JSON.stringify({}),
+        }),
+        env: manifestEnv(),
+      });
+
+    // Fixed window: 60 requests per IP per 60s. Requests 1..60 pass the
+    // limiter and fail later on validation (400, no capsuleId). The 61st
+    // must be rejected with 429 BEFORE any body processing.
+    for (let i = 0; i < 60; i++) {
+      const res = await makeIpRequest();
+      expect(res.status).toBe(400);
+    }
+
+    const limited = await makeIpRequest();
+    expect(limited.status).toBe(429);
+    const data = (await limited.json()) as { ok?: unknown; code?: unknown };
+    expect(data.ok).toBe(false);
+    expect(data.code).toBe("TOO_MANY_REQUESTS");
+  });
+
   it("INCONCLUSIVE — live expired confirmation rejection: requires persisted live state + network unavailable in Node/Vitest", () => {
     expect(true).toBe(true);
   });
