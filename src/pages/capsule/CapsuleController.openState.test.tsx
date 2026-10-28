@@ -1090,3 +1090,124 @@ describe("7. typed boundary classification drives the retry decision", () => {
     expect(sequence()).not.toContain("opened");
   });
 });
+
+/* ============================================================
+   8. creator presence → recipient effective date (UI)
+
+   The recipient card date is the EFFECTIVE opening date derived
+   from the persisted heartbeat (CapsuleController [В]/[Г]), and the
+   30 s heartbeat poll updates an already-open page without reload.
+   ============================================================ */
+
+describe("8. creator presence → recipient effective date and notice", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Mirrors CapsuleView.formatUTCDate exactly (en-US, UTC). */
+  function expectedOpenDate(ts: number): string {
+    return new Date(ts).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      timeZone: "UTC",
+    });
+  }
+
+  it("renders the heartbeat-shifted effective date on the recipient card (initial load)", async () => {
+    // The creator confirmed presence 10 days before the sealed boundary:
+    // effective = lastConfirmedAt + 30d = OPEN_AT + 20d (interval <= 30d).
+    const confirmedAt = OPEN_AT - 10 * DAY_MS;
+    (loadHeartbeatRecord as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      capsuleId: CAPSULE_ID,
+      lastConfirmedAt: confirmedAt,
+    });
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: confirmedAt + 1000, // still inside the confirmation window
+    });
+
+    renderController(); // recipient: no secret, no authority fragment
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(`Opens on ${expectedOpenDate(OPEN_AT + 20 * DAY_MS)} (UTC)`)
+      ).toBeTruthy()
+    );
+    // The immutable manifest.openAt string is NOT displayed instead.
+    expect(
+      screen.queryByText(`Opens on ${expectedOpenDate(OPEN_AT)} (UTC)`)
+    ).toBeNull();
+  });
+
+  it("shows the recipient explanatory notice with the Learn-why link", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: SEALED_AT + 1000,
+    });
+
+    renderController(); // recipient
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("The opening date of this capsule may change over time.")
+      ).toBeTruthy()
+    );
+    const link = screen.getByText("Learn why →").closest("a");
+    expect(link?.getAttribute("href")).toBe("/protocol#creator-presence");
+  });
+
+  it("does NOT show the recipient notice on the creator/authority card", async () => {
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: SEALED_AT + 1000,
+    });
+
+    renderController({ creatorAuthorityFragment: "f".repeat(64) });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Capsule sealed")).toBeTruthy()
+    );
+    expect(
+      screen.queryByText("The opening date of this capsule may change over time.")
+    ).toBeNull();
+    // The creator sees the authority security text instead.
+    expect(
+      screen.getByText(/This link contains a capability fragment/)
+    ).toBeTruthy();
+  });
+
+  it("an already-open (preview) recipient page auto-updates the date via the 30 s heartbeat poll", async () => {
+    vi.useFakeTimers();
+
+    let lastConfirmedAt: number | null = OPEN_AT - 10 * DAY_MS;
+    (
+      loadHeartbeatRecord as unknown as ReturnType<typeof vi.fn>
+    ).mockImplementation(async () => ({
+      capsuleId: CAPSULE_ID,
+      lastConfirmedAt,
+    }));
+    (getTrustedTime as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nowUtc: SEALED_AT + 1000,
+    });
+
+    renderController(); // recipient
+
+    await act(async () => {});
+    expect(
+      screen.getByText(`Opens on ${expectedOpenDate(OPEN_AT + 20 * DAY_MS)} (UTC)`)
+    ).toBeTruthy();
+
+    // The creator confirms again: the persisted heartbeat moves.
+    lastConfirmedAt = OPEN_AT - 5 * DAY_MS; // effective = OPEN_AT + 25d
+
+    // Fire the EXISTING 30 s heartbeat poll — no reload, no navigation.
+    await act(async () => {
+      vi.advanceTimersByTime(30000);
+    });
+
+    expect(
+      screen.getByText(`Opens on ${expectedOpenDate(OPEN_AT + 25 * DAY_MS)} (UTC)`)
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(`Opens on ${expectedOpenDate(OPEN_AT + 20 * DAY_MS)} (UTC)`)
+    ).toBeNull();
+  });
+});

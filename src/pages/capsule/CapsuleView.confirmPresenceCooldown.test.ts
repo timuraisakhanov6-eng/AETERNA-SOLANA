@@ -440,3 +440,52 @@ describe("non-vacuity control — the v2 hardening is falsifiable", () => {
     expect(isCooldownActive(v2s, KEY, T)).toBe(true);     // genuine
   });
 });
+
+/* ============================================================
+   N. creator result feedback — current UX (documented gap)
+
+   The view awaits runConfirmPresenceAttempt but consumes only the
+   onConfirmed callback: rejected / expired / network-error outcomes
+   are SILENT — no user-facing failure message exists today, and no
+   success state can be reached by them (state machine: describe I).
+   ============================================================ */
+
+describe("N. creator result feedback — the UI consumes only success", () => {
+  it("the four button labels exist in the view source", () => {
+    expect(VIEW_SRC).toContain("CONFIRMING...");
+    expect(VIEW_SRC).toContain("WAIT 15 MIN");
+    expect(VIEW_SRC).toContain("CONFIRMED ✓");
+    expect(VIEW_SRC).toContain("CONFIRM PRESENCE");
+  });
+
+  it("a failed outcome surfaces NO user-facing message (documented UX gap)", () => {
+    expect(VIEW_SRC).toMatch(/await runConfirmPresenceAttempt\(\{/);
+    expect(VIEW_SRC).not.toMatch(
+      /CONFIRMATION FAILED|PRESENCE REJECTED|NOT CONFIRMED|COULD NOT CONFIRM/i
+    );
+  });
+
+  it("a successful outcome is the ONLY path to CONFIRMED ✓ and the cooldown", () => {
+    expect(VIEW_SRC).toMatch(/onConfirmed: \(\) => \{/);
+    expect(VIEW_SRC).toMatch(/setConfirmSuccess\(true\)/);
+    expect(VIEW_SRC).toMatch(/activateHeartbeatCooldown\(HEARTBEAT_COOLDOWN_MS\)/);
+  });
+});
+
+/* ============================================================
+   O. recipient explanatory notice (source pins)
+   ============================================================ */
+
+describe("O. the recipient explanatory notice is pinned in source", () => {
+  it("the exact notice text and Learn-why destination exist", () => {
+    expect(VIEW_SRC).toContain(
+      "The opening date of this capsule may change over time."
+    );
+    expect(VIEW_SRC).toContain("Learn why →");
+    expect(VIEW_SRC).toContain("/protocol#creator-presence");
+  });
+
+  it("the notice is recipient-only (gated on !authorityMode)", () => {
+    expect(VIEW_SRC).toMatch(/\{!authorityMode && \(/);
+  });
+});
