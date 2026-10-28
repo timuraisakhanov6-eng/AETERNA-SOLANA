@@ -46,6 +46,22 @@ interface SealEnv {
   AUTHORITY_TOKENS: KVNamespace;
   BUSINESS_QUOTES: KVNamespace;
   PUBLICATION_VERIFICATIONS?: KVNamespace;
+  CREATOR_CREDITS?: KVNamespace;
+
+  /**
+   * Strongly consistent creator-credit authority (Durable Object). Used
+   * by the seal payment gate ONLY as a durable fallback when the
+   * temporary VERIFIED_PAYMENTS evidence is expired or absent: the
+   * credit was granted server-side only after the same payment was
+   * verified, and handleReserve binds it to exactly one
+   * creatorIdentityId + lifecycleId + capsuleId + paymentIntentId.
+   */
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(id: { id: string }): {
+      fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
+    };
+  };
 
   DEBUG?: "true" | "false";
 }
@@ -250,6 +266,147 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
 };
 
 /* ================= POST ================= */
+
+/**
+ * Durable creator-credit authorization fallback for the seal gate.
+ *
+ * The VERIFIED_PAYMENTS evidence written by
+ * /api/service-payment/verify is deliberately temporary (60-minute
+ * KV TTL). The durable Creator Credit reservation is not: it was
+ * granted server-side ONLY after that same payment was verified
+ * (grant-credit.ts requires the VERIFIED_PAYMENTS evidence with
+ * ok === true and a matching intent), it is strongly consistent
+ * (Durable Object input gate), and handleReserve binds it to exactly
+ * one creatorIdentityId + lifecycleId + capsuleId + paymentIntentId
+ * (CAPSULE_MISMATCH / IDENTITY_MISMATCH refuse rebinds; the
+ * paymentIntentId is server-derived and never accepted from the
+ * client).
+ *
+ * This fallback therefore authorizes a seal WITHOUT fresh payment
+ * evidence only when a CONSUMING credit for the SAME
+ * creatorIdentityId + lifecycleId + capsuleId + paymentIntentId
+ * exists. It never treats publication VERIFIED as payment proof,
+ * never recreates expired evidence, and never relaxes the
+ * storage-payment checks (enforced at upload-token issuance,
+ * unchanged).
+ */
+async function authorizeSealViaDurableCredit(
+  env: SealEnv,
+  params: {
+    creatorIdentityId: string;
+    lifecycleId: string;
+    capsuleId: string;
+    paymentIntentId: string;
+  }
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const bindings = env as SealEnv & {
+    CREATOR_CREDITS?: KVNamespace;
+    CREDIT_OP_COORDINATOR?: {
+      idFromName(name: string): { id: string };
+      get(id: { id: string }): {
+        fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
+      };
+    };
+  };
+
+  const lifecycleRaw = bindings.CREATOR_CREDITS
+    ? await bindings.CREATOR_CREDITS.get(
+        `creator:credit:lifecycle:${params.creatorIdentityId}:${params.lifecycleId}`
+      )
+    : null;
+  if (!lifecycleRaw) {
+    return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_MISSING" };
+  }
+
+  let lifecycleIndex: { id?: unknown; creatorIdentityId?: unknown };
+  try {
+    lifecycleIndex = JSON.parse(lifecycleRaw) as {
+      id?: unknown;
+      creatorIdentityId?: unknown;
+    };
+  } catch {
+    return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_CORRUPT" };
+  }
+
+  const creditId =
+    typeof lifecycleIndex.id === "string" ? lifecycleIndex.id : "";
+  if (
+    !creditId ||
+    (typeof lifecycleIndex.creatorIdentityId === "string" &&
+      lifecycleIndex.creatorIdentityId !== params.creatorIdentityId)
+  ) {
+    return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_INVALID" };
+  }
+
+  const coordinator = bindings.CREDIT_OP_COORDINATOR;
+  if (
+    !coordinator ||
+    typeof coordinator.idFromName !== "function" ||
+    typeof coordinator.get !== "function"
+  ) {
+    return { ok: false, reason: "DURABLE_CREDIT_COORDINATOR_UNAVAILABLE" };
+  }
+
+  let payload: {
+    ok?: unknown;
+    outcome?: unknown;
+    status?: unknown;
+    creatorIdentityId?: unknown;
+    capsuleId?: unknown;
+    lifecycleId?: unknown;
+    paymentIntentId?: unknown;
+  } | null = null;
+
+  try {
+    const stub = coordinator.get(coordinator.idFromName(creditId));
+    const doResponse = await stub.fetch("http://localhost", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "read", creatorCreditId: creditId }),
+    });
+    payload = (await doResponse.json().catch(() => null)) as typeof payload;
+  } catch {
+    return { ok: false, reason: "DURABLE_CREDIT_COORDINATOR_UNAVAILABLE" };
+  }
+
+  if (!payload || payload.ok !== true || payload.outcome !== "FOUND") {
+    return { ok: false, reason: "DURABLE_CREDIT_NOT_FOUND" };
+  }
+
+  if (payload.status !== "CONSUMING") {
+    return { ok: false, reason: "DURABLE_CREDIT_NOT_CONSUMING" };
+  }
+
+  if (
+    typeof payload.creatorIdentityId !== "string" ||
+    payload.creatorIdentityId !== params.creatorIdentityId
+  ) {
+    return { ok: false, reason: "DURABLE_CREDIT_IDENTITY_MISMATCH" };
+  }
+
+  if (
+    typeof payload.capsuleId !== "string" ||
+    payload.capsuleId !== params.capsuleId
+  ) {
+    return { ok: false, reason: "DURABLE_CREDIT_CAPSULE_MISMATCH" };
+  }
+
+  if (
+    typeof payload.lifecycleId !== "string" ||
+    payload.lifecycleId !== params.lifecycleId
+  ) {
+    return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_MISMATCH" };
+  }
+
+  if (
+    typeof payload.paymentIntentId !== "string" ||
+    payload.paymentIntentId !== params.paymentIntentId
+  ) {
+    return { ok: false, reason: "DURABLE_CREDIT_PAYMENT_INTENT_MISMATCH" };
+  }
+
+  return { ok: true };
+}
 
 export const onRequestPost =
 async (context: EventContext<SealEnv, unknown, unknown>) => {
@@ -503,6 +660,8 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
     }
   }
 
+  let paymentAuthorized = false;
+
   if (
     !verifiedPayment ||
     !boundEvidenceId ||
@@ -510,13 +669,37 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
     !Number.isSafeInteger(verifiedPayment.expiresAt) ||
     verifiedPayment.expiresAt <= trustedNow
   ) {
-    return fail(402, "PAYMENT_REQUIRED", origin);
-  }
-
-  if (
+    /* ── Durable creator-credit fallback ──
+     *
+     * The temporary VERIFIED_PAYMENTS evidence is missing, not ok, or
+     * expired. The durable CONSUMING creator-credit reservation for
+     * THIS lifecycle/capsule carries equivalent payment authority: it
+     * was granted only after the same payment was verified, and its
+     * binding is re-proven here against the strongly consistent DO
+     * record before the seal may proceed.
+     */
+    if (paymentIntentId) {
+      const durable = await authorizeSealViaDurableCredit(env, {
+        creatorIdentityId: tokenData.creatorIdentityId,
+        lifecycleId:
+          typeof tokenData.canonicalLifecycleId === "string"
+            ? tokenData.canonicalLifecycleId
+            : "",
+        capsuleId,
+        paymentIntentId,
+      });
+      paymentAuthorized = durable.ok;
+    }
+  } else if (
     verifiedPayment.paymentIntentId !== paymentIntentId
   ) {
     return fail(402, "PAYMENT_INVALID", origin);
+  } else {
+    paymentAuthorized = true;
+  }
+
+  if (!paymentAuthorized) {
+    return fail(402, "PAYMENT_REQUIRED", origin);
   }
 
   /* ── Publication verification gate ──

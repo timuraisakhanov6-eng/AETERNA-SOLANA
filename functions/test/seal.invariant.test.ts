@@ -7,6 +7,10 @@ import {
   CreateQuoteEnv,
 } from "./harness";
 import { onRequestPost as sealPostRaw } from "./../api/capsule/seal";
+import {
+  classifySealHttpResponse,
+  isTerminalSealFailure,
+} from "../../src/lib/capsule/sealCapsuleCore";
 
 const ALLOWED_ORIGIN = "https://aeternacapsule.com";
 
@@ -31,6 +35,13 @@ interface SealEnv {
   AUTHORITY_TOKENS: ReturnType<typeof createFakeKV>;
   BUSINESS_QUOTES: ReturnType<typeof createFakeKV>;
   PUBLICATION_VERIFICATIONS?: ReturnType<typeof createFakeKV>;
+  CREATOR_CREDITS?: ReturnType<typeof createFakeKV>;
+  CREDIT_OP_COORDINATOR?: {
+    idFromName(name: string): { id: string };
+    get(id: { id: string }): {
+      fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
+    };
+  };
   DEBUG?: "true" | "false";
 }
 
@@ -127,6 +138,56 @@ function seedUploadToken(
     })
   );
   return token;
+}
+
+/**
+ * Durable-credit fallback fixtures: the lifecycle index in CREATOR_CREDITS
+ * plus a fake CreditOperationCoordinator whose `read` op returns the given
+ * credit record (strongly consistent, input-gate semantics mirrored).
+ */
+function seedDurableCredit(options: {
+  creatorIdentityId: string;
+  lifecycleId: string;
+  capsuleId: string;
+  paymentIntentId: string;
+  status?: "AVAILABLE" | "CONSUMING" | "CONSUMED";
+  creditId?: string;
+}): {
+  creditsKv: ReturnType<typeof createFakeKV>;
+  coordinator: NonNullable<SealEnv["CREDIT_OP_COORDINATOR"]>;
+} {
+  const creditId = options.creditId ?? "credit-1";
+  const creditsKv = createFakeKV();
+  creditsKv.put(
+    `creator:credit:lifecycle:${options.creatorIdentityId}:${options.lifecycleId}`,
+    JSON.stringify({
+      id: creditId,
+      status: options.status ?? "CONSUMING",
+      creatorIdentityId: options.creatorIdentityId,
+    })
+  );
+  const creditRecord = {
+    ok: true,
+    outcome: "FOUND",
+    status: options.status ?? "CONSUMING",
+    creatorCreditId: creditId,
+    creatorIdentityId: options.creatorIdentityId,
+    capsuleId: options.capsuleId,
+    lifecycleId: options.lifecycleId,
+    paymentIntentId: options.paymentIntentId,
+    revision: 1,
+  };
+  const coordinator = {
+    idFromName: (name: string) => ({ id: name }),
+    get: () => ({
+      fetch: async () =>
+        new Response(JSON.stringify(creditRecord), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    }),
+  };
+  return { creditsKv, coordinator };
 }
 
 describe("Seal-Once invariants", () => {
@@ -1147,5 +1208,203 @@ describe("Seal grammar boundaries (storage pointer + upload token)", () => {
     const { res, env } = await sealWith("a".repeat(32), "V".repeat(43));
     expect(res.status).toBe(200);
     expect(await env.CAPSULE_MANIFESTS.get(CAPSULE_ID)).toBeTruthy();
+  });
+});
+
+/* ============================================================
+   DURABLE CREDIT FALLBACK — expired payment evidence
+
+   The temporary VERIFIED_PAYMENTS evidence (60-minute KV TTL) can
+   expire while the durable CONSUMING credit reservation, the storage
+   payment, and the VERIFIED publication remain. The seal gate
+   authorizes via the strongly consistent DO credit record when ALL
+   bindings match (identity + lifecycle + capsule + paymentIntentId)
+   and the credit is single-use CONSUMING.
+   ============================================================ */
+
+describe("DURABLE CREDIT FALLBACK: seal authorization via the durable credit reservation", () => {
+  const FB_CAPSULE_ID = "b".repeat(64);
+  const FB_VAULT_TX_ID = "b".repeat(43);
+  const FB_SEALED_AT = Date.now();
+  const FB_OPEN_AT = FB_SEALED_AT + 1000;
+  const FB_IDENTITY = "creator-1";
+  const FB_LIFECYCLE = "lifecycle-1";
+  const FB_INTENT = "intent-1";
+  const FB_EVIDENCE = "evidence-1";
+
+  function fbManifest() {
+    return validManifest(FB_CAPSULE_ID, FB_VAULT_TX_ID, FB_SEALED_AT, FB_OPEN_AT, 1024);
+  }
+
+  /** Local copy of the vault-fetch stub (the original is describe-scoped). */
+  function fbStubVaultFetch() {
+    const mock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, {
+          status: 200,
+          headers: { "content-length": "1024" },
+        })
+      );
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  }
+
+  function fbPublication(env: SealEnv) {
+    env.PUBLICATION_VERIFICATIONS!.put(
+      `creator:publication:${FB_LIFECYCLE}`,
+      JSON.stringify({
+        lifecycleId: FB_LIFECYCLE,
+        capsuleId: FB_CAPSULE_ID,
+        creatorIdentityId: FB_IDENTITY,
+        state: "VERIFIED",
+        expectedTxId: FB_VAULT_TX_ID,
+        expectedVaultSha256: fbManifest().ext.vaultSha256,
+        evidenceIds: [FB_VAULT_TX_ID],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        verifiedAt: Date.now(),
+      })
+    );
+  }
+
+  function fbExpiredPayment(env: SealEnv) {
+    seedVerifiedPayment(env.VERIFIED_PAYMENTS, FB_INTENT, FB_EVIDENCE, Date.now() - 1000);
+  }
+
+  function fbCreditEnv(overrides?: {
+    status?: "AVAILABLE" | "CONSUMING" | "CONSUMED";
+    capsuleId?: string;
+    creatorIdentityId?: string;
+    lifecycleId?: string;
+    paymentIntentId?: string;
+    withCoordinator?: boolean;
+  }) {
+    const credit = {
+      creatorIdentityId: overrides?.creatorIdentityId ?? FB_IDENTITY,
+      lifecycleId: overrides?.lifecycleId ?? FB_LIFECYCLE,
+      capsuleId: overrides?.capsuleId ?? FB_CAPSULE_ID,
+      paymentIntentId: overrides?.paymentIntentId ?? FB_INTENT,
+      status: overrides?.status ?? ("CONSUMING" as const),
+    };
+    const { creditsKv, coordinator } = seedDurableCredit({
+      creatorIdentityId: credit.creatorIdentityId,
+      lifecycleId: credit.lifecycleId,
+      capsuleId: credit.capsuleId,
+      paymentIntentId: credit.paymentIntentId,
+      status: credit.status,
+    });
+    const env = buildSealEnv({
+      PUBLICATION_VERIFICATIONS: createFakeKV(),
+      CREATOR_CREDITS: creditsKv,
+      ...(overrides?.withCoordinator === false
+        ? {}
+        : { CREDIT_OP_COORDINATOR: coordinator }),
+    });
+    fbPublication(env);
+    fbExpiredPayment(env);
+    const uploadToken = seedUploadToken(
+      env.UPLOAD_TOKENS,
+      FB_INTENT,
+      FB_LIFECYCLE,
+      FB_IDENTITY
+    );
+    const body = {
+      uploadToken,
+      manifest: fbManifest(),
+      creatorAuthorityFragment: "a".repeat(64),
+    };
+    return { env, body };
+  }
+
+  it("expired payment evidence + valid CONSUMING credit reservation authorizes the seal (200)", async () => {
+    fbStubVaultFetch();
+    const { env, body } = fbCreditEnv();
+
+    const res = await sealPost(buildSealContext(env, body));
+
+    expect(res.status).toBe(200);
+    expect(await env.CAPSULE_MANIFESTS.get(FB_CAPSULE_ID)).toBeTruthy();
+    vi.unstubAllGlobals();
+  });
+
+  it("a CONSUMED credit does not authorize the seal (402)", async () => {
+    const { env, body } = fbCreditEnv({ status: "CONSUMED" });
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+    expect((await res.json()).error).toBe("PAYMENT_REQUIRED");
+  });
+
+  it("a credit bound to another capsule does not authorize the seal (402)", async () => {
+    const { env, body } = fbCreditEnv({ capsuleId: "c".repeat(64) });
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+  });
+
+  it("a credit bound to another lifecycle does not authorize the seal (402)", async () => {
+    const { env, body } = fbCreditEnv({ lifecycleId: "lifecycle-OTHER" });
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+  });
+
+  it("a credit bound to another creator identity does not authorize the seal (402)", async () => {
+    const { env, body } = fbCreditEnv({ creatorIdentityId: "creator-OTHER" });
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+  });
+
+  it("a credit bound to another payment intent does not authorize the seal (402)", async () => {
+    const { env, body } = fbCreditEnv({ paymentIntentId: "intent-OTHER" });
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+  });
+
+  it("a missing coordinator binding fails closed (402)", async () => {
+    const { env, body } = fbCreditEnv({ withCoordinator: false });
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+  });
+
+  it("an AVAILABLE credit does not authorize the seal (402)", async () => {
+    const { env, body } = fbCreditEnv({ status: "AVAILABLE" });
+    const res = await sealPost(buildSealContext(env, body));
+    expect(res.status).toBe(402);
+  });
+});
+
+describe("CLIENT SEAL FAILURE CLASSIFICATION: allowlisted 402 codes are terminal", () => {
+  it("402 PAYMENT_REQUIRED is terminal with the code preserved", () => {
+    const c = classifySealHttpResponse(402, '{"ok":false,"error":"PAYMENT_REQUIRED"}');
+    expect(c.terminal).toBe(true);
+    if (c.terminal) {
+      expect(c.code).toBe("PAYMENT_REQUIRED");
+      expect(c.error.message).toContain("PAYMENT_REQUIRED");
+      expect(isTerminalSealFailure(c.error)).toBe(true);
+    }
+  });
+
+  it("402 PAYMENT_INVALID is terminal", () => {
+    const c = classifySealHttpResponse(402, '{"ok":false,"error":"PAYMENT_INVALID"}');
+    expect(c.terminal).toBe(true);
+  });
+
+  it("402 with an unknown code is NOT terminal (fail-closed SEAL_UNKNOWN path)", () => {
+    expect(
+      classifySealHttpResponse(402, '{"ok":false,"error":"SOMETHING_ELSE"}').terminal
+    ).toBe(false);
+  });
+
+  it("a malformed 402 body is NOT terminal", () => {
+    expect(classifySealHttpResponse(402, "not-json").terminal).toBe(false);
+  });
+
+  it("non-402 responses are never terminal", () => {
+    expect(classifySealHttpResponse(200, '{"ok":true}').terminal).toBe(false);
+    expect(classifySealHttpResponse(500, '{"ok":false,"error":"X"}').terminal).toBe(false);
+  });
+
+  it("isTerminalSealFailure is false for ordinary errors", () => {
+    expect(isTerminalSealFailure(new Error("boom"))).toBe(false);
+    expect(isTerminalSealFailure(null)).toBe(false);
   });
 });

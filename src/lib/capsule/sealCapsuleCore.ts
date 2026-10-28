@@ -62,6 +62,7 @@ import {
 import { getTrustedTime } from "@/shared/time/getTrustedTime";
 
 import {
+  SEAL_FAILURE_MESSAGE,
   tagSealFailure,
   type SealDiagnosticCode,
 } from "@/lib/capsule/sealDiagnostic";
@@ -373,6 +374,71 @@ async function fetchSealWithDeadline(
   }
 }
 
+
+/**
+ * Deterministic payment-gate refusals from /api/capsule/seal.
+ *
+ * These server error codes are safe to surface verbatim: they carry no
+ * secrets and retrying them cannot change the outcome. Any other
+ * status/body keeps the fail-closed SEAL_UNKNOWN path.
+ */
+const SEAL_TERMINAL_ERROR_CODES = new Set([
+  "PAYMENT_REQUIRED",
+  "PAYMENT_INVALID",
+]);
+
+/**
+ * Classify one seal HTTP response. Returns a TERMINAL error (with the
+ * allowlisted server code preserved on `sealErrorCode` and a
+ * `sealTerminal` marker) for deterministic payment-gate refusals, and
+ * a non-terminal verdict for everything else (which keeps the
+ * existing fail-closed SEAL_UNKNOWN path).
+ */
+export function classifySealHttpResponse(
+  status: number,
+  bodyText: string
+): { terminal: true; code: string; error: Error } | { terminal: false } {
+  if (status !== 402) return { terminal: false };
+
+  let parsed: { ok?: unknown; error?: unknown } | null = null;
+  try {
+    parsed = JSON.parse(bodyText) as { ok?: unknown; error?: unknown };
+  } catch {
+    return { terminal: false };
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    parsed.ok !== false ||
+    typeof parsed.error !== "string"
+  ) {
+    return { terminal: false };
+  }
+
+  const code = parsed.error;
+  if (!SEAL_TERMINAL_ERROR_CODES.has(code)) return { terminal: false };
+
+  return {
+    terminal: true,
+    code,
+    error: Object.assign(
+      new Error(`${SEAL_FAILURE_MESSAGE}: ${code}`),
+      { sealErrorCode: code, sealTerminal: true }
+    ),
+  };
+}
+
+/**
+ * True when the failure is a DETERMINISTIC seal refusal (allowlisted
+ * server payment-gate code): retrying cannot change the outcome.
+ */
+export function isTerminalSealFailure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as Error & { sealTerminal?: unknown }).sealTerminal === true
+  );
+}
 
 /**
  * POST a JSON body to a same-origin Cloudflare Function with an
@@ -1568,6 +1634,16 @@ export async function sealCapsuleCore(
         );
       }
 
+      // Deterministic payment-gate refusals (402 PAYMENT_REQUIRED /
+      // PAYMENT_INVALID) are TERMINAL: retrying cannot change the
+      // outcome. The allowlisted server code is preserved on the error
+      // and survives the outer boundary verbatim.
+      const classified = classifySealHttpResponse(sealRes.status, text);
+
+      if (classified.terminal) {
+        throw classified.error;
+      }
+
       sealedError();
 
     }
@@ -1662,6 +1738,13 @@ export async function sealCapsuleCore(
      * Fail-closed is unchanged: this catch still throws, exactly as the
      * previous `sealedError()` did.
      */
+    if (isTerminalSealFailure(error)) {
+      // Deterministic payment-gate refusal: the allowlisted server
+      // error code is preserved verbatim for the UI instead of being
+      // collapsed into SEAL_UNKNOWN.
+      throw error;
+    }
+
     throw tagSealFailure(error, "SEAL_UNKNOWN");
 
   }

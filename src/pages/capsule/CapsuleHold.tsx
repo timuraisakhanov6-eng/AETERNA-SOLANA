@@ -1,7 +1,10 @@
 import { useContext, useEffect, useRef, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Loader2, Lock, AlertTriangle, RefreshCw } from "lucide-react";
-import { sealCapsuleCore } from "@/lib/capsule/sealCapsuleCore";
+import {
+  isTerminalSealFailure,
+  sealCapsuleCore,
+} from "@/lib/capsule/sealCapsuleCore";
 import { createCreatorIrysStorage } from "@/lib/storage/creatorIrysStorage";
 import { toCreatorIrysWallet } from "@/lib/storage/creatorIrys";
 import {
@@ -1056,6 +1059,14 @@ export default function CapsuleHold() {
                 break;
 
               } catch (sealErr) {
+
+                // Deterministic payment-gate refusals (402) are
+                // TERMINAL: retrying cannot change the outcome and
+                // every retry re-issues an identical seal request. The
+                // allowlisted server code propagates to the error UI.
+                if (isTerminalSealFailure(sealErr)) {
+                  throw sealErr;
+                }
 
                 // Keep the reason. The retry policy is unchanged; only
                 // the previously-discarded error is now retained so a
