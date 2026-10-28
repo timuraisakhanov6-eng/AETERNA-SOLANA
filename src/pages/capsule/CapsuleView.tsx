@@ -92,6 +92,9 @@ export default function CapsuleView({ state, className }: Props) {
   const [confirmSuccess, setConfirmSuccess] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [heartbeatCooldownActive, setHeartbeatCooldownActive] = useState(false);
+  const [confirmFeedback, setConfirmFeedback] = useState<
+    "rejected" | "expired" | "network-error" | null
+  >(null);
 
   const heartbeatCooldownKeyValue =
     state.status === "preview"
@@ -347,10 +350,12 @@ export default function CapsuleView({ state, className }: Props) {
     // by a persisted SUCCESSFUL confirmation timestamp; the cooldown
     // arms ONLY on a "confirmed" result.
     setConfirming(true);
+    // A new attempt invalidates feedback from the previous one.
+    setConfirmFeedback(null);
 
     try {
 
-      await runConfirmPresenceAttempt({
+      const outcome = await runConfirmPresenceAttempt({
         handler: handleConfirmPresence,
         storage: localStorage,
         key: heartbeatCooldownKeyValue,
@@ -359,6 +364,7 @@ export default function CapsuleView({ state, className }: Props) {
           state.status === "preview" ? state.capsuleId : "",
         onConfirmed: () => {
           setConfirmSuccess(true);
+          setConfirmFeedback(null);
           activateHeartbeatCooldown(HEARTBEAT_COOLDOWN_MS);
 
           if (confirmTimerRef.current)
@@ -371,6 +377,21 @@ export default function CapsuleView({ state, className }: Props) {
             );
         },
       });
+
+      // Creator-facing feedback: only non-success, non-cooldown
+      // outcomes surface a message. A blocked attempt is already
+      // communicated by the WAIT 15 MIN label, and a confirmed
+      // attempt by onConfirmed above. Fixed public strings only —
+      // no exceptions, fragments, or server details are surfaced.
+      if (!outcome.blocked && !outcome.confirmed) {
+        if (
+          outcome.result === "rejected" ||
+          outcome.result === "expired" ||
+          outcome.result === "network-error"
+        ) {
+          setConfirmFeedback(outcome.result);
+        }
+      }
 
     } catch {
 
@@ -751,12 +772,26 @@ export default function CapsuleView({ state, className }: Props) {
                   >
                     {confirming
                       ? "CONFIRMING..."
-                      : heartbeatCooldownActive
-                          ? "WAIT 15 MIN"
-                          : confirmSuccess
-                              ? "CONFIRMED ✓"
+                      : confirmSuccess
+                          ? "CONFIRMED ✓"
+                          : heartbeatCooldownActive
+                              ? "WAIT 15 MIN"
                               : "CONFIRM PRESENCE"}
                   </motion.button>
+
+                  {confirmFeedback && (
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      className="mt-3 text-[11px] leading-relaxed tracking-wide text-amber-200/90"
+                    >
+                      {confirmFeedback === "rejected"
+                        ? "Presence could not be confirmed. Check the capsule status and try again if the confirmation window is still open."
+                        : confirmFeedback === "expired"
+                          ? "The confirmation window has expired. Presence can no longer be confirmed for this capsule."
+                          : "We couldn't verify whether the confirmation was saved. Refresh the capsule page to check its current status before trying again."}
+                    </p>
+                  )}
                 </motion.div>
               )}
 

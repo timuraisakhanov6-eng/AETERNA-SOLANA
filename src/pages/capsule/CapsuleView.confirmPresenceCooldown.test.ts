@@ -1,5 +1,8 @@
+// @vitest-environment jsdom
 /**
- * AETERNA — CONFIRM PRESENCE client-side cooldown guard (v2, node env).
+ * AETERNA — CONFIRM PRESENCE client-side cooldown guard (v2).
+ * Pure state-machine describes run in node; describe P renders the
+ * real CapsuleView in jsdom (framer-motion mocked) for feedback UI.
  *
  * SCOPE: the client-side cooldown state machine ONLY. No server,
  * no network, no wallet, no payment, no crypto.
@@ -24,10 +27,14 @@
  * and an in-memory storage double — no DOM, no fetch.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { createElement } from "react";
+import CapsuleView from "./CapsuleView";
 
 import {
   HEARTBEAT_COOLDOWN_MS,
@@ -44,6 +51,42 @@ import {
 } from "@/lib/heartbeat/confirmPresenceCooldown";
 
 import type { ConfirmPresenceResult } from "@/lib/heartbeat/confirmPresence";
+
+// jsdom has no animation loop; render framer-motion tags as plain DOM.
+vi.mock("framer-motion", async () => {
+  const passthrough = (tag: string) => {
+    const C = (props: Record<string, unknown>) => {
+      const {
+        initial: _i,
+        animate: _a,
+        transition: _t,
+        whileHover: _h,
+        whileTap: _p,
+        exit: _e,
+        layout: _l,
+        variants: _v,
+        ...domProps
+      } = props;
+      return createElement(tag, domProps as never);
+    };
+    return C;
+  };
+  const cache = new Map<string, unknown>();
+  const motion = new Proxy(
+    {},
+    {
+      get: (_t, key) => {
+        const k = String(key);
+        if (!cache.has(k)) cache.set(k, passthrough(k));
+        return cache.get(k);
+      },
+    }
+  );
+  return {
+    motion,
+    AnimatePresence: (p: { children?: unknown }) => p.children,
+  };
+});
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VIEW_SRC = readFileSync(resolve(HERE, "CapsuleView.tsx"), "utf8");
@@ -487,5 +530,155 @@ describe("O. the recipient explanatory notice is pinned in source", () => {
 
   it("the notice is recipient-only (gated on !authorityMode)", () => {
     expect(VIEW_SRC).toMatch(/\{!authorityMode && \(/);
+  });
+});
+
+/* ============================================================
+   P. creator-facing feedback (rendered, jsdom)
+   ============================================================ */
+
+describe("P. creator-facing confirmation feedback (rendered)", () => {
+  const previewState = (handler: () => Promise<ConfirmPresenceResult>) =>
+    ({
+      status: "preview",
+      capsuleId: CID,
+      manifest: {
+        version: 1,
+        capsuleId: CID,
+        openAt: T,
+        sealedAt: T - 86_400_000,
+        saltBase: "c2FsdA==",
+        vaultTxId: "d".repeat(43),
+        encryptedSizeBytes: 4096,
+        heartbeatInterval: 86_400_000,
+      },
+      openAt: T,
+      authorityMode: true,
+      onConfirmPresence: handler,
+    }) as never;
+
+  function renderCreator(handler: () => Promise<ConfirmPresenceResult>) {
+    return render(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(CapsuleView, { state: previewState(handler) })
+      )
+    );
+  }
+
+  afterEach(() => {
+    cleanup();
+    window.localStorage.clear();
+    vi.useRealTimers();
+  });
+
+  it("a rejected outcome shows the retry guidance and no success state", async () => {
+    renderCreator(async () => "rejected");
+
+    fireEvent.click(screen.getByText("CONFIRM PRESENCE"));
+
+    const feedback = await screen.findByText(
+      "Presence could not be confirmed. Check the capsule status and try again if the confirmation window is still open."
+    );
+    expect(feedback.getAttribute("role")).toBe("status");
+    expect(feedback.getAttribute("aria-live")).toBe("polite");
+    expect(screen.queryByText("CONFIRMED ✓")).toBeNull();
+    // The cooldown must NOT arm on a failure: the label stays clickable.
+    expect(screen.getByText("CONFIRM PRESENCE")).toBeTruthy();
+  });
+
+  it("an expired outcome shows the expiration feedback", async () => {
+    renderCreator(async () => "expired");
+
+    fireEvent.click(screen.getByText("CONFIRM PRESENCE"));
+
+    await screen.findByText(
+      "The confirmation window has expired. Presence can no longer be confirmed for this capsule."
+    );
+    expect(screen.queryByText("CONFIRMED ✓")).toBeNull();
+  });
+
+  it("a network error shows ambiguity-aware feedback without claiming definite failure", async () => {
+    renderCreator(async () => "network-error");
+
+    fireEvent.click(screen.getByText("CONFIRM PRESENCE"));
+
+    const feedback = await screen.findByText(
+      "We couldn't verify whether the confirmation was saved. Refresh the capsule page to check its current status before trying again."
+    );
+    const text = feedback.textContent ?? "";
+    // Ambiguity-aware: it must NOT claim a definite failure.
+    expect(text.toLowerCase()).not.toContain("failed");
+    expect(screen.queryByText("CONFIRMED ✓")).toBeNull();
+  });
+
+  it("a confirmed outcome shows CONFIRMED ✓, arms the cooldown, and blocks the button", async () => {
+    vi.useFakeTimers();
+    renderCreator(async () => "confirmed");
+
+    fireEvent.click(screen.getByText("CONFIRM PRESENCE"));
+    await act(async () => {});
+
+    // The success acknowledgment is visible while the cooldown is armed.
+    expect(screen.getByText("CONFIRMED ✓")).toBeTruthy();
+    const stored = JSON.parse(
+      window.localStorage.getItem(heartbeatCooldownKey(CID)) as string
+    ) as { v?: unknown; at?: unknown };
+    expect(stored.v).toBe(HEARTBEAT_CONFIRMATION_SCHEMA_VERSION);
+    expect(typeof stored.at).toBe("number");
+    // The button remains blocked during cooldown even though the
+    // success label is visible.
+    const confirmedButton = screen.getByText("CONFIRMED ✓") as HTMLButtonElement;
+    expect(confirmedButton.disabled).toBe(true);
+    // No failure feedback of any kind is shown on success.
+    expect(
+      screen.queryByText(
+        "Presence could not be confirmed. Check the capsule status and try again if the confirmation window is still open."
+      )
+    ).toBeNull();
+
+    // After the 3 s success acknowledgment ends, the cooldown
+    // presentation remains correct.
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    const waitButton = screen.getByText("WAIT 15 MIN") as HTMLButtonElement;
+    expect(waitButton.disabled).toBe(true);
+
+    // After the full cooldown the button becomes available again.
+    await act(async () => {
+      vi.advanceTimersByTime(15 * 60 * 1000);
+    });
+    const idleButton = screen.getByText("CONFIRM PRESENCE") as HTMLButtonElement;
+    expect(idleButton.disabled).toBe(false);
+  });
+
+  it("a new attempt clears the previous failure feedback", async () => {
+    const handler = vi
+      .fn()
+      .mockResolvedValueOnce("rejected")
+      .mockResolvedValueOnce("confirmed");
+    renderCreator(handler as () => Promise<ConfirmPresenceResult>);
+
+    fireEvent.click(screen.getByText("CONFIRM PRESENCE"));
+    await screen.findByText(
+      "Presence could not be confirmed. Check the capsule status and try again if the confirmation window is still open."
+    );
+
+    // Second attempt: success must clear the stale failure feedback.
+    // With the success-label priority, CONFIRMED ✓ is visible while the
+    // cooldown is armed; the WAIT 15 MIN transition is covered by the
+    // lifecycle test above.
+    fireEvent.click(screen.getByText("CONFIRM PRESENCE"));
+    await screen.findByText("CONFIRMED ✓");
+    expect(
+      screen.queryByText(
+        "Presence could not be confirmed. Check the capsule status and try again if the confirmation window is still open."
+      )
+    ).toBeNull();
+    expect(
+      window.localStorage.getItem(heartbeatCooldownKey(CID))
+    ).not.toBeNull();
   });
 });
