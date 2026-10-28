@@ -1104,16 +1104,44 @@ export async function sealCapsuleCore(
      * Read temporary encrypted Vault from local runtime.
      */
 
-    encryptedPayload =
-      await runtime.readVault(
+    /**
+     * 3BM-R6 — the retry cache is read BEFORE the runtime vault bytes.
+     *
+     * The temporary encrypted Vault is consumed by exactly ONE stage: the
+     * vault upload. When a previous attempt already uploaded the vault and
+     * cached its transaction id, a re-entry (resume after a page reload or
+     * a failed seal attempt) must NOT require the runtime bytes:
+     * CapsuleHold's cleanup (`destroyRuntime` → `runtime.clear()`) wipes
+     * the IndexedDB vault record after every failed attempt, while the
+     * sessionStorage txId cache survives. Reading the payload
+     * unconditionally collapsed every such resume into SEAL_UNKNOWN
+     * before the first HTTP call (Phase 3BM-R5 diagnosis).
+     *
+     * The cache remains EVIDENCE ONLY: the cached txId is re-validated by
+     * the server-authoritative publication verify below, exactly like a
+     * freshly uploaded one. When no valid cache exists, the payload is
+     * required and the fail-closed behaviour is unchanged.
+     */
+
+    const cachedVaultTxId =
+      readCachedVaultTxId(
         capsuleId
       );
 
-    if (
-      !(encryptedPayload instanceof Uint8Array) ||
-      isDetachedBuffer(encryptedPayload)
-    ) {
-      sealedError();
+    if (cachedVaultTxId === null) {
+
+      encryptedPayload =
+        await runtime.readVault(
+          capsuleId
+        );
+
+      if (
+        !(encryptedPayload instanceof Uint8Array) ||
+        isDetachedBuffer(encryptedPayload)
+      ) {
+        sealedError();
+      }
+
     }
 
     const refinedSaltBase =
@@ -1139,9 +1167,12 @@ export async function sealCapsuleCore(
     )
       sealedError();
 
+    // 3BM-R6 — the byte-length equality needs the payload bytes, which are
+    // present only when a fresh upload will run (no cached vault txId).
     if (
+      encryptedPayload !== null &&
       encryptedPayload.byteLength !==
-      encryptedSizeBytes
+        encryptedSizeBytes
     ) {
       sealedError();
     }
@@ -1473,9 +1504,9 @@ export async function sealCapsuleCore(
      */
 
     const cachedTxId =
-      readCachedVaultTxId(
-        capsuleId
-      );
+      // 3BM-R6 — already read (and validated) before the runtime vault
+      // read; the value is identical on every call.
+      cachedVaultTxId;
 
     let txId: ArweaveTxId;
 
@@ -1488,6 +1519,16 @@ export async function sealCapsuleCore(
       // Bind the narrowed payload to a const: the diagnostic wrapper is a
       // closure, and TypeScript does not carry a `let` narrowing into one.
       const vaultPayload = encryptedPayload;
+
+      // 3BM-R6 — unreachable by construction (this branch runs only when
+      // no cached vault txId exists, and that branch reads the payload),
+      // kept fail-closed for type-narrowing and defence in depth.
+      if (
+        vaultPayload === null ||
+        isDetachedBuffer(vaultPayload)
+      ) {
+        sealedError();
+      }
 
       const vaultTxId =
         await withSealStage(
