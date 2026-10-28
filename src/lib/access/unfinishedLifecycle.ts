@@ -260,7 +260,8 @@ export type RecoveryOutcomeKind =
   | "resolved"
   | "blocked"
   | "unauthorized"
-  | "unknown";
+  | "unknown"
+  | "resume-unavailable";
 
 export interface RecoveryOutcome {
   kind: RecoveryOutcomeKind;
@@ -278,6 +279,8 @@ const RECOVERY_MESSAGES: Record<RecoveryOutcomeKind, string> = {
     "We could not confirm that this wallet owns that creation right. Reconnect the wallet used to pay and try again.",
   unknown:
     "We could not check the unfinished attempt. Please try again.",
+  resumeUnavailable:
+    "This attempt can't be resumed automatically — its preparation data is missing or does not match. Don't start a new payment; contact support so this attempt can be resolved safely.",
 };
 
 /** Outcomes the DO returns when an abort is impossible (server authority). */

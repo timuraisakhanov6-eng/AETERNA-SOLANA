@@ -8,6 +8,7 @@ import {
 } from "react";
 import { CapsuleItem, MediaItem } from "@/types/capsule";
 import { isoNow } from "@/lib/utils/isoNow";
+import { CAPSULE_ID_REGEX } from "@/lib/crypto/validators";
 
 /* ================= CONTEXT TYPE ================= */
 
@@ -31,6 +32,19 @@ type CapsuleContextType = {
 
   /** production lifecycle reset */
   resetCapsule: () => void;
+
+  /**
+   * RESUME ADOPTION (Phase 3BM-R4) — point the session identity root at an
+   * EXISTING capsule id during the explicit, validated resume path
+   * (CreateAccessGate → /create/hold for a CONSUMING, publication-VERIFIED
+   * attempt). The caller MUST have validated the id against the
+   * server-authoritative lifecycle record first; this function only accepts
+   * a canonical 64-hex capsule id and silently refuses anything else, so
+   * arbitrary UI input or unvalidated sessionStorage data can never choose
+   * the active capsule id. Normal NEW-capsule generation
+   * (generateCapsuleId / resetCapsule) is untouched.
+   */
+  adoptCapsuleId: (capsuleId: string) => void;
 
   description: string;
   setDescription: (v: string) => void;
@@ -150,6 +164,26 @@ export const CapsuleProvider = ({
     capsuleIdRef.current =
       generateCapsuleId();
   }
+
+  /**
+   * RESUME ADOPTION — see the context-type comment. Deliberately NOT a
+   * regeneration: the identity root is re-pointed, not re-rolled, so the
+   * F-5 sessionStorage binding in CapsuleHold (`aeterna-prepared-capsule`)
+   * validates against the adopted id on re-entry. Reads of
+   * `capsuleIdRef.current` happen on mount/navigation, which is exactly the
+   * consumer this path feeds (the gate navigates to /create/hold right
+   * after adopting).
+   */
+  const adoptCapsuleId = (capsuleId: string): void => {
+
+    if (!CAPSULE_ID_REGEX.test(capsuleId)) {
+      return;
+    }
+
+    capsuleIdRef.current =
+      capsuleId;
+
+  };
 
   /* ================= STATE ================= */
 
@@ -445,6 +479,8 @@ export const CapsuleProvider = ({
         getPreviewUrl,
 
         resetCapsule,
+
+        adoptCapsuleId,
 
         description,
         setDescription,

@@ -42,7 +42,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import {
   CreatorCreditProvider,
   CreatorIdentityProvider,
@@ -50,6 +50,7 @@ import {
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
 import { CreateAccessProvider, useCreateAccess } from "@/context/CreateAccessContext";
 import CreateAccessGate from "@/components/access/CreateAccessGate";
+import { CapsuleProvider } from "@/context/CapsuleContext";
 import {
   clearPendingPaymentAttempt,
   readPendingPaymentAttempt,
@@ -396,6 +397,9 @@ const tree = (options?: { seedAdmission?: boolean }) =>
     MemoryRouter,
     null,
     React.createElement(
+      CapsuleProvider,
+      null,
+    React.createElement(
       CreatorIdentityProvider,
       null,
       React.createElement(
@@ -441,6 +445,7 @@ const tree = (options?: { seedAdmission?: boolean }) =>
           )
         )
       )
+    )
     )
   );
 
@@ -2884,5 +2889,305 @@ describe("Home Access Gate — in-flight click protection", () => {
     );
     expect(signMessageMock).toHaveBeenCalledTimes(1);
     expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(1);
+  });
+});
+
+/* ───────────────── 3BM-R4: bounded resume finalization ───────────────── */
+
+const RESUME_CAPSULE_ID = "a".repeat(64);
+const OTHER_CAPSULE_ID = "b".repeat(64);
+const RESUME_CREDIT_ID = "creator-credit-alpha";
+const RESUME_LIFECYCLE_ID = "lifecycle-alpha";
+const RESUME_STORAGE_PAYMENT_ID = "storage-payment-alpha";
+const RESUME_OWNER_IDENTITY = "creator-identity-resume-owner";
+
+function validPreparedRecord(capsuleId: string): Record<string, unknown> {
+  return {
+    billableSizeBytes: 1024,
+    expectedAmount: 1,
+    openAt: 1_900_000_000_000,
+    itemIds: ["item-1"],
+    creatorAuthority: "d".repeat(64),
+    capsuleId,
+    encryptedVaultPointer: `aeterna-local-vault:${capsuleId}`,
+    encryptedSizeBytes: 4096,
+    vaultSha256: "a".repeat(64),
+    saltBase: "a".repeat(32),
+    recipientSecret: "c".repeat(64),
+    chunkMetadata: [],
+    storagePaymentId: RESUME_STORAGE_PAYMENT_ID,
+  };
+}
+
+function seedUnfinishedHint(record: {
+  creatorIdentityId: string;
+  creatorCreditId: string;
+  lifecycleId: string;
+  capsuleId: string;
+}): void {
+  window.localStorage.setItem(
+    "aeterna-unfinished-lifecycles",
+    JSON.stringify([record])
+  );
+}
+
+/** The /create/hold destination: exposes the navigation state it received. */
+function HoldProbe() {
+  const location = useLocation();
+  return React.createElement(
+    "div",
+    { "data-testid": "hold-route" },
+    JSON.stringify(location.state ?? null)
+  );
+}
+
+const treeWithHold = () =>
+  React.createElement(
+    MemoryRouter,
+    null,
+    React.createElement(
+      CapsuleProvider,
+      null,
+      React.createElement(
+        CreatorIdentityProvider,
+        null,
+        React.createElement(
+          CreatorCreditProvider,
+          null,
+          React.createElement(
+            LandingPaymentGateProvider,
+            null,
+            React.createElement(
+              CreateAccessProvider,
+              null,
+              React.createElement(
+                Routes,
+                null,
+                React.createElement(Route, {
+                  path: "/",
+                  element: React.createElement(CreateAccessGate),
+                }),
+                React.createElement(Route, {
+                  path: "/create/hold",
+                  element: React.createElement(HoldProbe),
+                })
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+
+describe("3BM-R4: bounded resume finalization from the unfinished-attempt card", () => {
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+    signMessageMock.mockClear();
+    signSolanaUSDCPaymentMock.mockClear();
+    isMobileMock.mockReset();
+    isMobileMock.mockReturnValue(false);
+    mobileDeeplinkMock.mockReset();
+    stableWallet.connected = false;
+    stableWallet.account = null;
+    stableWallet.walletName = null;
+    setPhantom(false);
+    try {
+      localStorage.clear();
+    } catch {
+      /* jsdom always provides localStorage */
+    }
+    try {
+      sessionStorage.clear();
+    } catch {
+      /* jsdom always provides sessionStorage */
+    }
+    if (typeof globalThis.crypto?.randomUUID !== "function") {
+      Object.defineProperty(globalThis.crypto, "randomUUID", {
+        value: () => "00000000-0000-4000-8000-000000000000",
+        configurable: true,
+      });
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  /** CONSUMING discovery for ONE authoritative attempt + its local hint. */
+  function resumeScenario(hintIdentity: string = CREATOR_IDENTITY_ID): void {
+    setPhantom(true);
+    connectWallet();
+    seedUnfinishedHint({
+      creatorIdentityId: hintIdentity,
+      creatorCreditId: RESUME_CREDIT_ID,
+      lifecycleId: RESUME_LIFECYCLE_ID,
+      capsuleId: RESUME_CAPSULE_ID,
+    });
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      {
+        match: "/api/creator/credit-status",
+        respond: () =>
+          CONSUMING_DISCOVERY([
+            {
+              creatorCreditId: RESUME_CREDIT_ID,
+              lifecycleId: RESUME_LIFECYCLE_ID,
+              capsuleId: RESUME_CAPSULE_ID,
+            },
+          ]),
+      },
+    ]);
+  }
+
+  it("a matching CONSUMING attempt offers Resume finalization and navigates with the ORIGINAL identity", async () => {
+    resumeScenario();
+    window.sessionStorage.setItem(
+      "aeterna-prepared-capsule",
+      JSON.stringify(validPreparedRecord(RESUME_CAPSULE_ID))
+    );
+
+    render(treeWithHold());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    const resumeButton = await screen.findByRole(
+      "button",
+      { name: "Resume finalization" },
+      { timeout: 5000 }
+    );
+    // Restore stays available alongside for genuinely restorable attempts.
+    expect(
+      screen.getByRole("button", { name: "Restore creation right" })
+    ).toBeTruthy();
+
+    // The RESUME click itself must not touch any recovery/payment endpoint
+    // and must not issue any signature. Discovery already ran once.
+    const challengeCallsBefore = fetchCallsTo(
+      "/api/creator/issue-challenge"
+    ).length;
+    const signaturesBefore = signMessageMock.mock.calls.length;
+
+    fireEvent.click(resumeButton);
+
+    const hold = await screen.findByTestId("hold-route", undefined, {
+      timeout: 5000,
+    });
+    const state = JSON.parse(hold.textContent ?? "null") as {
+      holdState: { prepared: { capsuleId: string } };
+      canonicalLifecycleId: string;
+      creatorIdentityId: string;
+      creatorCreditId: string;
+      storagePaymentId: string;
+    };
+    expect(state.canonicalLifecycleId).toBe(RESUME_LIFECYCLE_ID);
+    expect(state.creatorCreditId).toBe(RESUME_CREDIT_ID);
+    expect(state.creatorIdentityId).toBe(CREATOR_IDENTITY_ID);
+    expect(state.storagePaymentId).toBe(RESUME_STORAGE_PAYMENT_ID);
+    expect(state.holdState.prepared.capsuleId).toBe(RESUME_CAPSULE_ID);
+
+    expect(fetchCallsTo("/api/creator/recover-lifecycle")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(
+      challengeCallsBefore
+    );
+    expect(signMessageMock.mock.calls).toHaveLength(signaturesBefore);
+    expect(fetchCallsTo("/api/service-payment/create-quote")).toHaveLength(0);
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+  });
+
+  it("a missing prepared record blocks resume without any mutation", async () => {
+    resumeScenario();
+    // NO aeterna-prepared-capsule record.
+
+    render(treeWithHold());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    await screen.findByRole("button", { name: "Restore creation right" }, {
+      timeout: 5000,
+    });
+    expect(
+      screen.queryByRole("button", { name: "Resume finalization" })
+    ).toBeNull();
+    expect(screen.queryByTestId("hold-route")).toBeNull();
+    expect(fetchCallsTo("/api/creator/recover-lifecycle")).toHaveLength(0);
+  });
+
+  it("a prepared capsuleId mismatch blocks resume", async () => {
+    resumeScenario();
+    window.sessionStorage.setItem(
+      "aeterna-prepared-capsule",
+      JSON.stringify(validPreparedRecord(OTHER_CAPSULE_ID))
+    );
+
+    render(treeWithHold());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    await screen.findByRole("button", { name: "Restore creation right" }, {
+      timeout: 5000,
+    });
+    expect(
+      screen.queryByRole("button", { name: "Resume finalization" })
+    ).toBeNull();
+    expect(screen.queryByTestId("hold-route")).toBeNull();
+  });
+
+  it("a creator identity mismatch blocks resume", async () => {
+    resumeScenario("creator-identity-someone-else");
+    window.sessionStorage.setItem(
+      "aeterna-prepared-capsule",
+      JSON.stringify(validPreparedRecord(RESUME_CAPSULE_ID))
+    );
+
+    render(treeWithHold());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    await screen.findByRole("button", { name: "Restore creation right" }, {
+      timeout: 5000,
+    });
+    expect(
+      screen.queryByRole("button", { name: "Resume finalization" })
+    ).toBeNull();
+    expect(screen.queryByTestId("hold-route")).toBeNull();
+  });
+
+  it("a missing storagePaymentId blocks resume", async () => {
+    resumeScenario();
+    const prepared = validPreparedRecord(RESUME_CAPSULE_ID);
+    delete prepared.storagePaymentId;
+    window.sessionStorage.setItem(
+      "aeterna-prepared-capsule",
+      JSON.stringify(prepared)
+    );
+
+    render(treeWithHold());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    await screen.findByRole("button", { name: "Restore creation right" }, {
+      timeout: 5000,
+    });
+    expect(
+      screen.queryByRole("button", { name: "Resume finalization" })
+    ).toBeNull();
+    expect(screen.queryByTestId("hold-route")).toBeNull();
+  });
+
+  it("malformed prepared state blocks resume", async () => {
+    resumeScenario();
+    window.sessionStorage.setItem(
+      "aeterna-prepared-capsule",
+      "{not-json"
+    );
+
+    render(treeWithHold());
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+
+    await screen.findByRole("button", { name: "Restore creation right" }, {
+      timeout: 5000,
+    });
+    expect(
+      screen.queryByRole("button", { name: "Resume finalization" })
+    ).toBeNull();
+    expect(screen.queryByTestId("hold-route")).toBeNull();
   });
 });

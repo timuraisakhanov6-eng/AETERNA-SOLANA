@@ -82,6 +82,13 @@ import {
   type RecoveryOutcome,
   type UnfinishedLifecycleRecord,
 } from "@/lib/access/unfinishedLifecycle";
+import {
+  PREPARED_CAPSULE_SESSION_KEY,
+  RESUME_UNAVAILABLE_MESSAGE,
+  planResumeFinalization,
+  type ResumePlan,
+} from "@/lib/access/resumeFinalization";
+import { useCapsule } from "@/context/CapsuleContext";
 
 /* ================= SHARED GATE COPY ================= */
 
@@ -483,6 +490,80 @@ export default function CreateAccessGate() {
 
   /** Authoritative summary of the creator's rights (null when unknown). */
   const discoverySummary = servicePaymentRuntime.discovery?.summary ?? null;
+
+  /* ---------- 3BM-R4: bounded RESUME of a publication-VERIFIED attempt ---------- */
+
+  /**
+   * A CONSUMING credit bound to a VERIFIED publication can NEVER be
+   * restored — the Durable Object refuses to release it. For such attempts
+   * the gate offers a separate RESUME action: navigate the ORIGINAL
+   * CapsuleHold back into the sealing path with the same lifecycle /
+   * credit / capsule identity. The decision is made by the pure
+   * `planResumeFinalization` planner (fail-closed on every mismatch);
+   * this handler only navigates when the plan is "ready".
+   *
+   * The resume NEVER calls recover-lifecycle, never issues a challenge,
+   * never releases/rebinds the credit and never starts a payment. The
+   * existing Restore path remains for genuinely restorable attempts.
+   */
+  const { adoptCapsuleId } = useCapsule();
+
+  const readPreparedCapsuleRaw = (): string | null => {
+    try {
+      return sessionStorage.getItem(PREPARED_CAPSULE_SESSION_KEY);
+    } catch {
+      return null;
+    }
+  };
+
+  const resumePlanFor = useCallback(
+    (record: ServicePaymentUnfinishedLifecycle): ResumePlan =>
+      planResumeFinalization({
+        record,
+        localHint:
+          localHints.find(
+            (hint) =>
+              hint.lifecycleId.length > 0 &&
+              hint.lifecycleId === record.lifecycleId
+          ) ?? null,
+        creatorIdentityId: creatorIdentityIdForRecovery || null,
+        preparedRaw: readPreparedCapsuleRaw(),
+      }),
+    [localHints, creatorIdentityIdForRecovery]
+  );
+
+  const handleResume = useCallback(
+    (record: ServicePaymentUnfinishedLifecycle) => {
+      const plan = resumePlanFor(record);
+
+      if (plan.kind !== "ready") {
+        // Fail-closed: no navigation, no server state change — a clear
+        // safe message instead of a silent fallback to a new capsule.
+        setRecoveryOutcome({
+          kind: "resume-unavailable",
+          message: RESUME_UNAVAILABLE_MESSAGE,
+        });
+        return;
+      }
+
+      // The plan is ready: bind the session identity root to the ORIGINAL
+      // capsule id so CapsuleHold's F-5 re-entry validation accepts the
+      // prepared record. adoptCapsuleId validates the format itself.
+      adoptCapsuleId(plan.holdState.prepared.capsuleId);
+
+      navigate("/create/hold", {
+        state: {
+          holdState: plan.holdState,
+          correlationTransactionId: null,
+          canonicalLifecycleId: record.lifecycleId,
+          creatorIdentityId: creatorIdentityIdForRecovery,
+          creatorCreditId: record.creatorCreditId,
+          storagePaymentId: plan.storagePaymentId,
+        },
+      });
+    },
+    [resumePlanFor, adoptCapsuleId, navigate]
+  );
 
   /**
    * Grant the in-memory admission from an authoritative AVAILABLE answer.
@@ -1481,11 +1562,23 @@ export default function CreateAccessGate() {
         >
           <p className="text-[11px] md:text-[12px] text-amber-100/70 leading-relaxed">
             {unfinishedLifecycles.length === 1
-              ? "This wallet has an unfinished capsule attempt. If nothing was published for it, its creation right can be restored."
-              : `This wallet has ${unfinishedLifecycles.length} unfinished capsule attempts. Each creation right can be restored separately.`}
+              ? "This wallet has an unfinished capsule attempt. If nothing was published for it, its creation right can be restored; if its content is already published, a matching preparation record enables resuming its finalization."
+              : `This wallet has ${unfinishedLifecycles.length} unfinished capsule attempts. Each attempt can be restored or — when its content is already published and its preparation record matches — resumed separately.`}
           </p>
           {unfinishedLifecycles.map((record) => (
             <div key={record.creatorCreditId} className="space-y-1">
+              {resumePlanFor(record).kind === "ready" && (
+                <Button
+                  type="button"
+                  disabled={recovering || busy}
+                  onClick={() => handleResume(record)}
+                  className="h-9 px-4 text-[11px] bg-transparent text-emerald-300 border border-emerald-400/50 hover:bg-emerald-400/10"
+                >
+                  {unfinishedLifecycles.length === 1
+                    ? "Resume finalization"
+                    : `Resume finalization ${(record.lifecycleId ?? record.creatorCreditId).slice(0, 8)}`}
+                </Button>
+              )}
               <Button
                 type="button"
                 disabled={recovering || busy}

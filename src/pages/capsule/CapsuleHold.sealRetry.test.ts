@@ -268,4 +268,65 @@ describe("CapsuleHold seal retry loop — terminal vs transient", () => {
 
     expect(window.sessionStorage.getItem("aeterna-seal-lock")).toBeNull();
   });
+
+  it("the resume state issues upload-token and seal with the ORIGINAL authoritative identity", async () => {
+    // Own fetch stub so the upload-token REQUEST BODY is observable: the
+    // resume path must carry the same creatorCreditId / lifecycleId /
+    // creatorIdentityId the attempt was started with.
+    const fetchMock = vi.fn(async (input: unknown, init?: { body?: string }) => {
+      const url = String(input);
+      if (url.includes("/api/upload-token")) {
+        return new Response(
+          JSON.stringify({ ok: true, uploadToken: UPLOAD_TOKEN }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+      if (url.includes("/api/time")) {
+        return new Response(
+          JSON.stringify({ nowUtc: LOCATION_STATE.holdState.openAt - 60000 }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+      throw new Error("UNEXPECTED_FETCH:" + url);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    sealMock.mockResolvedValue({
+      capsuleId: CAPSULE_ID,
+      confirmationLink: `/capsule/${CAPSULE_ID}#frag`,
+      recipientLink: `/capsule/${CAPSULE_ID}#frag`,
+      finalized: true,
+      finalizationPending: false,
+      manifest: {},
+    });
+
+    renderHold();
+
+    await act(async () => {});
+
+    const tokenCall = fetchMock.mock.calls.find(([u]) =>
+      String(u).includes("/api/upload-token")
+    );
+    expect(tokenCall).toBeTruthy();
+    const tokenBody = JSON.parse(
+      String((tokenCall![1] as { body: string }).body)
+    ) as Record<string, unknown>;
+    expect(tokenBody.creatorIdentityId).toBe(CREATOR_IDENTITY_ID);
+    expect(tokenBody.canonicalLifecycleId).toBe(LIFECYCLE_ID);
+    expect(tokenBody.creatorCreditId).toBe("credit-1");
+
+    expect(sealMock).toHaveBeenCalledTimes(1);
+    expect(sealMock.mock.calls[0][0]).toMatchObject({
+      capsuleId: CAPSULE_ID,
+      canonicalLifecycleId: LIFECYCLE_ID,
+      creatorIdentityId: CREATOR_IDENTITY_ID,
+      uploadToken: UPLOAD_TOKEN,
+    });
+  });
 });
