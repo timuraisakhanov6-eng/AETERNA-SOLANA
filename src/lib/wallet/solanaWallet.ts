@@ -1041,6 +1041,21 @@ async function walletMessageIsAcceptable(
  */
 const WALLET_MESSAGE_DIAG_PARAM = "aeternaWalletDiag"
 
+/**
+ * TEMPORARY diagnostic bound (PHASE 3BM-R9).
+ *
+ * The production diagnostic proved that the real Phantom Lighthouse INFO
+ * assertion is 26 bytes while the accepted fixture is 16 — that length
+ * difference is the confirmed refusal cause. Until the real payload is
+ * recovered, the opt-in record reports the INFO instruction's raw bytes,
+ * and only up to this explicit cap, so an oversized or unexpected payload
+ * can never turn the record into an arbitrary data dump.
+ *
+ * Never applied to the token assertion: its payload is derived from the
+ * payer's balance and therefore stays out of the record.
+ */
+const WALLET_DIAG_MAX_INFO_DATA_BYTES = 64
+
 function isWalletMessageDiagEnabled(): boolean {
   if (typeof window === "undefined") return false
   try {
@@ -1072,6 +1087,14 @@ interface WalletDiagInstructionSide {
   accountCount: number
   dataLength: number
   dataSha256: string
+  /**
+   * Hex of a Lighthouse INFO assertion payload (discriminator 6) ONLY,
+   * bounded by `WALLET_DIAG_MAX_INFO_DATA_BYTES`. Absent for every other
+   * instruction, so no token-assertion or balance-derived data is recorded.
+   */
+  dataHex?: string
+  /** True when `dataHex` was cut at the cap; the real size stays in `dataLength`. */
+  dataHexTruncated?: boolean
 }
 
 interface WalletDiagMessageSide {
@@ -1166,15 +1189,37 @@ async function parseWalletDiagMessage(messageBytes: Uint8Array): Promise<{
         recentBlockhash: message.recentBlockhash,
         instructionCount: instructions.length,
         instructions: await Promise.all(
-          instructions.map(async (instruction, index) => ({
-            index,
-            programId:
+          instructions.map(async (instruction, index) => {
+            const programId =
               message.accountKeys[instruction.programIdIndex]?.toBase58() ??
-              "unknown",
-            accountCount: instruction.accounts.length,
-            dataLength: instruction.data.length,
-            dataSha256: await walletDiagSha256Hex(instruction.data),
-          }))
+              "unknown"
+            /**
+             * TEMPORARY (PHASE 3BM-R9): the Lighthouse INFO assertion is the
+             * ONLY instruction whose real payload the current fixture does
+             * not match. Its own bytes are reported — capped and hex only —
+             * so the real variant can be identified from one refusal.
+             */
+            const infoDataHex =
+              programId === LIGHTHOUSE_PROGRAM && instruction.data[0] === 6
+                ? walletDiagBytesToHex(
+                    instruction.data.slice(0, WALLET_DIAG_MAX_INFO_DATA_BYTES)
+                  )
+                : null
+            return {
+              index,
+              programId,
+              accountCount: instruction.accounts.length,
+              dataLength: instruction.data.length,
+              dataSha256: await walletDiagSha256Hex(instruction.data),
+              ...(infoDataHex === null
+                ? {}
+                : {
+                    dataHex: infoDataHex,
+                    dataHexTruncated:
+                      instruction.data.length > WALLET_DIAG_MAX_INFO_DATA_BYTES,
+                  }),
+            }
+          })
         ),
         parseError: null,
       },

@@ -1749,6 +1749,10 @@ interface DiagMessageSide {
     accountCount: number;
     dataLength: number;
     dataSha256: string;
+    /** Present only for a Lighthouse INFO assertion; bounded diagnostic hex. */
+    dataHex?: string;
+    /** True when the reported hex was cut at the diagnostic cap. */
+    dataHexTruncated?: boolean;
   }> | null;
   parseError: string | null;
 }
@@ -2242,5 +2246,118 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
     // The record still carries the useful, public diagnostic structure.
     expect(serialized).toContain(record.prepared!.messageSha256);
     expect(serialized).toContain(replacementBlockhash);
+  });
+
+  /**
+   * TEMPORARY (PHASE 3BM-R9).
+   *
+   * The production diagnostic proved the real Phantom Lighthouse INFO
+   * assertion is 26 bytes, while the accepted fixture is 16 — that length
+   * difference is the confirmed refusal cause.
+   *
+   * The 26-byte payload used here is SYNTHETIC: it is NOT the real Phantom
+   * payload and must never be treated as one. Only the LENGTH is confirmed.
+   * The test pins the diagnostic behaviour alone: the INFO instruction's own
+   * bytes are reported, the token assertion's payload is deliberately not.
+   */
+  it("reports the Lighthouse INFO payload only — and never the token-assertion data", async () => {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    // SYNTHETIC 26-byte INFO assertion: discriminator 6 plus zeros.
+    const syntheticInfo = Buffer.alloc(26);
+    syntheticInfo[0] = 6;
+    // The existing reconstructed token fixture (27 bytes, discriminator 10).
+    const tokenFixture = Buffer.from([
+      10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
+      3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8,
+    ]);
+
+    enableDiagnostics();
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+          const transfer = original.instructions.find(
+            (instruction) =>
+              instruction.programId.toBase58() === TOKEN_PROGRAM &&
+              instruction.data[0] === 3
+          );
+          if (!transfer) throw new Error("prepared transfer missing");
+          const modified = new web3.Transaction().add(
+            ...original.instructions,
+            new web3.TransactionInstruction({
+              programId: lighthouse,
+              keys: [
+                {
+                  pubkey: payer.publicKey,
+                  isSigner: false,
+                  isWritable: false,
+                },
+              ],
+              data: syntheticInfo,
+            }),
+            new web3.TransactionInstruction({
+              programId: lighthouse,
+              keys: [
+                {
+                  pubkey: transfer.keys[0]!.pubkey,
+                  isSigner: false,
+                  isWritable: false,
+                },
+              ],
+              data: tokenFixture,
+            })
+          );
+          modified.feePayer = original.feePayer!;
+          modified.recentBlockhash = original.recentBlockhash!;
+          modified.sign(payer);
+          return web3.Transaction.from(modified.serialize());
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    const instructions = record.returned!.instructions!;
+    const toHex = (bytes: Uint8Array) =>
+      Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+    const infoInstruction = instructions.find(
+      (instruction) =>
+        instruction.programId === LIGHTHOUSE_PROGRAM &&
+        instruction.dataLength === 26
+    )!;
+    const tokenInstruction = instructions.find(
+      (instruction) =>
+        instruction.programId === LIGHTHOUSE_PROGRAM &&
+        instruction.dataLength === 27
+    )!;
+
+    // The INFO payload is reported byte for byte, with its own metadata.
+    expect(infoInstruction.dataHex).toBe(toHex(syntheticInfo));
+    expect(infoInstruction.dataHexTruncated).toBe(false);
+    expect(infoInstruction.programId).toBe(LIGHTHOUSE_PROGRAM);
+    expect(infoInstruction.accountCount).toBe(1);
+    expect(tokenInstruction.index).toBe(infoInstruction.index + 1);
+
+    // The token assertion's payload is deliberately NOT recorded.
+    expect(tokenInstruction).not.toHaveProperty("dataHex");
+    expect(tokenInstruction).not.toHaveProperty("dataHexTruncated");
+
+    // No other instruction exposes raw data either.
+    for (const instruction of instructions) {
+      if (instruction.index === infoInstruction.index) continue;
+      expect(instruction).not.toHaveProperty("dataHex");
+    }
   });
 });
