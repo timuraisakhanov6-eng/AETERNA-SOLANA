@@ -63,9 +63,14 @@ vi.mock("@/context/AETERNAWalletContext", async () => {
   };
 });
 
-vi.mock("@/lib/capsule/sealCapsuleCore", () => ({
-  sealCapsuleCore: hoisted.sealCapsuleCore,
-}));
+vi.mock("@/lib/capsule/sealCapsuleCore", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/capsule/sealCapsuleCore")>();
+  return {
+    ...actual,
+    sealCapsuleCore: hoisted.sealCapsuleCore,
+  };
+});
 
 /**
  * CANONICAL NAVIGATION OBSERVATION.
