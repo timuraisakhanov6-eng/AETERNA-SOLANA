@@ -56,8 +56,8 @@ const LONG_URL =
 const LONG_HASH =
   "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-const CYRILLIC_LATIN =
-  "Ошибка Irys funding: подпись 3E1mj8RRr2Sg не подтверждена — 400 Confirmed tx not found";
+const MIXED_LATIN_TEXT =
+  "Irys funding error: signature 3E1mj8RRr2Sg not confirmed — 400 Confirmed tx not found";
 
 /**
  * Mirror of the real error element markup: the same class list used at
@@ -107,8 +107,8 @@ describe("error notice — responsive wrapping contract", () => {
   });
 
   it("5. renders mixed Cyrillic + Latin text verbatim", () => {
-    render(<ErrorNotice message={CYRILLIC_LATIN} />);
-    expect(screen.getByTestId("notice").textContent).toBe(CYRILLIC_LATIN);
+    render(<ErrorNotice message={MIXED_LATIN_TEXT} />);
+    expect(screen.getByTestId("notice").textContent).toBe(MIXED_LATIN_TEXT);
   });
 
   it("6/7. the full signature is present in the DOM (nothing truncated)", () => {

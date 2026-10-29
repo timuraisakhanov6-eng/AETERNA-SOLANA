@@ -208,7 +208,7 @@ const Home = () => {
         </div>
       </motion.div>
 
-      {/* Footer + X link — сгруппированы, чтобы отступ между ними был всегда одинаковым и адаптивным на любом экране */}
+      {/* Footer + X link — grouped so the spacing between them stays consistent and responsive on any screen */}
       <footer
         className="
           absolute

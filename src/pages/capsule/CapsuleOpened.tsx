@@ -51,8 +51,8 @@ export default function CapsuleOpened({
   }
 
   /**
-   * CapsuleController уже выполняет decrypt lifecycle.
-   * CapsuleOpened только отображает результат.
+   * CapsuleController already performs the decrypt lifecycle.
+   * CapsuleOpened only displays the result.
    */
 
   /**
@@ -105,14 +105,14 @@ export default function CapsuleOpened({
     state.status === "opened" ? state.vault : null;
 
   /**
-   * предотвращает duplicate execution
+   * prevents duplicate execution
    */
 
   const startedRef = useRef(false);
 
   /**
-   * CapsuleOpened больше НЕ выполняет openCapsule()
-   * decrypt lifecycle строго внутри CapsuleController
+   * CapsuleOpened no longer performs openCapsule()
+   * the decrypt lifecycle lives strictly inside CapsuleController
    */
 
   useEffect(() => {
@@ -129,8 +129,8 @@ export default function CapsuleOpened({
     startedRef.current = true;
 
     /**
-     * Secret lifecycle завершён ранее.
-     * Повторный decrypt невозможен без fragment secret.
+     * The secret lifecycle finished earlier.
+     * A second decrypt is impossible without the fragment secret.
      */
 
     setState({

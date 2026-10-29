@@ -15,6 +15,11 @@
  * This helper does NOT provide custody.
  */
 
+import {
+  isAcceptedLighthouseInfoData,
+  isAcceptedLighthouseTokenData,
+} from "@/lib/solana/lighthouseAssertions"
+
 export type SolanaWalletAdapter = {
   connect: () => Promise<string>;
   disconnect: () => Promise<void>;
@@ -406,10 +411,45 @@ async function buildServicePaymentTransaction({
    * The account is therefore created inside the SAME atomic transaction, and
    * only when it is genuinely absent: an unconditional create would fail with
    * "account already in use" once the account exists.
+   *
+   * SCHEDULING ONLY: the account-existence read and the blockhash read are
+   * independent, both read-only, and both required before the transaction can
+   * be built. They are issued CONCURRENTLY to avoid one extra round-trip.
+   * Nothing about either request, their responses, their validation, or the
+   * fail-closed error behaviour is changed — each is validated below exactly
+   * as before, in the same order, so a failure of either still aborts the
+   * payment before any transaction is built or handed to the wallet.
+   *
+   * Both reads are issued eagerly and a defensive no-op `catch` is attached
+   * to each so that, if ONE rejects while the other is still in flight,
+   * `Promise.all`'s first rejection is not joined by a second, unobserved
+   * rejection from the sibling promise. The handler is observational only:
+   * `Promise.all` still surfaces the FIRST rejection to the caller exactly as
+   * before, so fail-closed behaviour is unchanged.
    */
-  const destinationAtaExists = await fetchAccountExists(
+  const blockhashPromise = fetch("/api/solana/blockhash", {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  })
+
+  const destinationAtaExistsPromise = fetchAccountExists(
     destinationAta.toBase58()
   )
+
+  blockhashPromise.catch(() => {
+    // Intentionally empty — observed so a sibling failure cannot raise an
+    // unhandled rejection; the real error still propagates via Promise.all.
+  })
+
+  destinationAtaExistsPromise.catch(() => {
+    // Intentionally empty — same rationale as above.
+  })
+
+  const [destinationAtaExists, blockhashRes] = await Promise.all([
+    destinationAtaExistsPromise,
+    blockhashPromise,
+  ])
 
   const instructions: unknown[] = []
 
@@ -435,12 +475,6 @@ async function buildServicePaymentTransaction({
       TOKEN_PROGRAM_ID
     )
   )
-
-  const blockhashRes = await fetch("/api/solana/blockhash", {
-    method: "GET",
-    headers: { Accept: "application/json" },
-    cache: "no-store",
-  })
 
   if (!blockhashRes.ok) {
     const errorPayload = (await blockhashRes.json().catch(() => ({}))) as { error?: string }
@@ -607,57 +641,22 @@ const LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
 const SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 /**
- * Phantom v2 Lighthouse payload fixtures, RECONSTRUCTED from the production
- * diagnostic's recorded shape and hashes. The original production 27-byte
- * token-assertion payload was not independently recovered; the fixtures
- * below pin the accepted v2 shape rather than claim those exact remote
- * bytes.
+ * Accepted Lighthouse v2 assertion payloads are defined in exactly ONE
+ * place: the pure shared module `@/lib/solana/lighthouseAssertions`, which
+ * the server broadcast validator imports as well. The client and the
+ * server therefore apply literally the same acceptance rule — there is no
+ * second parser that could drift.
  *
- *   info  (16 B): 39bb93d1a828d59455ba9e8b9679901d04086bcf0c44251af08e7e60383e7fbc
- *   token (27 B): b4441240a9f8613e359bc99ff3ca06512982b4d7ef1db1378000d149e2bf5a5f
- *
- * Info: AssertAccountInfoMulti(logLevel=4) on the payer:
- *   KnownOwner(System) == Equal; DataLength == Equal(0)
- *
- * Token: AssertTokenAccountMulti(logLevel=4) on the source ATA:
- *   Amount >= <post-transfer balance>; Delegate == null;
- *   DelegatedAmount <= 0; TokenAccountOwnerIsDerived
+ * Two INFO forms are accepted on the prepared fee payer:
+ *   - the 16-byte legacy pair `KnownOwner(System) ==`, `DataLength(0) ==`;
+ *   - the 26-byte current form that prepends `Lamports(X) >=`, where X is
+ *     derived by Phantom from the simulated payer balance and therefore
+ *     cannot be pinned to one value.
+ * The TOKEN assertion keeps `Amount(X) >=` as its only variable field and
+ * every other field fixed. Both are READ-ONLY: they can only make the
+ * transaction fail, never move tokens, and the payment transfer itself is
+ * still compared byte-for-byte below.
  */
-const PHANTOM_LIGHTHOUSE_INFO_DATA = new Uint8Array([
-  6, 4, 2,
-  3, 0, 0,
-  1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-])
-
-const PHANTOM_LIGHTHOUSE_TOKEN_DATA = new Uint8Array([
-  10, 4, 4,
-  2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
-  3, 0, 0,
-  6, 0, 0, 0, 0, 0, 0, 0, 0, 5,
-  8,
-])
-
-function isPhantomLighthouseInfoData(data: Uint8Array): boolean {
-  return messageBytesEqual(data, PHANTOM_LIGHTHOUSE_INFO_DATA)
-}
-
-/**
- * The ONLY variable field is the u64 Amount lower bound: Phantom derives it
- * from the simulated post-transfer balance, so pinning this particular
- * user's 464418 would break every other balance. It is still a read-only
- * assertion — the transfer itself remains byte-identical to the prepared
- * payment — and every other discriminator, operator, option and value is
- * fixed. Extra/trailing bytes are rejected by the exact length check.
- */
-function isPhantomLighthouseTokenData(data: Uint8Array): boolean {
-  if (data.length !== PHANTOM_LIGHTHOUSE_TOKEN_DATA.length) return false
-  for (let index = 0; index < data.length; index++) {
-    // Bytes 4..11 are the runtime-specific Amount u64.
-    if (index >= 4 && index <= 11) continue
-    if (data[index] !== PHANTOM_LIGHTHOUSE_TOKEN_DATA[index]) return false
-  }
-  return true
-}
 
 /**
  * Resolve the source token account from the PREPARED SPL Token transfer by
@@ -843,14 +842,14 @@ async function walletMessageIsAcceptable(
         if (data[0] === 6) {
           // AssertAccountInfoMulti on the fee payer: System-owned, no data.
           if (!target.equals(preparedPayer)) return false
-          if (!isPhantomLighthouseInfoData(data)) return false
+          if (!isAcceptedLighthouseInfoData(data)) return false
           lighthouseKinds.push("info")
         } else if (data[0] === 10) {
           // AssertTokenAccountMulti on the prepared transfer's source ATA.
           if (
             preparedTransferSource === null ||
             target.toBase58() !== preparedTransferSource ||
-            !isPhantomLighthouseTokenData(data)
+            !isAcceptedLighthouseTokenData(data)
           ) {
             return false
           }
@@ -1034,10 +1033,15 @@ async function walletMessageIsAcceptable(
  * still runs on the FROZEN `preparedMessage` bytes versus the message
  * bytes taken from the object the wallet returned.
  *
- * Never emitted: signatures, serialized messages, base64 payloads,
- * account keys, secrets. Only lengths, SHA-256 fingerprints, legacy
- * header bytes, the public recentBlockhash, program IDs and per-
- * instruction data lengths/hashes. No storage, no network, no telemetry.
+ * Never emitted: signatures, serialized messages, signed bytes, base64
+ * transaction payloads, secret keys, or the complete account-key list.
+ * Message-level evidence is limited to lengths, SHA-256 fingerprints,
+ * legacy header bytes, the public recentBlockhash, program IDs and
+ * per-instruction data lengths/hashes. For Lighthouse-program instructions
+ * ONLY, the record additionally contains the referenced public account
+ * addresses, that instruction's raw data in hex, and a bounded assertion
+ * decode — the exact evidence needed to identify the wallet's variant.
+ * No storage, no network, no telemetry.
  */
 const WALLET_MESSAGE_DIAG_PARAM = "aeternaWalletDiag"
 
@@ -1066,12 +1070,31 @@ async function walletDiagSha256Hex(bytes: Uint8Array): Promise<string> {
   return walletDiagBytesToHex(new Uint8Array(digest))
 }
 
+interface WalletDiagLighthouseDecode {
+  status: "decoded" | "undecoded"
+  version?: "v2"
+  discriminator?: number
+  variant?: "AssertAccountInfoMulti" | "AssertTokenAccountMulti"
+  logLevel?: number
+  logLevelName?: string | null
+  assertionCount?: number
+  assertions?: Array<Record<string, unknown>>
+}
+
 interface WalletDiagInstructionSide {
   index: number
   programId: string
   accountCount: number
   dataLength: number
   dataSha256: string
+  // Present ONLY for instructions of the Lighthouse program. Non-Lighthouse
+  // instructions keep the original bounded shape and never expose addresses
+  // or raw data.
+  programIdIndex?: number
+  accountIndices?: number[]
+  accountAddresses?: string[]
+  dataHex?: string
+  lighthouse?: WalletDiagLighthouseDecode
 }
 
 interface WalletDiagMessageSide {
@@ -1097,6 +1120,324 @@ interface WalletDiagParsedMessage {
   accountKeys: import("@solana/web3.js").PublicKey[]
   recentBlockhash: string
   instructions: WalletDiagCompiledInstruction[]
+}
+
+const LIGHTHOUSE_PROGRAM_ID =
+  "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
+
+const WALLET_DIAG_INTEGER_OPERATORS = [
+  "Equal",
+  "NotEqual",
+  "GreaterThan",
+  "LessThan",
+  "GreaterThanOrEqual",
+  "LessThanOrEqual",
+  "Contains",
+  "DoesNotContain",
+] as const
+
+const WALLET_DIAG_EQUATABLE_OPERATORS = ["Equal", "NotEqual"] as const
+
+const WALLET_DIAG_KNOWN_PROGRAMS = [
+  "System",
+  "Token",
+  "Token2022",
+  "Rent",
+  "Stake",
+  "Vote",
+  "BpfLoader",
+  "UpgradeableLoader",
+  "SysvarConfig",
+] as const
+
+/**
+ * v2 Lighthouse SDK log-level names. Both the SDK range (0..6) and the
+ * Rust-source discriminants (0x10..0x12) are accepted so the log byte is
+ * reported as a number even when its name is unknown.
+ */
+const WALLET_DIAG_LIGHTHOUSE_LOG_LEVELS: Record<number, string> = {
+  0: "Silent",
+  1: "PlaintextMessage",
+  2: "EncodedMessage",
+  3: "EncodedNoop",
+  4: "FailedPlaintextMessage",
+  5: "FailedEncodedMessage",
+  6: "FailedEncodedNoop",
+  0x10: "FailedPlaintextMessage",
+  0x11: "FailedEncodedMessage",
+  0x12: "FailedEncodedNoop",
+}
+
+class WalletDiagCursor {
+  private offset = 0
+
+  constructor(private readonly bytes: Uint8Array) {}
+
+  get remaining(): number {
+    return this.bytes.length - this.offset
+  }
+
+  get done(): boolean {
+    return this.offset === this.bytes.length
+  }
+
+  readU8(): number | null {
+    if (this.offset >= this.bytes.length) return null
+    return this.bytes[this.offset++]!
+  }
+
+  readBytes(length: number): Uint8Array | null {
+    if (!Number.isInteger(length) || length < 0) return null
+    if (this.remaining < length) return null
+    const value = this.bytes.slice(this.offset, this.offset + length)
+    this.offset += length
+    return value
+  }
+
+  readU64(): string | null {
+    const raw = this.readBytes(8)
+    if (!raw) return null
+    let value = 0n
+    for (let index = 7; index >= 0; index--) {
+      value = (value << 8n) | BigInt(raw[index]!)
+    }
+    return value.toString()
+  }
+
+  readLeb128(): bigint | null {
+    let value = 0n
+    let shift = 0n
+    for (let index = 0; index < 10; index++) {
+      const byte = this.readU8()
+      if (byte === null) return null
+      value |= BigInt(byte & 0x7f) << shift
+      if ((byte & 0x80) === 0) return value
+      shift += 7n
+    }
+    return null
+  }
+}
+
+function walletDiagIntegerOperator(value: number): string | null {
+  return WALLET_DIAG_INTEGER_OPERATORS[value] ?? null
+}
+
+function walletDiagEquatableOperator(value: number): string | null {
+  return WALLET_DIAG_EQUATABLE_OPERATORS[value] ?? null
+}
+
+function parseWalletDiagInfoAssertion(
+  cursor: WalletDiagCursor
+): Record<string, unknown> | null {
+  const kind = cursor.readU8()
+  if (kind === null) return null
+
+  if (kind === 0 || kind === 1 || kind === 4) {
+    const value = cursor.readU64()
+    const operator = cursor.readU8()
+    if (value === null || operator === null) return null
+    const operatorName = walletDiagIntegerOperator(operator)
+    if (operatorName === null) return null
+    const kindName =
+      kind === 0 ? "Lamports" : kind === 1 ? "DataLength" : "RentEpoch"
+    return { kind: kindName, value, operator: operatorName }
+  }
+
+  if (kind === 2) {
+    const raw = cursor.readBytes(32)
+    const operator = cursor.readU8()
+    if (!raw || operator === null) return null
+    const operatorName = walletDiagEquatableOperator(operator)
+    if (operatorName === null) return null
+    return {
+      kind: "Owner",
+      value: base58EncodeBytes(raw),
+      operator: operatorName,
+    }
+  }
+
+  if (kind === 3) {
+    const knownProgram = cursor.readU8()
+    const operator = cursor.readU8()
+    if (knownProgram === null || operator === null) return null
+    const programName = WALLET_DIAG_KNOWN_PROGRAMS[knownProgram] ?? null
+    const operatorName = walletDiagEquatableOperator(operator)
+    if (programName === null || operatorName === null) return null
+    return {
+      kind: "KnownOwner",
+      program: programName,
+      operator: operatorName,
+    }
+  }
+
+  if (kind === 5 || kind === 6 || kind === 7) {
+    const value = cursor.readU8()
+    const operator = cursor.readU8()
+    if (value === null || operator === null) return null
+    if (value !== 0 && value !== 1) return null
+    const operatorName = walletDiagEquatableOperator(operator)
+    if (operatorName === null) return null
+    const kindName =
+      kind === 5 ? "IsSigner" : kind === 6 ? "IsWritable" : "Executable"
+    return { kind: kindName, value: value === 1, operator: operatorName }
+  }
+
+  if (kind === 8) {
+    const expectedHash = cursor.readBytes(32)
+    const start = cursor.readLeb128()
+    const length = cursor.readLeb128()
+    if (!expectedHash || start === null || length === null) return null
+    return {
+      kind: "VerifyDatahash",
+      expectedHash: walletDiagBytesToHex(expectedHash),
+      start: start.toString(),
+      length: length.toString(),
+    }
+  }
+
+  return null
+}
+
+function parseWalletDiagTokenAssertion(
+  cursor: WalletDiagCursor
+): Record<string, unknown> | null {
+  const kind = cursor.readU8()
+  if (kind === null) return null
+
+  if (kind === 0 || kind === 1) {
+    const raw = cursor.readBytes(32)
+    const operator = cursor.readU8()
+    if (!raw || operator === null) return null
+    const operatorName = walletDiagEquatableOperator(operator)
+    if (operatorName === null) return null
+    return {
+      kind: kind === 0 ? "Mint" : "Owner",
+      value: base58EncodeBytes(raw),
+      operator: operatorName,
+    }
+  }
+
+  if (kind === 2 || kind === 6) {
+    const value = cursor.readU64()
+    const operator = cursor.readU8()
+    if (value === null || operator === null) return null
+    const operatorName = walletDiagIntegerOperator(operator)
+    if (operatorName === null) return null
+    return {
+      kind: kind === 2 ? "Amount" : "DelegatedAmount",
+      value,
+      operator: operatorName,
+    }
+  }
+
+  if (kind === 3 || kind === 7) {
+    const option = cursor.readU8()
+    if (option !== 0 && option !== 1) return null
+    let value: string | null = null
+    if (option === 1) {
+      const raw = cursor.readBytes(32)
+      if (!raw) return null
+      value = base58EncodeBytes(raw)
+    }
+    const operator = cursor.readU8()
+    if (operator === null) return null
+    const operatorName = walletDiagEquatableOperator(operator)
+    if (operatorName === null) return null
+    return {
+      kind: kind === 3 ? "Delegate" : "CloseAuthority",
+      value,
+      operator: operatorName,
+    }
+  }
+
+  if (kind === 4) {
+    const value = cursor.readU8()
+    const operator = cursor.readU8()
+    if (value === null || operator === null) return null
+    if (value > 2) return null
+    const operatorName = walletDiagIntegerOperator(operator)
+    if (operatorName === null) return null
+    return { kind: "State", value, operator: operatorName }
+  }
+
+  if (kind === 5) {
+    const option = cursor.readU8()
+    if (option !== 0 && option !== 1) return null
+    let value: string | null = null
+    if (option === 1) {
+      const raw = cursor.readU64()
+      if (raw === null) return null
+      value = raw
+    }
+    const operator = cursor.readU8()
+    if (operator === null) return null
+    const operatorName = walletDiagEquatableOperator(operator)
+    if (operatorName === null) return null
+    return { kind: "IsNative", value, operator: operatorName }
+  }
+
+  if (kind === 8) return { kind: "TokenAccountOwnerIsDerived" }
+
+  return null
+}
+
+/**
+ * Decodes ONLY the two Phantom-observed Lighthouse v2 assertion families:
+ * AssertAccountInfoMulti (discriminator 6) and AssertTokenAccountMulti
+ * (discriminator 10). Anything else, including a truncated or ambiguous
+ * payload, is reported as `undecoded`; no variant is guessed.
+ */
+function decodeWalletDiagLighthouseInstruction(
+  data: Uint8Array
+): WalletDiagLighthouseDecode {
+  try {
+    if (data.length < 3) return { status: "undecoded" }
+    const cursor = new WalletDiagCursor(data)
+    const discriminator = cursor.readU8()
+    const logLevel = cursor.readU8()
+    if (discriminator === null || logLevel === null) {
+      return { status: "undecoded" }
+    }
+    const variant =
+      discriminator === 6
+        ? "AssertAccountInfoMulti"
+        : discriminator === 10
+          ? "AssertTokenAccountMulti"
+          : null
+    if (variant === null) return { status: "undecoded" }
+
+    const assertionCountRaw = cursor.readLeb128()
+    if (assertionCountRaw === null) return { status: "undecoded" }
+    if (assertionCountRaw > 256n) return { status: "undecoded" }
+    if (assertionCountRaw > BigInt(cursor.remaining)) {
+      return { status: "undecoded" }
+    }
+    const assertionCount = Number(assertionCountRaw)
+
+    const assertions: Array<Record<string, unknown>> = []
+    for (let index = 0; index < assertionCount; index++) {
+      const assertion =
+        discriminator === 6
+          ? parseWalletDiagInfoAssertion(cursor)
+          : parseWalletDiagTokenAssertion(cursor)
+      if (!assertion) return { status: "undecoded" }
+      assertions.push(assertion)
+    }
+    if (!cursor.done) return { status: "undecoded" }
+
+    return {
+      status: "decoded",
+      version: "v2",
+      discriminator,
+      variant,
+      logLevel,
+      logLevelName: WALLET_DIAG_LIGHTHOUSE_LOG_LEVELS[logLevel] ?? null,
+      assertionCount,
+      assertions,
+    }
+  } catch {
+    return { status: "undecoded" }
+  }
 }
 
 /**
@@ -1166,15 +1507,34 @@ async function parseWalletDiagMessage(messageBytes: Uint8Array): Promise<{
         recentBlockhash: message.recentBlockhash,
         instructionCount: instructions.length,
         instructions: await Promise.all(
-          instructions.map(async (instruction, index) => ({
-            index,
-            programId:
+          instructions.map(async (instruction, index) => {
+            const programId =
               message.accountKeys[instruction.programIdIndex]?.toBase58() ??
-              "unknown",
-            accountCount: instruction.accounts.length,
-            dataLength: instruction.data.length,
-            dataSha256: await walletDiagSha256Hex(instruction.data),
-          }))
+              "unknown"
+            const side: WalletDiagInstructionSide = {
+              index,
+              programId,
+              accountCount: instruction.accounts.length,
+              dataLength: instruction.data.length,
+              dataSha256: await walletDiagSha256Hex(instruction.data),
+            }
+
+            if (programId !== LIGHTHOUSE_PROGRAM_ID) return side
+
+            return {
+              ...side,
+              programIdIndex: instruction.programIdIndex,
+              accountIndices: [...instruction.accounts],
+              accountAddresses: instruction.accounts.map(
+                (accountIndex) =>
+                  message.accountKeys[accountIndex]?.toBase58() ?? "unknown"
+              ),
+              dataHex: walletDiagBytesToHex(instruction.data),
+              lighthouse: decodeWalletDiagLighthouseInstruction(
+                instruction.data
+              ),
+            }
+          })
         ),
         parseError: null,
       },

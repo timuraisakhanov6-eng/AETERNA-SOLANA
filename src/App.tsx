@@ -1,5 +1,7 @@
 import { Routes, Route } from "react-router-dom";
 
+import { lazy, Suspense } from "react";
+
 import AppLayout from "@/components/AppLayout";
 
 import Home from "@/pages/Home";
@@ -10,6 +12,18 @@ import Create from "@/pages/capsule/Create";
 import CapsulePreview from "@/pages/capsule/CapsulePreview";
 import CapsulePage from "@/pages/capsule/CapsulePage";
 import CapsuleHold from "@/pages/capsule/CapsuleHold";
+
+/**
+ * DEV-ONLY diagnostic runner.
+ *
+ * Guarded by `import.meta.env.DEV` AND a dynamic import, so the module
+ * (and its Irys transport dependency edge) is tree-shaken out of the
+ * production build entirely: in a production build the ternary resolves
+ * to the `null` branch and the `import()` is never emitted.
+ */
+const IrysProbeDev = import.meta.env.DEV
+  ? lazy(() => import("@/pages/dev/IrysProbeDev"))
+  : null;
 
 /**
  * AETERNA Application Routing Layer
@@ -84,6 +98,18 @@ export default function App() {
           path="/capsule/:capsuleId"
           element={<CapsulePage />}
         />
+
+        {/* DEV-ONLY: Real Irys probe runner. Absent from production build. */}
+        {IrysProbeDev && (
+          <Route
+            path="/__dev/irys-probe"
+            element={
+              <Suspense fallback={<div>Loading dev probe…</div>}>
+                <IrysProbeDev />
+              </Suspense>
+            }
+          />
+        )}
 
         {/* Fallback */}
         <Route

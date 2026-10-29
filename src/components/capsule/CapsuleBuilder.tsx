@@ -41,9 +41,9 @@ import {
   toCreatorIrysWallet,
 } from "@/lib/storage/creatorIrys";
 
-/* 🚨 КРИТИЧЕСКОЕ ПРАВИЛО:
-  Импорты streamEncryptUpload и encryptChunk УДАЛЕНЫ.
-  CapsuleBuilder готовит метаданные и резервирует lifecycle.
+/* 🚨 CRITICAL RULE:
+  The streamEncryptUpload and encryptChunk imports were REMOVED.
+  CapsuleBuilder prepares metadata and reserves the lifecycle.
 */
 
 const HEADER_HEIGHT = 64;
@@ -206,11 +206,11 @@ function normalizeMimeType(raw: string | undefined): string {
 }
 
 
-/* ================= SESSION STORAGE (recoverable continuation fallback; includes recipientSecret/creatorAuthority for Hold restoration, без vaultBytes) ================= */
+/* ================= SESSION STORAGE (recoverable continuation fallback; includes recipientSecret/creatorAuthority for Hold restoration, without vaultBytes) ================= */
 
-// recipientSecret и creatorAuthority персистируются для Hold-восстановления после MetaMask interruption.
-// По MASTER DOCUMENT §9 encrypted envelope живёт в памяти через preparedRef;
-// sessionStorage используется только как recoverable continuation fallback.
+// recipientSecret and creatorAuthority are persisted for Hold restoration after a MetaMask interruption.
+// Per MASTER DOCUMENT §9, the encrypted envelope lives in memory via preparedRef;
+// sessionStorage is used only as a recoverable continuation fallback.
 type SessionCapsuleData = {
   billableSizeBytes: number;
   expectedAmount: number;

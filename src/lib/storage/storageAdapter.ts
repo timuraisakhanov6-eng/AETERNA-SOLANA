@@ -70,9 +70,9 @@ declare const uploadTokenBrand: unique symbol;
  * STORAGE POINTER CAPABILITY
  * =========================================================
  *
- * Обычно это Arweave / Irys txId
- * Формат: base64url
- * Длина: 43 символа
+ * Typically an Arweave / Irys txId
+ * Format: base64url
+ * Length: 43 characters
  *
  * Opaque read-location capability
  */
@@ -100,7 +100,7 @@ export type StoragePointer = string & {
  * UPLOAD TOKEN CAPABILITY
  * =========================================================
  *
- * Выдаётся backend после verify.ts
+ * Issued by the backend after verify.ts
  *
  * Opaque write-authority capability
  */

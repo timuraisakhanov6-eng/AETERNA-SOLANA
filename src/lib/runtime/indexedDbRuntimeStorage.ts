@@ -7,6 +7,10 @@ import type {
 } from "./runtimeTypes";
 
 import {
+  withBoundedWait,
+} from "./boundedWait";
+
+import {
   withIdbOpenDeadline,
   IDB_OPEN_DEADLINE_MS,
 } from "./idbOpenDeadline";
@@ -101,82 +105,82 @@ export class IndexedDbRuntimeStorage
     Promise<IDBDatabase> {
 
     return withIdbOpenDeadline(
-      new Promise((
-      resolve,
-      reject,
-    ) => {
+      new Promise<IDBDatabase>((
+        resolve,
+        reject,
+      ) => {
 
-      const request =
-        indexedDB.open(
-          DB_NAME,
-          DB_VERSION,
-        );
-
-      request.onerror =
-        () => {
-
-          reject(
-            request.error ??
-            new Error(
-              "[AETERNA] Failed to open Runtime database.",
-            ),
+        const request =
+          indexedDB.open(
+            DB_NAME,
+            DB_VERSION,
           );
 
-        };
+        request.onerror =
+          () => {
 
-      request.onblocked =
-        () => {
-
-          reject(
-            new Error(
-              "[AETERNA] Runtime database upgrade blocked by an open connection.",
-            ),
-          );
-
-        };
-
-      request.onupgradeneeded =
-        () => {
-
-          const db =
-            request.result;
-
-          if (
-            !db.objectStoreNames.contains(
-              STORE_NAME,
-            )
-          ) {
-
-            db.createObjectStore(
-              STORE_NAME,
-              {
-                keyPath:
-                  "key",
-              },
+            reject(
+              request.error ??
+              new Error(
+                "[AETERNA] Failed to open Runtime database.",
+              ),
             );
 
-          }
+          };
 
-        };
+        request.onblocked =
+          () => {
 
-      request.onsuccess =
-        () => {
+            reject(
+              new Error(
+                "[AETERNA] Runtime database upgrade blocked by an open connection.",
+              ),
+            );
 
-          const db =
-            request.result;
+          };
 
-          db.onversionchange =
-            () => {
+        request.onupgradeneeded =
+          () => {
 
-              db.close();
+            const db =
+              request.result;
 
-              this.db = null;
+            if (
+              !db.objectStoreNames.contains(
+                STORE_NAME,
+              )
+            ) {
 
-            };
+              db.createObjectStore(
+                STORE_NAME,
+                {
+                  keyPath:
+                    "key",
+                },
+              );
 
-          resolve(db);
+            }
 
-        };
+          };
+
+        request.onsuccess =
+          () => {
+
+            const db =
+              request.result;
+
+            db.onversionchange =
+              () => {
+
+                db.close();
+
+                this.db = null;
+
+              };
+
+            resolve(db);
+
+          };
 
       }),
       IDB_OPEN_DEADLINE_MS,
@@ -284,35 +288,38 @@ export class IndexedDbRuntimeStorage
 
     };
 
-    await new Promise<void>((
-      resolve,
-      reject,
-    ) => {
+    await withBoundedWait(
+      "store",
+      new Promise<void>((
+        resolve,
+        reject,
+      ) => {
 
-      const request =
-        this
-          .transaction(
-            "readwrite",
-          )
-          .put(
-            dbRecord,
+        const request =
+          this
+            .transaction(
+              "readwrite",
+            )
+            .put(
+              dbRecord,
+            );
+
+        request.onsuccess =
+          () => resolve();
+
+        request.onerror =
+          () => reject(
+
+            request.error ??
+
+            new Error(
+              "[AETERNA] Failed to store Runtime chunk.",
+            ),
+
           );
 
-      request.onsuccess =
-        () => resolve();
-
-      request.onerror =
-        () => reject(
-
-          request.error ??
-
-          new Error(
-            "[AETERNA] Failed to store Runtime chunk.",
-          ),
-
-        );
-
-    });
+      }),
+    );
 
   }
 
@@ -326,50 +333,53 @@ export class IndexedDbRuntimeStorage
       this.getCapsuleId();
 
     const record =
-      await new Promise<
-        RuntimeChunkDbRecord | undefined
-      >((
-        resolve,
-        reject,
-      ) => {
+      await withBoundedWait(
+        "read",
+        new Promise<
+          RuntimeChunkDbRecord | undefined
+        >((
+          resolve,
+          reject,
+        ) => {
 
-        const request =
-          this
-            .transaction(
-              "readonly",
-            )
-            .get(
+          const request =
+            this
+              .transaction(
+                "readonly",
+              )
+              .get(
 
-              this.buildKey(
-                capsuleId,
-                chunkId,
+                this.buildKey(
+                  capsuleId,
+                  chunkId,
+                ),
+
+              );
+
+          request.onsuccess =
+            () => {
+
+              resolve(
+                request.result as
+                  RuntimeChunkDbRecord |
+                  undefined,
+              );
+
+            };
+
+          request.onerror =
+            () => reject(
+
+              request.error ??
+
+              new Error(
+                "[AETERNA] Failed to read Runtime chunk.",
               ),
 
             );
 
-        request.onsuccess =
-          () => {
-
-            resolve(
-              request.result as
-                RuntimeChunkDbRecord |
-                undefined,
-            );
-
-          };
-
-        request.onerror =
-          () => reject(
-
-            request.error ??
-
-            new Error(
-              "[AETERNA] Failed to read Runtime chunk.",
-            ),
-
-          );
-
-      });
+        }),
+      );
 
     if (!record) {
 
@@ -414,68 +424,71 @@ export class IndexedDbRuntimeStorage
         chunkId,
       );
 
-    await new Promise<void>((
-      resolve,
-      reject,
-    ) => {
+    await withBoundedWait(
+      "remove",
+      new Promise<void>((
+        resolve,
+        reject,
+      ) => {
 
-      const store =
-        this.transaction(
-          "readwrite",
-        );
+        const store =
+          this.transaction(
+            "readwrite",
+          );
 
-      const getRequest =
-        store.getKey(key);
+        const getRequest =
+          store.getKey(key);
 
-      getRequest.onsuccess =
-        () => {
+        getRequest.onsuccess =
+          () => {
 
-          if (
-            getRequest.result ===
-            undefined
-          ) {
+            if (
+              getRequest.result ===
+              undefined
+            ) {
 
-            reject(
-              new Error(
-                "[AETERNA] Runtime chunk not found.",
-              ),
-            );
+              reject(
+                new Error(
+                  "[AETERNA] Runtime chunk not found.",
+                ),
+              );
 
-            return;
+              return;
 
-          }
+            }
 
-          const delRequest =
-            store.delete(key);
+            const delRequest =
+              store.delete(key);
 
-          delRequest.onsuccess =
-            () => resolve();
+            delRequest.onsuccess =
+              () => resolve();
 
-          delRequest.onerror =
-            () => reject(
+            delRequest.onerror =
+              () => reject(
 
-              delRequest.error ??
+                delRequest.error ??
 
-              new Error(
-                "[AETERNA] Failed to remove Runtime chunk.",
-              ),
+                new Error(
+                  "[AETERNA] Failed to remove Runtime chunk.",
+                ),
 
-            );
+              );
 
-        };
+          };
 
-      getRequest.onerror =
-        () => reject(
+        getRequest.onerror =
+          () => reject(
 
-          getRequest.error ??
+            getRequest.error ??
 
-          new Error(
-            "[AETERNA] Failed to remove Runtime chunk.",
-          ),
+            new Error(
+              "[AETERNA] Failed to remove Runtime chunk.",
+            ),
 
-        );
+          );
 
-    });
+      }),
+    );
 
   }
 
@@ -493,68 +506,71 @@ export class IndexedDbRuntimeStorage
         `${prefix}\uffff`,
       );
 
-    await new Promise<void>((
-      resolve,
-      reject,
-    ) => {
+    await withBoundedWait(
+      "clear",
+      new Promise<void>((
+        resolve,
+        reject,
+      ) => {
 
-      const store =
-        this.transaction(
-          "readwrite",
-        );
+        const store =
+          this.transaction(
+            "readwrite",
+          );
 
-      const request =
-        store.openCursor(range);
+        const request =
+          store.openCursor(range);
 
-      request.onsuccess =
-        () => {
+        request.onsuccess =
+          () => {
 
-          const cursor =
-            request.result;
+            const cursor =
+              request.result;
 
-          if (!cursor) {
+            if (!cursor) {
 
-            resolve();
+              resolve();
 
-            return;
+              return;
 
-          }
+            }
 
-          const del =
-            cursor.delete();
+            const del =
+              cursor.delete();
 
-          del.onsuccess =
-            () => {
+            del.onsuccess =
+              () => {
 
-              cursor.continue();
+                cursor.continue();
 
-            };
+              };
 
-          del.onerror =
-            () => reject(
+            del.onerror =
+              () => reject(
 
-              del.error ??
+                del.error ??
 
-              new Error(
-                "[AETERNA] Failed to clear Runtime chunk.",
-              ),
+                new Error(
+                  "[AETERNA] Failed to clear Runtime chunk.",
+                ),
 
-            );
+              );
 
-        };
+          };
 
-      request.onerror =
-        () => reject(
+        request.onerror =
+          () => reject(
 
-          request.error ??
+            request.error ??
 
-          new Error(
-            "[AETERNA] Failed to open cursor for Runtime clear.",
-          ),
+            new Error(
+              "[AETERNA] Failed to open cursor for Runtime clear.",
+            ),
 
-        );
+          );
 
-    });
+      }),
+    );
 
   }
 
@@ -580,50 +596,9 @@ export class IndexedDbRuntimeStorage
 
     };
 
-    await new Promise<void>((
-
-      resolve,
-      reject,
-
-    ) => {
-
-      const request =
-        this
-          .transaction(
-            "readwrite",
-          )
-          .put(
-            dbRecord,
-          );
-
-      request.onsuccess =
-        () => resolve();
-
-      request.onerror =
-        () => reject(
-
-          request.error ??
-
-          new Error(
-            "[AETERNA] Failed to store Runtime vault.",
-          ),
-
-        );
-
-    });
-
-  }
-
-  async readVault(
-    capsuleId: string,
-  ): Promise<Uint8Array> {
-
-    const record =
-      await new Promise<
-        {
-          ciphertext: ArrayBuffer;
-        } | undefined
-      >((
+    await withBoundedWait(
+      "storeVault",
+      new Promise<void>((
 
         resolve,
         reject,
@@ -633,26 +608,14 @@ export class IndexedDbRuntimeStorage
         const request =
           this
             .transaction(
-              "readonly",
+              "readwrite",
             )
-            .get(
-              this.vaultKey(
-                capsuleId,
-              ),
+            .put(
+              dbRecord,
             );
 
         request.onsuccess =
-          () => {
-
-            resolve(
-              request.result as
-                {
-                  ciphertext: ArrayBuffer;
-                } |
-                undefined,
-            );
-
-          };
+          () => resolve();
 
         request.onerror =
           () => reject(
@@ -660,12 +623,71 @@ export class IndexedDbRuntimeStorage
             request.error ??
 
             new Error(
-              "[AETERNA] Failed to read Runtime vault.",
+              "[AETERNA] Failed to store Runtime vault.",
             ),
 
           );
 
-      });
+      }),
+    );
+
+  }
+
+  async readVault(
+    capsuleId: string,
+  ): Promise<Uint8Array> {
+
+    const record =
+      await withBoundedWait(
+        "readVault",
+        new Promise<
+          {
+            ciphertext: ArrayBuffer;
+          } | undefined
+        >((
+
+          resolve,
+          reject,
+
+        ) => {
+
+          const request =
+            this
+              .transaction(
+                "readonly",
+              )
+              .get(
+                this.vaultKey(
+                  capsuleId,
+                ),
+              );
+
+          request.onsuccess =
+            () => {
+
+              resolve(
+                request.result as
+                  {
+                    ciphertext: ArrayBuffer;
+                  } |
+                  undefined,
+              );
+
+            };
+
+          request.onerror =
+            () => reject(
+
+              request.error ??
+
+              new Error(
+                "[AETERNA] Failed to read Runtime vault.",
+              ),
+
+            );
+
+        }),
+      );
 
     if (!record) {
 
@@ -687,74 +709,77 @@ export class IndexedDbRuntimeStorage
     capsuleId: string,
   ): Promise<void> {
 
-    await new Promise<void>((
+    await withBoundedWait(
+      "removeVault",
+      new Promise<void>((
 
-      resolve,
-      reject,
+        resolve,
+        reject,
 
-    ) => {
+      ) => {
 
-      const store =
-        this.transaction(
-          "readwrite",
-        );
+        const store =
+          this.transaction(
+            "readwrite",
+          );
 
-      const getRequest =
-        store.getKey(
-          this.vaultKey(
-            capsuleId,
-          ),
-        );
+        const getRequest =
+          store.getKey(
+            this.vaultKey(
+              capsuleId,
+            ),
+          );
 
-      getRequest.onsuccess =
-        () => {
+        getRequest.onsuccess =
+          () => {
 
-          if (
-            getRequest.result ===
-            undefined
-          ) {
+            if (
+              getRequest.result ===
+              undefined
+            ) {
 
-            resolve();
+              resolve();
 
-            return;
+              return;
 
-          }
+            }
 
-          const delRequest =
-            store.delete(
-              this.vaultKey(
-                capsuleId,
-              ),
-            );
+            const delRequest =
+              store.delete(
+                this.vaultKey(
+                  capsuleId,
+                ),
+              );
 
-          delRequest.onsuccess =
-            () => resolve();
+            delRequest.onsuccess =
+              () => resolve();
 
-          delRequest.onerror =
-            () => reject(
+            delRequest.onerror =
+              () => reject(
 
-              delRequest.error ??
+                delRequest.error ??
 
-              new Error(
-                "[AETERNA] Failed to remove Runtime vault.",
-              ),
+                new Error(
+                  "[AETERNA] Failed to remove Runtime vault.",
+                ),
 
-            );
+              );
 
-        };
+          };
 
-      getRequest.onerror =
-        () => reject(
+        getRequest.onerror =
+          () => reject(
 
-          getRequest.error ??
+            getRequest.error ??
 
-          new Error(
-            "[AETERNA] Failed to remove Runtime vault.",
-          ),
+            new Error(
+              "[AETERNA] Failed to remove Runtime vault.",
+            ),
 
-        );
+          );
 
-    });
+      }),
+    );
 
   }
 

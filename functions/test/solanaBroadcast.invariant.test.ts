@@ -1047,6 +1047,59 @@ describe("strict broadcast — wallet-added priority fees (Phantom)", () => {
     expect(params[0]).toBe(base64);
   });
 
+  it("accepts the exact observed Phantom pair (200 000 CU × 375 000 µL/CU = 75 000 lamports)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64, signature } = signedWithPriorityFee({
+      limitUnits: 200_000,
+      priceMicroLamports: 375_000,
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, unknown>)["signature"]).toBe(
+      signature
+    );
+    expect(rpcCalls.map(methodOf)).toEqual(["getGenesisHash", "sendTransaction"]);
+    const rpcBody = rpcCalls[1]!.body as Record<string, unknown>;
+    const params = rpcBody["params"] as unknown[];
+    expect(params[0]).toBe(base64);
+
+    const sent = Transaction.from(Buffer.from(String(params[0]), "base64"));
+    expect(sent.instructions).toHaveLength(4);
+    const limit = sent.instructions[0]!;
+    const price = sent.instructions[1]!;
+    expect(limit.programId.toBase58()).toBe(COMPUTE_BUDGET_PROGRAM);
+    expect(price.programId.toBase58()).toBe(COMPUTE_BUDGET_PROGRAM);
+    expect(limit.data[0]).toBe(2);
+    expect(price.data[0]).toBe(3);
+    const limitView = new DataView(
+      limit.data.buffer,
+      limit.data.byteOffset,
+      limit.data.byteLength
+    );
+    const priceView = new DataView(
+      price.data.buffer,
+      price.data.byteOffset,
+      price.data.byteLength
+    );
+    expect(limitView.getUint32(1, true)).toBe(200_000);
+    expect(priceView.getBigUint64(1, true)).toBe(375_000n);
+    // ceil(200 000 × 375 000 / 1 000 000) = 75 000 lamports ≤ 1 000 000.
+    const worstCaseFee =
+      (BigInt(limitView.getUint32(1, true)) *
+        priceView.getBigUint64(1, true) +
+        999_999n) /
+      1_000_000n;
+    expect(worstCaseFee).toBe(75_000n);
+    expect(worstCaseFee).toBeLessThanOrEqual(1_000_000n);
+  });
+
   it("accepts the fee pair without the ATA-create instruction", async () => {
     const env = buildEnv();
     await reserveAttempt(env);
@@ -1157,14 +1210,18 @@ describe("strict broadcast — wallet-added priority fees (Phantom)", () => {
     expect(rpcCalls).toHaveLength(0);
   });
 
-  it("still rejects a wrong amount even with the fee pair", async () => {
+  it("still rejects a wrong amount even with the exact observed fee pair", async () => {
     const env = buildEnv();
     await reserveAttempt(env);
 
     const res = await post(env, {
       paymentIntentId: INTENT,
       creatorIdentityId: IDENTITY,
-      signedTransaction: signedWithPriorityFee({ amount: 999_999n }).base64,
+      signedTransaction: signedWithPriorityFee({
+        amount: 999_999n,
+        limitUnits: 200_000,
+        priceMicroLamports: 375_000,
+      }).base64,
     });
 
     expect(res.status).toBe(400);
@@ -1173,7 +1230,7 @@ describe("strict broadcast — wallet-added priority fees (Phantom)", () => {
     expect(rpcCalls).toHaveLength(0);
   });
 
-  it("still rejects a foreign destination even with the fee pair", async () => {
+  it("still rejects a foreign destination even with the exact observed fee pair", async () => {
     const env = buildEnv();
     await reserveAttempt(env);
 
@@ -1186,6 +1243,8 @@ describe("strict broadcast — wallet-added priority fees (Phantom)", () => {
           Keypair.generate().publicKey,
           false
         ),
+        limitUnits: 200_000,
+        priceMicroLamports: 375_000,
       }).base64,
     });
 
@@ -1425,6 +1484,22 @@ const PHANTOM_LIGHTHOUSE_TOKEN_DATA = Buffer.from([
   3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5,
   8,
 ]);
+
+/**
+ * The 26-byte CURRENT AssertAccountInfoMulti form: `Lamports(X) >=`,
+ * `KnownOwner(System) ==`, `DataLength(0) ==`. X is the balance-derived
+ * field Phantom varies per payer, so it is the only variable byte range.
+ */
+function currentInfoData(lamports: bigint): Buffer {
+  const value = Buffer.alloc(8);
+  value.writeBigUInt64LE(lamports);
+  return Buffer.from([
+    6, 4, 3,
+    0, ...value, 4,
+    3, 0, 0,
+    1, ...Buffer.alloc(8), 0,
+  ]);
+}
 
 function signedWithLighthouse(options: {
   includeAtaCreate?: boolean;
@@ -1838,5 +1913,111 @@ describe("candidate validation - Phantom Lighthouse assertion pair", () => {
     expect(data["broadcastAttempted"]).toBe(false);
     expect(rpcCalls).toHaveLength(0);
     expect(await boundSignature(env)).toBeNull();
+  });
+
+  it("accepts the 26-byte three-assertion INFO with the historical threshold", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const infoData = currentInfoData(14_290_622n);
+    expect(infoData).toHaveLength(26);
+
+    const res = await postLighthouse(env, { infoData });
+
+    expect(res.status).toBe(200);
+    expect(rpcCalls.map(methodOf)).toEqual([
+      "getGenesisHash",
+      "sendTransaction",
+    ]);
+    const sentBody = rpcCalls[1]!.body as Record<string, unknown>;
+    const params = sentBody["params"] as unknown[];
+    const sent = Transaction.from(Buffer.from(String(params[0]), "base64"));
+    expect(sent.instructions).toHaveLength(6);
+    expect(Buffer.from(sent.instructions[4]!.data)).toEqual(infoData);
+  });
+
+  it("accepts the same 26-byte INFO with a different balance threshold", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const infoData = currentInfoData(8_814_000n);
+
+    const res = await postLighthouse(env, { infoData });
+
+    expect(res.status).toBe(200);
+    const sentBody = rpcCalls[1]!.body as Record<string, unknown>;
+    const params = sentBody["params"] as unknown[];
+    const sent = Transaction.from(Buffer.from(String(params[0]), "base64"));
+    expect(Buffer.from(sent.instructions[4]!.data)).toEqual(infoData);
+  });
+
+  it("refuses a 26-byte INFO whose Lamports operator is not >=", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const infoData = currentInfoData(14_290_622n);
+    infoData[12] = 5;
+
+    const res = await postLighthouse(env, { infoData });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(data["broadcastAttempted"]).toBe(false);
+    expect(rpcCalls).toHaveLength(0);
+    expect(await boundSignature(env)).toBeNull();
+  });
+
+  it("refuses a reordered 26-byte INFO (owner before lamports)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const value = Buffer.alloc(8);
+    value.writeBigUInt64LE(14_290_622n);
+    const infoData = Buffer.from([
+      6, 4, 3,
+      3, 0, 0,
+      0, ...value, 4,
+      1, ...Buffer.alloc(8), 0,
+    ]);
+    expect(infoData).toHaveLength(26);
+
+    const res = await postLighthouse(env, { infoData });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("refuses the 26-byte INFO with a trailing byte", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const infoData = Buffer.concat([
+      currentInfoData(14_290_622n),
+      Buffer.from([0]),
+    ]);
+    expect(infoData).toHaveLength(27);
+
+    const res = await postLighthouse(env, { infoData });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data["error"]).toBe("UNEXPECTED_INSTRUCTION_COUNT");
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("accepts the observed five-instruction shape (fee pair, transfer, INFO, TOKEN)", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const infoData = currentInfoData(14_290_622n);
+
+    const res = await postLighthouse(env, {
+      infoData,
+      includeAtaCreate: false,
+    });
+
+    expect(res.status).toBe(200);
+    const sentBody = rpcCalls[1]!.body as Record<string, unknown>;
+    const params = sentBody["params"] as unknown[];
+    const sent = Transaction.from(Buffer.from(String(params[0]), "base64"));
+    expect(sent.instructions).toHaveLength(5);
+    expect(Buffer.from(sent.instructions[3]!.data)).toEqual(infoData);
   });
 });

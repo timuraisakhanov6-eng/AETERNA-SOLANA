@@ -278,7 +278,7 @@ export default function CapsuleView({ state, className }: Props) {
     );
   }
 
-  /* ===== RECOVERING ??? retryable recipient failure, still fail-closed ===== */
+  /* ===== RECOVERING — retryable recipient failure, still fail-closed ===== */
 
   if (state.status === "recovering") {
     return (
@@ -831,7 +831,7 @@ export default function CapsuleView({ state, className }: Props) {
             </div>
           </div>
 
-          {/* ── Recipient Notice — весь блок кликабелен ── */}
+          {/* ── Recipient Notice — the whole block is clickable ── */}
           {!authorityMode && (
             <motion.div
               initial={{ opacity: 0 }}

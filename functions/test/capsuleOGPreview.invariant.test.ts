@@ -119,7 +119,7 @@ describe("capsule OG preview — routing", () => {
 
 describe("capsule OG preview — metadata contract", () => {
   it("uses the fixed branded title and the EXACT creator description", async () => {
-    const description = "вот это писания я хочу чтобы было";
+    const description = "these are the words I want to remain";
     const kv = new Map<string, string>([
       [VALID_ID_A, makeManifest({ capsuleId: VALID_ID_A, description })],
     ]);
@@ -186,7 +186,7 @@ describe("capsule OG preview — metadata contract", () => {
   });
 
   it("HTML-escapes dangerous characters while preserving Unicode", async () => {
-    const raw = `he said <b>"wait"</b> & didn't — сюрприз`;
+    const raw = `he said <b>"wait"</b> & didn't — surprise`;
     const kv = new Map<string, string>([
       [VALID_ID_A, makeManifest({ capsuleId: VALID_ID_A, description: raw })],
     ]);
@@ -200,7 +200,7 @@ describe("capsule OG preview — metadata contract", () => {
 
     expect(html).not.toContain("<b>");
     expect(html).toContain(
-      "he said &lt;b&gt;&quot;wait&quot;&lt;/b&gt; &amp; didn&#x27;t — сюрприз"
+      "he said &lt;b&gt;&quot;wait&quot;&lt;/b&gt; &amp; didn&#x27;t — surprise"
     );
   });
 
@@ -417,11 +417,11 @@ describe("capsule OG preview — buildOgHtml unit", () => {
   it("escapes the five dangerous characters and preserves Unicode", () => {
     const html = buildOgHtml({
       title: "AETERNA — Digital Time Capsule",
-      description: `&<>"' — тест`,
+      description: `&<>"' — test`,
       url: `${SITE}/capsule/${VALID_ID_A}`,
     });
 
-    expect(html).toContain("&amp;&lt;&gt;&quot;&#x27; — тест");
+    expect(html).toContain("&amp;&lt;&gt;&quot;&#x27; — test");
   });
 
   it("emits a fragment-free canonical URL", () => {
