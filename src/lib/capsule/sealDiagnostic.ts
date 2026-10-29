@@ -38,6 +38,9 @@ export type SealDiagnosticCode =
   | "SEAL_API"
   | "SEAL_VERIFY"
   | "FINALIZE_CREDIT"
+  /* 3BM-R7-F1 — a genuinely required NEW upload cannot run: the
+     wallet-backed adapter has no wallet (lazy prerequisite). */
+  | "STORAGE_WALLET_UNAVAILABLE"
   /* No boundary classified it */
   | "SEAL_UNKNOWN";
 

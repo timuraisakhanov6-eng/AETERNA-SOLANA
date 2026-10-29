@@ -88,11 +88,17 @@ import {
 } from "@/lib/capsule/sealCapsuleCore";
 import { destroyRuntime } from "@/lib/runtime/runtimeRegistry";
 import { removeUnfinishedLifecycle } from "@/lib/access/unfinishedLifecycle";
+import { createCreatorIrysStorage } from "@/lib/storage/creatorIrysStorage";
+import { toCreatorIrysWallet } from "@/lib/storage/creatorIrys";
 
 const sealMock = sealCapsuleCore as unknown as ReturnType<typeof vi.fn>;
 const destroyRuntimeMock = destroyRuntime as unknown as ReturnType<typeof vi.fn>;
 const removeUnfinishedLifecycleMock =
   removeUnfinishedLifecycle as unknown as ReturnType<typeof vi.fn>;
+const createCreatorIrysStorageMock =
+  createCreatorIrysStorage as unknown as ReturnType<typeof vi.fn>;
+const toCreatorIrysWalletMock =
+  toCreatorIrysWallet as unknown as ReturnType<typeof vi.fn>;
 
 const LOCATION_STATE = {
   holdState: {
@@ -123,6 +129,31 @@ function walletProvider(children: React.ReactNode) {
     AETERNAWalletContext.Provider,
     { value: { wallet: { account: WALLET_ACCOUNT } } as never },
     children
+  );
+}
+
+/** A wallet context WITHOUT an account: the dropped-session resume case. */
+function walletProviderNoAccount(children: React.ReactNode) {
+  return createElement(
+    AETERNAWalletContext.Provider,
+    { value: { wallet: { account: null } } as never },
+    children
+  );
+}
+
+function renderHoldNoAccount() {
+  return render(
+    walletProviderNoAccount(
+      createElement(
+        MemoryRouter,
+        {
+          initialEntries: [
+            { pathname: "/create/hold", state: LOCATION_STATE },
+          ] as never,
+        },
+        createElement(CapsuleHold)
+      )
+    )
   );
 }
 
@@ -328,5 +359,62 @@ describe("CapsuleHold seal retry loop — terminal vs transient", () => {
       creatorIdentityId: CREATOR_IDENTITY_ID,
       uploadToken: UPLOAD_TOKEN,
     });
+  });
+
+  it("the cached resume proceeds WITHOUT a wallet account (wallet:null adapter) and reaches the seal", async () => {
+    stubUploadTokenFetch();
+    sealMock.mockResolvedValueOnce({
+      capsuleId: CAPSULE_ID,
+      confirmationLink: `/capsule/${CAPSULE_ID}#frag`,
+      recipientLink: `/capsule/${CAPSULE_ID}#frag`,
+      finalized: true,
+      finalizationPending: false,
+      manifest: {},
+    });
+
+    // Both retry caches present: the fully cached path performs ZERO
+    // wallet interactions (3BM-R7-F1).
+    window.sessionStorage.setItem(
+      `aeterna-vault-txid:${CAPSULE_ID}`,
+      "v".repeat(43)
+    );
+    window.sessionStorage.setItem(
+      `aeterna-container-upload:${CAPSULE_ID}`,
+      JSON.stringify({
+        containerTxId: "C".repeat(43),
+        chunkIds: ["chunk-1"],
+        layoutDigest: "b".repeat(64),
+      })
+    );
+
+    renderHoldNoAccount();
+
+    await act(async () => {});
+
+    // The previous early-guard location is passed: the core ran with the
+    // wallet:null adapter and the ORIGINAL identity.
+    expect(sealMock).toHaveBeenCalledTimes(1);
+    expect(sealMock.mock.calls[0]![0]).toMatchObject({
+      capsuleId: CAPSULE_ID,
+      canonicalLifecycleId: LIFECYCLE_ID,
+      creatorIdentityId: CREATOR_IDENTITY_ID,
+    });
+    expect(createCreatorIrysStorageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wallet: null,
+        creatorIdentityId: CREATOR_IDENTITY_ID,
+        lifecycleId: LIFECYCLE_ID,
+        capsuleId: CAPSULE_ID,
+        storagePaymentId: STORAGE_PAYMENT_ID,
+      })
+    );
+    // No wallet conversion happened: nothing on this path needs one.
+    expect(toCreatorIrysWalletMock).not.toHaveBeenCalled();
+
+    // No failure surface, no STORAGE_WALLET_UNAVAILABLE anywhere.
+    expect(
+      screen.queryByText(/We couldn't finish preparing your capsule/)
+    ).toBeNull();
+    expect(screen.queryByText(/STORAGE_WALLET_UNAVAILABLE/)).toBeNull();
   });
 });

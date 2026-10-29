@@ -1000,11 +1000,18 @@ export default function CapsuleHold() {
 
                 // Phase D2b — Creator-paid storage adapter (upload-only:
                 // the Irys storage payment is already PAYMENT_VERIFIED).
-                if (!connectedWallet?.wallet?.account) {
-                  throw new Error("STORAGE_WALLET_UNAVAILABLE");
-                }
+                //
+                // 3BM-R7-F1 — the wallet is a LAZY prerequisite: it is
+                // consumed ONLY by upload()/uploadContainer() (new Irys
+                // uploads + signatures). The cached-resume path performs                // ZERO wallet interactions (the claim is pure server
+                // HTTP), so a dropped wallet session must not block it.
+                // A genuinely required new upload without a wallet still
+                // fails closed inside the adapter with
+                // STORAGE_WALLET_UNAVAILABLE.
                 const creatorStorage = createCreatorIrysStorage({
-                  wallet: toCreatorIrysWallet(connectedWallet.wallet),
+                  wallet: connectedWallet?.wallet?.account
+                    ? toCreatorIrysWallet(connectedWallet.wallet)
+                    : null,
                   creatorIdentityId,
                   lifecycleId: canonicalLifecycleId,
                   capsuleId: holdState.prepared.capsuleId,

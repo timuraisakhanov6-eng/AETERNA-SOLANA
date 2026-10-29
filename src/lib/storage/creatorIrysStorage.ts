@@ -31,10 +31,20 @@ import type { RuntimeStorage } from "@/lib/runtime/runtimeStorage";
 import type { ChunkMetadata } from "@/types/vault";
 import { uploadPreparedContainer } from "./uploadPreparedContainer";
 import { executorStorage } from "./executorStorage";
+import { tagSealFailure } from "@/lib/capsule/sealDiagnostic";
 
 export interface CreatorIrysStorageContext {
-  /** Creator wallet bound to the $1 payment and this lifecycle. */
-  wallet: CreatorIrysWallet;
+  /**
+   * Creator wallet bound to the $1 payment and this lifecycle.
+   *
+   * 3BM-R7-F1 — LAZY PREREQUISITE: required ONLY by the wallet-consuming
+   * methods (`upload` / `uploadContainer` — new Irys uploads and
+   * signatures). Wallet-free operations (`claimContainerUpload` and the
+   * whole cached-resume path) run WITHOUT it, so a dropped wallet session
+   * can no longer block a fully cached resume. Absent wallet → the
+   * wallet-consuming methods fail closed with STORAGE_WALLET_UNAVAILABLE.
+   */
+  wallet: CreatorIrysWallet | null;
   creatorIdentityId: string;
   lifecycleId: string;
   capsuleId: string;
@@ -247,7 +257,6 @@ export function createCreatorIrysStorage(
     throw new Error("[AETERNA] creatorIrysStorage: context is required");
   }
   for (const key of [
-    "wallet",
     "creatorIdentityId",
     "lifecycleId",
     "capsuleId",
@@ -262,12 +271,23 @@ export function createCreatorIrysStorage(
     name: "creator-irys",
 
     async upload(data: Uint8Array, _uploadToken: UploadToken) {
+      // 3BM-R7-F1 — the wallet is consumed ONLY here. A resume with a
+      // valid cached vault txId never enters this method; a genuinely
+      // required NEW upload without a wallet fails closed.
+      const wallet = ctx.wallet;
+      if (!wallet) {
+        throw tagSealFailure(
+          new Error("STORAGE_WALLET_UNAVAILABLE"),
+          "STORAGE_WALLET_UNAVAILABLE"
+        );
+      }
+
       // Upload-only (no fund): the storage payment is already
       // PAYMENT_VERIFIED. The original buffer is passed through
       // without cloning.
       const { dataTxId } = await uploadCreatorData(
         data,
-        ctx.wallet,
+        wallet,
         ctx.rpcUrl
       );
 
@@ -296,8 +316,20 @@ export function createCreatorIrysStorage(
       chunkMetadata: readonly ChunkMetadata[],
       _uploadToken: UploadToken
     ): Promise<ContainerUploadOutcome> {
+      // 3BM-R7-F1 — the wallet is consumed ONLY here (the Irys uploader
+      // build + DataItem signing). A resume with a valid cached container
+      // outcome never enters this method; a genuinely required NEW
+      // container upload without a wallet fails closed.
+      const wallet = ctx.wallet;
+      if (!wallet) {
+        throw tagSealFailure(
+          new Error("STORAGE_WALLET_UNAVAILABLE"),
+          "STORAGE_WALLET_UNAVAILABLE"
+        );
+      }
+
       const uploader = await buildCreatorChunkingUploader(
-        ctx.wallet,
+        wallet,
         ctx.rpcUrl
       );
 
