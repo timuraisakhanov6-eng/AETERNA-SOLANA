@@ -6,9 +6,11 @@
  *   → client txId evidence (Irys data-item id)
  *   → server-side Irys Node confirmation
  *   → server-authored authority:
- *       vault  → PUBLICATION_VERIFICATIONS PENDING (expectedTxId=txId,
- *                expectedVaultSha256=null — computed later by verify)
- *       chunk  → CHUNK_POINTER_REGISTRY chunkId→txId
+ *       vault     → PUBLICATION_VERIFICATIONS PENDING (expectedTxId=txId,
+ *                   expectedVaultSha256=null — computed later by verify)
+ *       container → PUBLICATION_VERIFICATIONS container record (ONE record
+ *                   per capsule: containerTxId + ordered chunkIds + digest;
+ *                   per-chunk registry entries are never written)
  *   → secondary tx index (no one tx across two lifecycles/capsules)
  *
  * Executor Hot is never touched; client state/hash/destination/payer
@@ -42,6 +44,7 @@ const STORAGE_PAYMENT_ID = "storage-pay-1";
 const VAULT_TX = "V".repeat(43);
 const CHUNK_TX = "C".repeat(43);
 const CHUNK_ID = "c".repeat(64);
+const LAYOUT_DIGEST = "9".repeat(64);
 const TOKEN_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const IRYS_DESTINATION = "IrysDestinationAccount333333333333333333333";
 
@@ -206,27 +209,38 @@ describe("Phase C — creator-paid publication claim", () => {
     expect(txIndex.lifecycleId).toBe(LIFECYCLE_ID);
   });
 
-  it("B. valid chunk claim writes pointer registry only (no publication record)", async () => {
+  it("B. valid container claim writes exactly the contract-defined records (no per-chunk registry, no vault record)", async () => {
     const env = buildEnv();
     seedReservedLifecycle(env);
     seedVerifiedPayment(env);
     stubNode();
 
     nodeBody = { id: CHUNK_TX };
-    const res = await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX });
+    const res = await claim(env, {
+      kind: "container",
+      txId: CHUNK_TX,
+      chunkIds: [CHUNK_ID],
+      layoutDigest: LAYOUT_DIGEST,
+    });
     expect(res.status).toBe(200);
 
-    // Per-chunk key model: this chunk owns its OWN KV entry. There is
-    // no shared capsule-level registry blob to read or rewrite.
-    const entry = await env.CHUNK_POINTER_REGISTRY.get(
-      `chunk-pointer-entry:${CAPSULE_ID}:${CHUNK_ID}`
-    );
-    expect(entry).toBe(CHUNK_TX);
+    // Container model: the media claim is THE publication claim. It writes
+    // exactly ONE container record plus the shared tx index — and NEVER a
+    // vault publication record or per-chunk registry entries.
+    const keys = (await env.PUBLICATION_VERIFICATIONS.list({}))
+      .keys
+      .map((entry) => entry.name)
+      .sort();
+    expect(keys).toEqual([
+      `container-publication:${CAPSULE_ID}`,
+      `publication-tx:${CHUNK_TX}`,
+    ]);
     expect(
-      await env.CHUNK_POINTER_REGISTRY.get(`chunk-pointer-registry:${CAPSULE_ID}`)
+      await env.CHUNK_POINTER_REGISTRY.get(
+        `chunk-pointer-entry:${CAPSULE_ID}:${CHUNK_ID}`
+      )
     ).toBeNull();
     expect(await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)).toBeNull();
-    expect(await env.PUBLICATION_VERIFICATIONS.get(`publication-tx:${CHUNK_TX}`)).toBeTruthy();
   });
 
   it("C. claim without PAYMENT_VERIFIED storage payment → fail closed", async () => {
@@ -414,15 +428,29 @@ describe("Phase C — creator-paid publication claim", () => {
     expect(stored.expectedVaultSha256).toBeNull(); // client hash ignored
   });
 
-  it("Q/R. chunk writes pointer only; vault writes publication record", async () => {
+  it("Q/R. container media claim writes no vault publication record; vault claim writes it", async () => {
     const env = buildEnv();
     seedReservedLifecycle(env);
     seedVerifiedPayment(env);
     stubNode();
 
-    await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX });
+    // The media claim is a container claim now: it must SUCCEED and write
+    // its own container record while leaving the vault publication record
+    // untouched.
+    nodeBody = { id: CHUNK_TX };
+    const media = await claim(env, {
+      kind: "container",
+      txId: CHUNK_TX,
+      chunkIds: [CHUNK_ID],
+      layoutDigest: LAYOUT_DIGEST,
+    });
+    expect(media.status).toBe(200);
+    expect(
+      await env.PUBLICATION_VERIFICATIONS.get(`container-publication:${CAPSULE_ID}`)
+    ).toBeTruthy();
     expect(await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`)).toBeNull();
 
+    nodeBody = { id: VAULT_TX };
     await claim(env); // vault
     const stored = JSON.parse(
       (await env.PUBLICATION_VERIFICATIONS.get(`creator:publication:${LIFECYCLE_ID}`))!
@@ -533,7 +561,7 @@ describe("Phase C — storage pointer format acceptance", () => {
     expect(await env.PUBLICATION_VERIFICATIONS.get(`publication-tx:${REAL_IRYS_ID}`)).toBeTruthy();
   });
 
-  it("accepts the 44-char base58 id for a chunk and stores it as the pointer", async () => {
+  it("accepts the real 44-char base58 Irys id verbatim for a container claim", async () => {
     const env = buildEnv();
     seedReservedLifecycle(env);
     seedVerifiedPayment(env);
@@ -541,16 +569,20 @@ describe("Phase C — storage pointer format acceptance", () => {
     stubNode();
 
     const res = await claim(env, {
-      kind: "chunk",
-      chunkId: CHUNK_ID,
+      kind: "container",
       txId: REAL_IRYS_ID,
+      chunkIds: [CHUNK_ID],
+      layoutDigest: LAYOUT_DIGEST,
     });
     expect(res.status).toBe(200);
-    expect(
-      await env.CHUNK_POINTER_REGISTRY.get(
-        `chunk-pointer-entry:${CAPSULE_ID}:${CHUNK_ID}`
-      )
-    ).toBe(REAL_IRYS_ID);
+
+    // Stored verbatim: no re-encoding, so the node's own id stays the
+    // pointer and the /tx/<id> confirmation keeps matching.
+    const stored = JSON.parse(
+      (await env.PUBLICATION_VERIFICATIONS.get(`container-publication:${CAPSULE_ID}`))!
+    );
+    expect(stored.containerTxId).toBe(REAL_IRYS_ID);
+    expect(await env.PUBLICATION_VERIFICATIONS.get(`publication-tx:${REAL_IRYS_ID}`)).toBeTruthy();
   });
 
   it("rejects a 42-char id (too short)", async () => {
@@ -644,6 +676,22 @@ describe("Phase C — storage pointer format acceptance", () => {
 describe("Stage 4 — tx-index idempotency is EXACT-identity only", () => {
   const CHUNK_ID_2 = "d".repeat(64);
 
+  /**
+   * Current-contract media claim: ONE container DataItem carrying the
+   * ordered chunk set, claimed through the shared tx-index semantics.
+   */
+  const containerClaim = (
+    env: ReturnType<typeof buildEnv>,
+    overrides: Record<string, unknown> = {}
+  ) =>
+    claim(env, {
+      kind: "container",
+      txId: CHUNK_TX,
+      chunkIds: [CHUNK_ID],
+      layoutDigest: LAYOUT_DIGEST,
+      ...overrides,
+    });
+
   beforeEach(() => {
     nodeStatus = 200;
     nodeBody = { id: CHUNK_TX };
@@ -656,60 +704,70 @@ describe("Stage 4 — tx-index idempotency is EXACT-identity only", () => {
     vi.unstubAllGlobals();
   });
 
-  it("first chunk claim is unchanged (binds the pointer, writes the index)", async () => {
+  it("first container claim is unchanged (binds the record, writes the index)", async () => {
     const env = buildEnv();
     seedReservedLifecycle(env);
     seedVerifiedPayment(env);
     stubNode();
 
-    const res = await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX });
+    const res = await containerClaim(env);
     expect(res.status).toBe(200);
 
-    expect(
-      await env.CHUNK_POINTER_REGISTRY.get(
-        `chunk-pointer-entry:${CAPSULE_ID}:${CHUNK_ID}`
-      )
-    ).toBe(CHUNK_TX);
+    const index = JSON.parse(
+      (await env.PUBLICATION_VERIFICATIONS.get(`publication-tx:${CHUNK_TX}`))!
+    );
+    expect(index.lifecycleId).toBe(LIFECYCLE_ID);
+    expect(index.capsuleId).toBe(CAPSULE_ID);
+    expect(index.kind).toBe("container");
+
+    const record = JSON.parse(
+      (await env.PUBLICATION_VERIFICATIONS.get(`container-publication:${CAPSULE_ID}`))!
+    );
+    expect(record.state).toBe("PENDING");
+    expect(record.containerTxId).toBe(CHUNK_TX);
   });
 
-  it("same txId + same chunkId + same pointer -> idempotent 200", async () => {
+  it("same container claim replayed verbatim -> idempotent 200", async () => {
     const env = buildEnv();
     seedReservedLifecycle(env);
     seedVerifiedPayment(env);
     stubNode();
 
-    expect((await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX })).status).toBe(200);
-    const replay = await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX });
+    expect((await containerClaim(env)).status).toBe(200);
+    const replay = await containerClaim(env);
     expect(replay.status).toBe(200);
     expect(((await replay.json()) as Record<string, unknown>).claimed).toBe(true);
   });
 
-  it("THE DEFECT: same txId + DIFFERENT chunkId (same lifecycle+capsule) -> 409, not a silent 200", async () => {
+  it("same txId + same capsule + DIFFERENT chunk set -> 409, not a silent 200", async () => {
     const env = buildEnv();
     seedReservedLifecycle(env);
     seedVerifiedPayment(env);
     stubNode();
 
-    expect((await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX })).status).toBe(200);
+    expect((await containerClaim(env)).status).toBe(200);
 
-    // Chunk 2 reuses the SAME txId under the SAME lifecycle + capsule.
-    // Before the fix this returned 200 claimed:true and NEVER wrote chunk 2's
-    // pointer - a silent partial publication.
-    const second = await claim(env, { kind: "chunk", chunkId: CHUNK_ID_2, txId: CHUNK_TX });
+    // The SAME txId under the SAME lifecycle + capsule, but a divergent
+    // ordered chunk set: the coordinator must conflict instead of
+    // silently re-pointing the capsule's publication.
+    const second = await containerClaim(env, { chunkIds: [CHUNK_ID_2] });
     expect(second.status).toBe(409);
-    expect(((await second.json()) as Record<string, unknown>).error).toBe("TX_ALREADY_CLAIMED");
+    expect(((await second.json()) as Record<string, unknown>).error).toBe(
+      "CONTAINER_ALREADY_PUBLISHED"
+    );
 
+    // The conflicting attempt writes nothing: the authoritative record
+    // keeps the original chunk set, and no per-chunk registry entry
+    // appears for the rejected chunk.
+    const record = JSON.parse(
+      (await env.PUBLICATION_VERIFICATIONS.get(`container-publication:${CAPSULE_ID}`))!
+    );
+    expect(record.chunkIds).toEqual([CHUNK_ID]);
     expect(
       await env.CHUNK_POINTER_REGISTRY.get(
         `chunk-pointer-entry:${CAPSULE_ID}:${CHUNK_ID_2}`
       )
     ).toBeNull();
-
-    expect(
-      await env.CHUNK_POINTER_REGISTRY.get(
-        `chunk-pointer-entry:${CAPSULE_ID}:${CHUNK_ID}`
-      )
-    ).toBe(CHUNK_TX);
   });
 
   it("same txId + different lifecycle -> 409 TX_ALREADY_CLAIMED", async () => {
@@ -718,7 +776,7 @@ describe("Stage 4 — tx-index idempotency is EXACT-identity only", () => {
     seedVerifiedPayment(env);
     stubNode();
 
-    await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX });
+    await containerClaim(env);
 
     env.CREATOR_CREDITS.put(
       `creator:credit:lifecycle:${IDENTITY_ID}:lifecycle-2`,
@@ -729,10 +787,7 @@ describe("Stage 4 — tx-index idempotency is EXACT-identity only", () => {
       JSON.stringify({ storagePaymentId: "storage-pay-2", state: "PAYMENT_VERIFIED", quote: { creatorIdentityId: IDENTITY_ID, lifecycleId: "lifecycle-2", capsuleId: CAPSULE_ID } })
     );
 
-    const res = await claim(env, {
-      kind: "chunk",
-      chunkId: CHUNK_ID_2,
-      txId: CHUNK_TX,
+    const res = await containerClaim(env, {
       lifecycleId: "lifecycle-2",
       storagePaymentId: "storage-pay-2",
     });
@@ -746,7 +801,7 @@ describe("Stage 4 — tx-index idempotency is EXACT-identity only", () => {
     seedVerifiedPayment(env);
     stubNode();
 
-    await claim(env, { kind: "chunk", chunkId: CHUNK_ID, txId: CHUNK_TX });
+    await containerClaim(env);
 
     const OTHER_CAPSULE = "b".repeat(64);
     env.CREATOR_CREDITS.put(
@@ -758,10 +813,7 @@ describe("Stage 4 — tx-index idempotency is EXACT-identity only", () => {
       JSON.stringify({ storagePaymentId: "storage-pay-3", state: "PAYMENT_VERIFIED", quote: { creatorIdentityId: IDENTITY_ID, lifecycleId: "lifecycle-3", capsuleId: OTHER_CAPSULE } })
     );
 
-    const res = await claim(env, {
-      kind: "chunk",
-      chunkId: CHUNK_ID_2,
-      txId: CHUNK_TX,
+    const res = await containerClaim(env, {
       lifecycleId: "lifecycle-3",
       storagePaymentId: "storage-pay-3",
       capsuleId: OTHER_CAPSULE,
