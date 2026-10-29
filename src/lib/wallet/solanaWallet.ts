@@ -1055,6 +1055,16 @@ const WALLET_MESSAGE_DIAG_PARAM = "aeternaWalletDiag"
  * payer's balance and therefore stays out of the record.
  */
 const WALLET_DIAG_MAX_INFO_DATA_BYTES = 64
+/**
+ * TEMPORARY diagnostic constant (PHASE 3BM-R9).
+ *
+ * The production record proves the real Lighthouse INFO assertion is
+ * exactly 26 bytes, but its discriminator was never captured — so the
+ * payload is captured by SHAPE, not by first byte: 26 bytes immediately
+ * followed by the recognised token assertion. Any other 26-byte
+ * Lighthouse instruction keeps only its first byte.
+ */
+const WALLET_DIAG_INFO_ASSERTION_BYTES = 26
 
 function isWalletMessageDiagEnabled(): boolean {
   if (typeof window === "undefined") return false
@@ -1088,9 +1098,17 @@ interface WalletDiagInstructionSide {
   dataLength: number
   dataSha256: string
   /**
-   * Hex of a Lighthouse INFO assertion payload (discriminator 6) ONLY,
-   * bounded by `WALLET_DIAG_MAX_INFO_DATA_BYTES`. Absent for every other
-   * instruction, so no token-assertion or balance-derived data is recorded.
+   * First byte of a Lighthouse instruction payload, reported for EVERY
+   * Lighthouse instruction so the real discriminator can be identified
+   * without a second capture. One byte only — never the payload.
+   */
+  dataFirstByte?: number
+  /**
+   * Hex of the observed Lighthouse INFO assertion payload ONLY: exactly
+   * `WALLET_DIAG_INFO_ASSERTION_BYTES` bytes, immediately followed by the
+   * recognised token assertion, bounded by `WALLET_DIAG_MAX_INFO_DATA_BYTES`.
+   * Absent for every other instruction, so the token assertion's
+   * balance-derived payload is never recorded.
    */
   dataHex?: string
   /** True when `dataHex` was cut at the cap; the real size stays in `dataLength`. */
@@ -1193,24 +1211,50 @@ async function parseWalletDiagMessage(messageBytes: Uint8Array): Promise<{
             const programId =
               message.accountKeys[instruction.programIdIndex]?.toBase58() ??
               "unknown"
+            const nextInstruction = instructions[index + 1]
+            const nextProgramId =
+              nextInstruction === undefined
+                ? "unknown"
+                : message.accountKeys[nextInstruction.programIdIndex]?.toBase58() ??
+                  "unknown"
+            const isLighthouse = programId === LIGHTHOUSE_PROGRAM
             /**
-             * TEMPORARY (PHASE 3BM-R9): the Lighthouse INFO assertion is the
-             * ONLY instruction whose real payload the current fixture does
-             * not match. Its own bytes are reported — capped and hex only —
-             * so the real variant can be identified from one refusal.
+             * The first byte is reported for EVERY Lighthouse instruction.
+             * The production refusal proved a 26-byte assertion sits before
+             * the recognised token assertion, but its discriminator was not
+             * captured — one byte removes that blind spot without exposing
+             * any payload.
              */
-            const infoDataHex =
-              programId === LIGHTHOUSE_PROGRAM && instruction.data[0] === 6
-                ? walletDiagBytesToHex(
-                    instruction.data.slice(0, WALLET_DIAG_MAX_INFO_DATA_BYTES)
-                  )
+            const dataFirstByte =
+              isLighthouse && instruction.data.length > 0
+                ? (instruction.data[0] ?? null)
                 : null
+            /**
+             * The payload is captured ONLY for the observed shape: a 26-byte
+             * Lighthouse instruction immediately followed by the recognised
+             * token assertion (validated by the guard's own fixture, not a
+             * new rule). An isolated or unmatched 26-byte instruction keeps
+             * its first byte and nothing else, and the token assertion's
+             * balance-derived payload is never included.
+             */
+            const isObservedInfoAssertion =
+              isLighthouse &&
+              instruction.data.length === WALLET_DIAG_INFO_ASSERTION_BYTES &&
+              nextInstruction !== undefined &&
+              nextProgramId === LIGHTHOUSE_PROGRAM &&
+              isPhantomLighthouseTokenData(nextInstruction.data)
+            const infoDataHex = isObservedInfoAssertion
+              ? walletDiagBytesToHex(
+                  instruction.data.slice(0, WALLET_DIAG_MAX_INFO_DATA_BYTES)
+                )
+              : null
             return {
               index,
               programId,
               accountCount: instruction.accounts.length,
               dataLength: instruction.data.length,
               dataSha256: await walletDiagSha256Hex(instruction.data),
+              ...(dataFirstByte === null ? {} : { dataFirstByte }),
               ...(infoDataHex === null
                 ? {}
                 : {

@@ -1749,7 +1749,9 @@ interface DiagMessageSide {
     accountCount: number;
     dataLength: number;
     dataSha256: string;
-    /** Present only for a Lighthouse INFO assertion; bounded diagnostic hex. */
+    /** First byte of a Lighthouse payload; one byte, no payload. */
+    dataFirstByte?: number;
+    /** Present only for the observed 26-byte INFO assertion; bounded hex. */
     dataHex?: string;
     /** True when the reported hex was cut at the diagnostic cap. */
     dataHexTruncated?: boolean;
@@ -2358,6 +2360,173 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
     for (const instruction of instructions) {
       if (instruction.index === infoInstruction.index) continue;
       expect(instruction).not.toHaveProperty("dataHex");
+    }
+  });
+
+  /**
+   * TEMPORARY (PHASE 3BM-R9-A9).
+   *
+   * The production record proves a 26-byte Lighthouse instruction sits
+   * immediately before the recognised token assertion, but its first byte
+   * was never captured. This test proves the capture no longer depends on
+   * that byte: a 26-byte instruction whose discriminator is 0x2a (NOT 6) is
+   * recorded together with its bounded hex.
+   *
+   * The payload is SYNTHETIC — it is NOT the real Phantom payload; only the
+   * 26-byte length is confirmed by the production record.
+   */
+  it("captures a 26-byte Lighthouse assertion whose discriminator is not 6", async () => {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    // SYNTHETIC: 26 bytes, discriminator 0x2a.
+    const syntheticInfo = Buffer.alloc(26);
+    syntheticInfo[0] = 0x2a;
+    // The existing reconstructed token fixture (27 bytes, discriminator 10).
+    const tokenFixture = Buffer.from([
+      10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
+      3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8,
+    ]);
+
+    enableDiagnostics();
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+          const transfer = original.instructions.find(
+            (instruction) =>
+              instruction.programId.toBase58() === TOKEN_PROGRAM &&
+              instruction.data[0] === 3
+          );
+          if (!transfer) throw new Error("prepared transfer missing");
+          const modified = new web3.Transaction().add(
+            ...original.instructions,
+            new web3.TransactionInstruction({
+              programId: lighthouse,
+              keys: [
+                { pubkey: payer.publicKey, isSigner: false, isWritable: false },
+              ],
+              data: syntheticInfo,
+            }),
+            new web3.TransactionInstruction({
+              programId: lighthouse,
+              keys: [
+                {
+                  pubkey: transfer.keys[0]!.pubkey,
+                  isSigner: false,
+                  isWritable: false,
+                },
+              ],
+              data: tokenFixture,
+            })
+          );
+          modified.feePayer = original.feePayer!;
+          modified.recentBlockhash = original.recentBlockhash!;
+          modified.sign(payer);
+          return web3.Transaction.from(modified.serialize());
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    const instructions = record.returned!.instructions!;
+    const toHex = (bytes: Uint8Array) =>
+      Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+    const infoInstruction = instructions.find(
+      (instruction) => instruction.dataLength === 26
+    )!;
+    const tokenInstruction = instructions.find(
+      (instruction) => instruction.dataLength === 27
+    )!;
+
+    // Shape-based capture: the first byte is irrelevant to the decision.
+    expect(infoInstruction.dataFirstByte).toBe(0x2a);
+    expect(infoInstruction.dataHex).toBe(toHex(syntheticInfo));
+    expect(infoInstruction.dataHexTruncated).toBe(false);
+
+    // The token assertion keeps its first byte and NEVER its payload.
+    expect(tokenInstruction.dataFirstByte).toBe(10);
+    expect(tokenInstruction).not.toHaveProperty("dataHex");
+    expect(tokenInstruction).not.toHaveProperty("dataHexTruncated");
+  });
+
+  /**
+   * TEMPORARY (PHASE 3BM-R9-A9): an unmatched 26-byte Lighthouse
+   * instruction — here followed by ANOTHER 26-byte instruction instead of
+   * the recognised token assertion — must not have its payload exposed.
+   * The first byte stays visible so the variant can still be identified.
+   */
+  it("does not expose a 26-byte Lighthouse payload unless a recognised token assertion follows", async () => {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    // SYNTHETIC payloads; the length is confirmed, the bytes are not.
+    const first = Buffer.alloc(26);
+    first[0] = 0x2a;
+    const second = Buffer.alloc(26);
+    second[0] = 0x2b;
+
+    enableDiagnostics();
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+          const target = [
+            { pubkey: payer.publicKey, isSigner: false, isWritable: false },
+          ];
+          const modified = new web3.Transaction().add(
+            ...original.instructions,
+            new web3.TransactionInstruction({
+              programId: lighthouse,
+              keys: target,
+              data: first,
+            }),
+            new web3.TransactionInstruction({
+              programId: lighthouse,
+              keys: target,
+              data: second,
+            })
+          );
+          modified.feePayer = original.feePayer!;
+          modified.recentBlockhash = original.recentBlockhash!;
+          modified.sign(payer);
+          return web3.Transaction.from(modified.serialize());
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    const instructions = record.returned!.instructions!;
+    const twentySixByteInstructions = instructions.filter(
+      (instruction) => instruction.dataLength === 26
+    );
+
+    expect(twentySixByteInstructions).toHaveLength(2);
+    for (const instruction of twentySixByteInstructions) {
+      expect(instruction).not.toHaveProperty("dataHex");
+      expect(instruction).not.toHaveProperty("dataHexTruncated");
+      expect(typeof instruction.dataFirstByte).toBe("number");
     }
   });
 });
