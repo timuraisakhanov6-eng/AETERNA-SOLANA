@@ -1,3 +1,20 @@
+/**
+ * DEFERRED WIP — concurrent vault read + creator-fragment derivation.
+ *
+ * The feature these tests describe is NOT implemented in the current release
+ * candidate: `sealCapsuleCore` still awaits `runtime.readVault()` before it
+ * starts the creator-fragment derivation, and the source identifiers asserted
+ * at the bottom of this file (`readVaultPromise`,
+ * `creatorAuthorityFragmentPromise`) do not exist in the implementation.
+ *
+ * The file is intentionally named `.wip.ts` so the standard Vitest discovery
+ * (the `*.test.ts` glob under `src/`) does NOT run it. It is kept in the tree
+ * as the specification for a separately authorised feature task and remains
+ * subject to TypeScript checks (`tsconfig.app.json` includes `src`).
+ *
+ * Reference: R9-A36 investigation, 2026-10-30.
+ */
+
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 
@@ -44,7 +61,7 @@ const IDENTITY_ID = "0".repeat(32);
 /** Minimal in-memory RuntimeStorage; only readVault is exercised here. */
 function buildRuntime(
   readVault: (capsuleId: string) => Promise<Uint8Array>
-): { runtime: RuntimeStorage; readVaultSpy: ReturnType<typeof vi.fn> } {
+) {
   const readVaultSpy = vi.fn(readVault);
 
   const runtime = {
@@ -64,10 +81,7 @@ function buildRuntime(
 }
 
 /** Storage adapter that FAILS LOUDLY if the seal path ever reaches it. */
-function buildForbiddenStorage(): {
-  storage: StorageAdapter;
-  uploadSpy: ReturnType<typeof vi.fn>;
-} {
+function buildForbiddenStorage() {
   const uploadSpy = vi.fn(async () => {
     throw new Error("[test] storage.uploadCreatorData must not be reached");
   });
