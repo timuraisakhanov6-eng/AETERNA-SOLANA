@@ -932,6 +932,20 @@ export default function CapsuleBuilder() {
     }
     setWalletMismatch(false);
 
+    /* ── R9-A77.1 — FAIL-CLOSED OPENING-TIME BOUNDARY ──
+       `unlockAt` is `number | null` and becomes `openAt`, which is a
+       vault-key derivation input. The disabled Create Capsule button is a
+       usability safeguard, not an authority: any invocation that does not
+       go through that attribute would otherwise reach vault preparation
+       with a null opening time. Capture the value ONCE, reject null
+       explicitly, and carry the captured number downstream so the value
+       that was validated is the value that is used. */
+    const unlockAtForCreate = unlockAt;
+    if (unlockAtForCreate === null) {
+      setSealError("Set an unlock date before creating the capsule.");
+      return;
+    }
+
     sealingRef.current = true;
     setSealError(null);
     setSealPhase("preparing");
@@ -940,7 +954,7 @@ export default function CapsuleBuilder() {
       const snapshotItems = [...items];
       const fingerprint = buildPreparationFingerprint(
         snapshotItems,
-        unlockAt
+        unlockAtForCreate
       );
 
 
@@ -977,7 +991,7 @@ export default function CapsuleBuilder() {
 
       const restored = restorePreparedFromSession(
         capsuleId,
-        unlockAt,
+        unlockAtForCreate,
         fingerprint,
         snapshotItems
       );
@@ -1011,14 +1025,14 @@ export default function CapsuleBuilder() {
         capsuleId,
         items: snapshotItems,
         getMediaFile,
-        openAt: unlockAt,
+        openAt: unlockAtForCreate,
       });
 
       preparedRef.current = {
         prepared: preparedCapsule,
         billableSizeBytes: 0,
         expectedAmount: 1.0,
-        openAt: unlockAt as OpenAtUtc,
+        openAt: unlockAtForCreate as OpenAtUtc,
         description: description ?? "",
         itemIds: snapshotItems.map((i) => i.id),
         creatorAuthority: preparedCapsule.creatorAuthority,
