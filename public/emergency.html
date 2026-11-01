@@ -495,6 +495,31 @@ footer{
 .return-link:hover{color:rgba(232,228,220,0.85);border-color:rgba(255,200,140,0.35);}
 .return-link:focus-visible{outline:1px solid rgba(251,191,36,0.7);outline-offset:2px;}
 
+/* ── R9-A82: PERSISTENT RETURN CONTROL (OPENED STATE ONLY) ──
+   Every rule below is scoped to body.is-opened, a class the page adds
+   ONLY when the runtime reports the explicit "opened" outcome. The
+   sealed surface therefore keeps its exact pre-R9-A82 layout: the
+   control stays in the document footer, in normal flow, never fixed.
+
+   In the opened state the footer becomes the fixed bottom surface so
+   the action stays visible while text, photographs and video scroll
+   past it, and the opened content reserves bottom space so the final
+   item (and any native video controls) can always scroll clear of it.
+   The button keeps its own styling and its existing handler unchanged;
+   only the surface it sits on is positioned. */
+body.is-opened{
+  padding-bottom:calc(132px + env(safe-area-inset-bottom,0px));
+}
+body.is-opened footer{
+  position:fixed;
+  left:0;right:0;bottom:0;
+  width:100%;max-width:none;
+  margin:0;
+  padding:10px 24px calc(14px + env(safe-area-inset-bottom,0px));
+  background:linear-gradient(to top,var(--bg) 58%,rgba(0,0,0,0));
+  z-index:30;
+}
+
 </style>
 </head>
 
@@ -679,12 +704,18 @@ footer{
   const status = document.getElementById('statusLine');
   const root = document.getElementById('itemsContainer');
 
+  /* R9-A82 STATE CLASS:START */
   function showState(which) {
     stateSealed.classList.remove('active');
     stateOpening.classList.remove('active');
     stateOpened.classList.remove('active');
     which.classList.add('active');
+    /* R9-A82: the persistent return control is an OPENED-state treatment.
+       Sealed and opening never receive this class, so their layout is the
+       unchanged pre-R9-A82 behaviour. */
+    document.body.classList.toggle('is-opened', which === stateOpened);
   }
+  /* R9-A82 STATE CLASS:END */
 
   showState(stateSealed);
 
