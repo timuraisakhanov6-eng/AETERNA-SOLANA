@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useCallback, useReducer } from "react";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Lock, Loader2 } from "lucide-react";
 import { useCapsule } from "../../context/CapsuleContext";
@@ -507,7 +506,6 @@ export default function CapsuleBuilder() {
   const [mediaCaptureMode, setMediaCaptureMode] =
     useState<"photo" | "video" | null>(null);
 
-  const [isConfirmed, setIsConfirmed] = useState(false);
   const [sealPhase, setSealPhase] = useState<SealPhase>("idle");
   const [sealError, setSealError] = useState<string | null>(null);
 
@@ -1157,7 +1155,6 @@ export default function CapsuleBuilder() {
   const canSeal =
     items.length > 0 &&
     typeof unlockAt === "number" &&
-    isConfirmed &&
     sealPhase === "idle";
 
   // PATCH-2K-B disable matrix over the create-flow state machine. The
@@ -1255,28 +1252,6 @@ export default function CapsuleBuilder() {
 
           <section className="rounded-xl border bg-card/30 backdrop-blur-sm p-4 space-y-5 text-center">
             <div className="space-y-4">
-              <label className="flex items-center justify-center gap-3 cursor-pointer group opacity-90 hover:opacity-100 transition">
-                <Checkbox
-                  id="protocol-confirm"
-                  className="mt-0.5 shrink-0"
-                  checked={isConfirmed}
-                  disabled={isBusy}
-                  onCheckedChange={(v) => setIsConfirmed(v === true)}
-                />
-                <span className="text-sm text-muted-foreground leading-snug max-w-[520px] mx-auto block group-hover:text-foreground transition-colors">
-                  I accept the{" "}
-                  <Link
-                    to="/protocol"
-                    className="underline underline-offset-4 text-orange-500"
-                    translate="no"
-                  >
-                    Protocol Rules
-                  </Link>{" "}
-                  of{" "}
-                  <span translate="no">AETERNA</span>
-                </span>
-              </label>
-
               {sealError && (
                 <div className="aeterna-error-notice p-3 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-500 animate-in fade-in zoom-in-95">
                   {sealError}

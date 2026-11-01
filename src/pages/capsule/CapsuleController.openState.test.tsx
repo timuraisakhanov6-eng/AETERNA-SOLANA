@@ -1148,11 +1148,17 @@ describe("8. creator presence → recipient effective date and notice", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText("The opening date of this capsule may change over time.")
+        screen.getByRole("link", {
+          name: "Why can the opening date change? →",
+        })
       ).toBeTruthy()
     );
-    const link = screen.getByText("Learn why →").closest("a");
-    expect(link?.getAttribute("href")).toBe("/protocol#creator-presence");
+    const link = screen.getByRole("link", {
+      name: "Why can the opening date change? →",
+    });
+    expect(link.getAttribute("href")).toBe(
+      "/protocol?section=opening-presence"
+    );
   });
 
   it("does NOT show the recipient notice on the creator/authority card", async () => {
@@ -1166,7 +1172,7 @@ describe("8. creator presence → recipient effective date and notice", () => {
       expect(screen.getByLabelText("Capsule sealed")).toBeTruthy()
     );
     expect(
-      screen.queryByText("The opening date of this capsule may change over time.")
+      screen.queryByRole("link", { name: "Why can the opening date change? →" })
     ).toBeNull();
     // The creator sees the authority security text instead.
     expect(

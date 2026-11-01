@@ -1,5 +1,4 @@
 import { motion } from "framer-motion"
-import { Link } from "react-router-dom"
 import CreateAccessGate from "@/components/access/CreateAccessGate"
 
 const Home = () => {
@@ -177,33 +176,7 @@ const Home = () => {
               No accounts · No recovery · One private link
             </motion.p>
 
-            {/* Protocol link */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.8, delay: 1.0 }
-              }
-              className="mt-7 xl:mt-8"
-            >
-              <Link
-                to="/protocol"
-                className="
-                  text-[11px]
-                  md:text-[12px]
-                  xl:text-[13px]
-                  text-amber-300/90
-                  hover:text-amber-200
-                  hover:drop-shadow-[0_0_10px_rgba(255,180,90,0.5)]
-                  transition-all
-                  duration-300
-                  tracking-wide
-                  underline
-                  underline-offset-4
-                "
-              >
-                Read the Protocol Rules →
-              </Link>
-            </motion.div>
+
           </div>
         </div>
       </motion.div>
@@ -245,6 +218,7 @@ const Home = () => {
         >
           A non-custodial digital time capsule
         </motion.p>
+
 
         <motion.a
           initial={{ opacity: 0 }}

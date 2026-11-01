@@ -206,6 +206,19 @@ const builderTree = () =>
 
 const GATE_BUTTON = "CREATE CAPSULE";
 
+/**
+ * R9-A46: the entry gate requires the Protocol acknowledgment before it can
+ * start either creation path. Every entry click here goes through this
+ * helper (idempotent: an already-checked consent is left as is).
+ */
+function clickGateButton(): void {
+  const consent = screen.queryByRole("checkbox");
+  if (consent !== null && consent.getAttribute("aria-checked") !== "true") {
+    fireEvent.click(consent);
+  }
+  fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+}
+
 function requestedUrls(): string[] {
   return fetchMock.mock.calls.map((call) => String((call as unknown as unknown[])[0]));
 }
@@ -245,7 +258,7 @@ describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
     setPhantom(false);
     render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain(
@@ -278,7 +291,7 @@ describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
 
     render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(() => {
       expect(
@@ -293,7 +306,7 @@ describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
     setPhantom(false);
     render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     const link = await screen.findByRole("link", { name: "Install Phantom" });
     expect(PHANTOM_INSTALL_URL).toBe("https://phantom.com/download");
@@ -306,7 +319,7 @@ describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
     setPhantom(false);
     render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain(PHANTOM_MOBILE_TITLE);
@@ -334,7 +347,7 @@ describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
     setPhantom(false);
     render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await screen.findByRole("button", { name: PHANTOM_MOBILE_OPEN_LABEL });
 
     fireEvent.click(screen.getByRole("button", { name: PHANTOM_MOBILE_OPEN_LABEL }));
@@ -351,7 +364,7 @@ describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
     setPhantom(false);
     render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     const link = await screen.findByRole("link", { name: "Install Phantom" });
     expect(link.getAttribute("href")).toBe("https://phantom.com/download");
@@ -365,7 +378,7 @@ describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
 
     render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(() => {
       expect(requestedUrls().some((u) => u.includes("issue-challenge"))).toBe(true);
@@ -381,7 +394,7 @@ describe("Model 01 Phantom-only Create gate (Home access gate)", () => {
     setPhantom(false);
     render(gateTree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain("Phantom Wallet Required");

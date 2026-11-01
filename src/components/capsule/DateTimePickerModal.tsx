@@ -8,6 +8,11 @@ import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 
 import {
+  CreatorPresenceLink,
+  CREATOR_PRESENCE_CALENDAR_LABEL,
+} from "./presence/CreatorPresenceNotice";
+
+import {
   minAllowedOpenDayUtcMs,
 } from "@/shared/heartbeat/resolveEffectiveOpenAt";
 
@@ -599,6 +604,20 @@ export function DateTimePickerModal({
 
             </Button>
 
+          </div>
+
+          {/* R9-A52 - single Creator Presence link, inside the modal.
+
+              Creator Presence is part of every capsule, so the link is
+              unconditional. It is a single line placed AFTER the Confirm
+              block: the calendar grid, the date input, the validation and
+              the Confirm button keep their exact position and the modal's
+              initial height is unchanged. */}
+          <div className="pt-3 text-center">
+            <CreatorPresenceLink
+              location="calendar"
+              label={CREATOR_PRESENCE_CALENDAR_LABEL}
+            />
           </div>
 
         </div>

@@ -90,6 +90,13 @@ vi.mock("framer-motion", async () => {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VIEW_SRC = readFileSync(resolve(HERE, "CapsuleView.tsx"), "utf8");
+const PRESENCE_NOTICE_SRC = readFileSync(
+  resolve(HERE, "../../components/capsule/presence/CreatorPresenceNotice.tsx"),
+  "utf8"
+);
+
+/** Same source with JSX line wrapping collapsed: wrapping is not copy. */
+const PRESENCE_NOTICE_COPY = PRESENCE_NOTICE_SRC.replace(/\s+/g, " ");
 const CONTROLLER_SRC = readFileSync(resolve(HERE, "CapsuleController.tsx"), "utf8");
 const MODULE_SRC = readFileSync(
   resolve(HERE, "../../lib/heartbeat/confirmPresenceCooldown.ts"),
@@ -435,7 +442,11 @@ describe("L. double click does not fire two confirmations", () => {
 
   it("the view guards re-entry with `confirming` (source pin)", () => {
     expect(VIEW_SRC).toMatch(/if\s*\(confirming\)\s*\n?\s*return;/);
-    expect(VIEW_SRC).toMatch(/disabled=\{confirming\s*\|\|\s*heartbeatCooldownActive\}/);
+    // R9-A53/A54 adds a third, protocol-timing clause; the two existing
+    // guards keep their exact order and meaning.
+    expect(VIEW_SRC).toMatch(
+      /disabled=\{\s*confirming\s*\|\|\s*heartbeatCooldownActive\s*\|\|\s*!confirmAvailability\.available\s*\}/
+    );
   });
 });
 
@@ -519,17 +530,37 @@ describe("N. creator result feedback — the UI consumes only success", () => {
    O. recipient explanatory notice (source pins)
    ============================================================ */
 
-describe("O. the recipient explanatory notice is pinned in source", () => {
-  it("the exact notice text and Learn-why destination exist", () => {
-    expect(VIEW_SRC).toContain(
-      "The opening date of this capsule may change over time."
+describe("O. the recipient Creator Presence link is pinned in source (R9-A52)", () => {
+  it("the approved compact labels live in the shared presence module", () => {
+    expect(PRESENCE_NOTICE_COPY).toContain(
+      "Why can the opening date change? →"
     );
-    expect(VIEW_SRC).toContain("Learn why →");
-    expect(VIEW_SRC).toContain("/protocol#creator-presence");
+    expect(PRESENCE_NOTICE_COPY).toContain(
+      "Learn how the Confirm Presence button works →"
+    );
+    // The R9-A51 long explanatory copy is gone.
+    expect(PRESENCE_NOTICE_COPY).not.toContain(
+      "may change while Creator Presence is active"
+    );
+    expect(PRESENCE_NOTICE_COPY).not.toContain("sealed contents");
   });
 
-  it("the notice is recipient-only (gated on !authorityMode)", () => {
+  it("the link targets the canonical Protocol section, same tab", () => {
+    expect(PRESENCE_NOTICE_SRC).toContain(
+      "/protocol?section=opening-presence"
+    );
+    // The old, never-resolving fragment destination is gone.
+    expect(PRESENCE_NOTICE_SRC).not.toContain("/protocol#creator-presence");
+    expect(VIEW_SRC).not.toContain("/protocol#creator-presence");
+    // No new-tab attribute in JSX (the source comment may name it).
+    expect(PRESENCE_NOTICE_SRC).not.toMatch(/target=\{?"_blank"/);
+  });
+
+  it("the link is recipient-only and unconditional on presence", () => {
     expect(VIEW_SRC).toMatch(/\{!authorityMode && \(/);
+    expect(VIEW_SRC).toContain("<CreatorPresenceLink");
+    // No presence gating survives anywhere in the view.
+    expect(VIEW_SRC).not.toContain("creatorPresenceEnabled");
   });
 });
 
@@ -553,6 +584,11 @@ describe("P. creator-facing confirmation feedback (rendered)", () => {
         heartbeatInterval: 86_400_000,
       },
       openAt: T,
+      // R9-A53/A54 presentation inputs: a 1-day interval is always
+      // available, and trusted "now" equals the opening moment, so the
+      // feedback tests exercise the button, not the countdown.
+      heartbeatInterval: 86_400_000,
+      trustedNowMs: T,
       authorityMode: true,
       onConfirmPresence: handler,
     }) as never;

@@ -26,6 +26,33 @@ const IrysProbeDev = import.meta.env.DEV
   : null;
 
 /**
+ * DEV-ONLY visual preview (R9-A51).
+ *
+ * Creator Presence inside the real calendar modal and below the real
+ * recipient capsule card, with mock data only. Guarded by
+ * `import.meta.env.DEV` AND a dynamic import, exactly like the Irys probe
+ * above: in a production build the ternary resolves to `null`, the
+ * `import()` is never emitted, and the route below is never registered, so
+ * `/dev/calendar-presence-preview` falls through to NotFound.
+ */
+const CalendarPresencePreview = import.meta.env.DEV
+  ? lazy(() => import("@/pages/dev/CalendarPresencePreview"))
+  : null;
+
+/*
+ * DEV-ONLY recovery preview (R9-A65).
+ *
+ * Shows the boot supervisor states (attempt 1, attempt 2, recovery panel)
+ * and the Emergency Runtime return control with mock data only. Guarded by
+ * `import.meta.env.DEV` AND a dynamic import, so a production build neither
+ * emits the chunk nor registers the route: `/dev/recovery-preview` falls
+ * through to NotFound.
+ */
+const RecoveryPreview = import.meta.env.DEV
+  ? lazy(() => import("@/pages/dev/RecoveryPreview"))
+  : null;
+
+/**
  * AETERNA Application Routing Layer
  *
  * Responsibilities:
@@ -106,6 +133,30 @@ export default function App() {
             element={
               <Suspense fallback={<div>Loading dev probe…</div>}>
                 <IrysProbeDev />
+              </Suspense>
+            }
+          />
+        )}
+
+        {/* DEV-ONLY: Creator Presence visual preview. Absent from production. */}
+        {CalendarPresencePreview && (
+          <Route
+            path="/dev/calendar-presence-preview"
+            element={
+              <Suspense fallback={<div>Loading preview…</div>}>
+                <CalendarPresencePreview />
+              </Suspense>
+            }
+          />
+        )}
+
+        {/* DEV-ONLY: boot recovery preview. Absent from production. */}
+        {RecoveryPreview && (
+          <Route
+            path="/dev/recovery-preview"
+            element={
+              <Suspense fallback={<div>Loading preview...</div>}>
+                <RecoveryPreview />
               </Suspense>
             }
           />

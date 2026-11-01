@@ -103,6 +103,12 @@ export default function CapsuleController({
   const [displayOpenAt, setDisplayOpenAt] =
     useState<OpenAtUtc | null>(null);
 
+  // [A2] R9-A53 — trusted "now" for the Confirm Presence availability
+  // presentation. Populated from the SAME `getTrustedTime()` result the
+  // open check already uses: no extra request, no local-clock fallback.
+  const [trustedNowMs, setTrustedNowMs] =
+    useState<number | null>(null);
+
   const manifestRef =
     useRef<ManifestV1 | null>(null);
 
@@ -256,6 +262,7 @@ export default function CapsuleController({
 
     // [B] Reset the date when capsuleId changes
     setDisplayOpenAt(null);
+    setTrustedNowMs(null);
 
 
     async function init(): Promise<void> {
@@ -524,6 +531,16 @@ export default function CapsuleController({
         // capsule. Bail before any shared-ref mutation.
         if (isStale())
           return;
+
+        /**
+         * R9-A53 — publish the trusted instant this attempt already
+         * obtained, so the sealed card can mirror the server's 30-day
+         * Confirm Presence window. Presentation only: the value takes no
+         * part in the open decision below, and no request is added.
+         */
+        setTrustedNowMs((prev) =>
+          prev === nowUtc ? prev : nowUtc
+        );
 
 
         const effectiveOpenAt =
@@ -1193,6 +1210,18 @@ export default function CapsuleController({
           openAt:
               displayOpenAt ??
               manifest.openAt,
+
+          /**
+           * R9-A53 — inputs for the Confirm Presence availability rule.
+           * heartbeatInterval is the sealed interval; trustedNowMs is the
+           * instant already fetched for the open check (never the device
+           * clock). Unknown values keep the button available and leave the
+           * decision to the server.
+           */
+          heartbeatInterval:
+            manifest.heartbeatInterval,
+
+          trustedNowMs,
 
           shareUrl,
 

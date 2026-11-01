@@ -255,6 +255,19 @@ body{
   cursor:not-allowed;
 }
 
+/* R9-A55 - static Creator Presence caption above the button.
+   Small, gold, letter-spaced, visually secondary to the button. */
+.confirm-label{
+  margin:0 0 6px;
+  font-size:9.5px;
+  font-weight:600;
+  letter-spacing:0.22em;
+  text-transform:uppercase;
+  color:rgba(253,230,138,0.5);
+  text-align:center;
+  user-select:none;
+}
+
 /* Status line */
 #statusLine{
   font-size:12px;
@@ -469,6 +482,19 @@ footer{
   transform:scale(1.1);
 }
 
+/* ── BACK TO MAIN CAPSULE (R9-A65) ── */
+.return-link{
+  display:inline-flex;align-items:center;gap:6px;
+  margin:0 auto 14px;padding:6px 12px;
+  border:1px solid rgba(255,200,140,0.14);border-radius:999px;
+  background:transparent;color:rgba(232,228,220,0.45);
+  font:inherit;font-size:11px;letter-spacing:0.06em;cursor:pointer;
+  transition:color 0.18s,border-color 0.18s;
+}
+.return-link[hidden]{display:none;}
+.return-link:hover{color:rgba(232,228,220,0.85);border-color:rgba(255,200,140,0.35);}
+.return-link:focus-visible{outline:1px solid rgba(251,191,36,0.7);outline-offset:2px;}
+
 </style>
 </head>
 
@@ -509,7 +535,8 @@ footer{
 
       <!-- CONFIRM PRESENCE — authority mode only, injected by JS -->
       <div id="confirmWrap" style="display:none;width:100%;max-width:240px;">
-        <button id="confirmBtn" class="confirm-btn">Confirm Presence</button>
+        <p class="confirm-label" id="confirmLabel">CREATOR PRESENCE</p>
+        <button id="confirmBtn" class="confirm-btn" aria-describedby="confirmLabel">Confirm Presence</button>
       </div>
 
       <div id="statusLine" role="status" aria-live="polite"></div>
@@ -564,8 +591,83 @@ footer{
 </div><!-- /app -->
 
 <footer>
+  <!-- R9-A65: returns to /capsule/<id>#<fragment>. The fragment is taken
+       from the browser URL at click time and is never written to the DOM,
+       to a query parameter, to logs or to storage. -->
+  <button id="returnToCapsule" class="return-link" type="button" hidden>
+    Back to Main Capsule
+  </button>
   <p>A non-custodial digital time capsule</p>
 </footer>
+
+<script>
+/* R9-A65 RETURN CONTROL:START */
+/*
+ * Returns a recipient from Emergency Runtime to the primary capsule view.
+ *
+ * The capsule id comes from the canonical query handoff (or, for an older
+ * bookmark, from a /capsule/<id> path). The capability is read from
+ * location.hash at CLICK time and is never copied into a query parameter,
+ * the DOM, storage or logs.
+ */
+(function (global) {
+  "use strict";
+
+  var CAPSULE_ID = /^[a-f0-9]{64}$/;
+
+  function buildCapsuleHref(capsuleId, hash) {
+    if (!CAPSULE_ID.test(typeof capsuleId === "string" ? capsuleId : "")) {
+      return "";
+    }
+    if (typeof hash !== "string" || hash.charAt(0) !== "#" || hash.length < 2) {
+      return "";
+    }
+    return "/capsule/" + capsuleId + hash;
+  }
+
+  function capsuleIdFromLocation(loc) {
+    var fromQuery = "";
+    try {
+      fromQuery = new URLSearchParams(loc.search).get("capsuleId") || "";
+    } catch (error) {
+      fromQuery = "";
+    }
+    if (CAPSULE_ID.test(fromQuery)) {
+      return fromQuery;
+    }
+    var match = /\/capsule\/([a-f0-9]{64})\/?$/.exec(loc.pathname || "");
+    return match ? match[1] : "";
+  }
+
+  function activate(loc, doc) {
+    var control = doc.getElementById("returnToCapsule");
+    if (!control) {
+      return "";
+    }
+    var href = buildCapsuleHref(capsuleIdFromLocation(loc), loc.hash);
+    if (!href) {
+      control.hidden = true;
+      return "";
+    }
+    control.hidden = false;
+    control.addEventListener("click", function () {
+      loc.assign(href);
+    });
+    return href;
+  }
+
+  global.__aeternaEmergencyReturn = {
+    buildCapsuleHref: buildCapsuleHref,
+    capsuleIdFromLocation: capsuleIdFromLocation,
+    activate: activate
+  };
+
+  if (!global.__AETERNA_EMERGENCY_NO_AUTOSTART__ && global.document && global.location) {
+    activate(global.location, global.document);
+  }
+})(window);
+/* R9-A65 RETURN CONTROL:END */
+</script>
 
 <script type="module" src="scripts/emergency-runtime.js"></script>
 <script type="module">

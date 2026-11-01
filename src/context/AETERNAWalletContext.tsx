@@ -99,8 +99,25 @@ function AETERNAWalletProviderInner({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const account = normalizeAccount(accountState.address);
-    const connection = connectionsState.connections[0];
+    /**
+     * R9-A68 - an explicit disconnect survives a reload.
+     *
+     * AppKit is constructed on every non-deferred route (provider gate) and
+     * `enableReconnect: false` makes it disconnect a restored session rather
+     * than reconnect. To hold the invariant even if a restored address
+     * surfaces before that settles, the reactive account is ignored while the
+     * marker is set. `connectPhantom` and `changeWallet` clear the marker
+     * BEFORE connecting, so the first real connection is adopted normally on
+     * the next address change.
+     */
+    const explicitlyDisconnected = hasExplicitDisconnectMarker();
+
+    const account = explicitlyDisconnected
+      ? null
+      : normalizeAccount(accountState.address);
+    const connection = explicitlyDisconnected
+      ? undefined
+      : connectionsState.connections[0];
     const walletId = connection?.connectorId ?? null;
     const walletName = walletInfo?.name ?? connection?.name ?? null;
 
@@ -348,16 +365,43 @@ export function AETERNAWalletProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (hasExplicitDisconnectMarker()) {
-      setReady(true);
-      return;
-    }
     // SECURITY: skip the eager AppKit construction that would emit the
     // mandatory INITIALIZE telemetry with the capability fragment.
     if (shouldDeferAppKitInitialization(location.pathname, location.hash)) {
-      setReady(true);
+      /**
+       * R9-A62 - do NOT claim readiness here.
+       *
+       * `ready` gates `AETERNAWalletProviderInner`, whose AppKit hooks
+       * throw when no instance exists. Marking ready on this branch made
+       * the FIRST navigation away from a capsule URL mount that component
+       * before `getReownAppKitInstance()` could run, which threw during
+       * render and, with no error boundary, unmounted the whole app: the
+       * blank first-click Protocol page.
+       *
+       * Leaving `ready` false keeps the gate closed. The effect re-runs
+       * when the location leaves the deferred route, constructs AppKit,
+       * and only then flips `ready`. AppKit is still NEVER constructed
+       * while a capability-bearing fragment is present.
+       */
       return;
     }
+
+    /**
+     * R9-A68 - AppKit is ALWAYS constructed before the inner provider may
+     * mount, including after an explicit disconnect.
+     *
+     * The former `hasExplicitDisconnectMarker()` branch set `ready` WITHOUT
+     * constructing AppKit. That mounted `AETERNAWalletProviderInner` with no
+     * instance, its hooks threw during render and, with no error boundary,
+     * the whole tree unmounted: the blank Home page after disconnect+reload.
+     *
+     * Keeping the wallet disconnected is not this branch's job.
+     * `createAppKit({ enableReconnect: false })` makes AppKit run
+     * `unSyncExistingConnection()` on init instead of restoring a stored
+     * session, so construction itself cannot reconnect. The marker is still
+     * honoured by the account sync below, which refuses to adopt a restored
+     * account while an explicit disconnect is in force.
+     */
     getReownAppKitInstance();
     setReady(true);
   }, [location.pathname, location.hash]);

@@ -452,6 +452,35 @@ const tree = (options?: { seedAdmission?: boolean }) =>
 const GATE_BUTTON = "CREATE CAPSULE";
 const PAY_BUTTON = "Pay $1 — Unlock Creation";
 
+/**
+ * R9-A44: the $1 button is disabled until the legal consent checkbox is
+ * checked. Every payment click in this suite goes through this helper so
+ * the consent step is part of the exercised flow (and stays idempotent for
+ * retry scenarios where the consent is already checked).
+ */
+function clickPayButton(): void {
+  const consent = screen.queryByRole("checkbox");
+  if (consent !== null && consent.getAttribute("aria-checked") !== "true") {
+    fireEvent.click(consent);
+  }
+  fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+}
+
+/**
+ * R9-A46: the entry gate ("CREATE CAPSULE") requires the Protocol
+ * acknowledgment first — the checkbox lives on the pristine gate for BOTH
+ * the new-credit and the available-credit paths. Every entry click in this
+ * suite goes through this helper (idempotent: an already-checked consent is
+ * left as is).
+ */
+function clickGateButton(): void {
+  const consent = screen.queryByRole("checkbox");
+  if (consent !== null && consent.getAttribute("aria-checked") !== "true") {
+    fireEvent.click(consent);
+  }
+  fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+}
+
 function setPhantom(present: boolean): void {
   const w = window as unknown as { phantom?: unknown };
   if (present) {
@@ -531,7 +560,7 @@ describe("Home Access Gate", () => {
     setPhantom(false);
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain(
@@ -549,7 +578,7 @@ describe("Home Access Gate", () => {
     setPhantom(false);
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     const link = await screen.findByRole("link", { name: "Install Phantom" });
     expect(PHANTOM_INSTALL_URL).toBe("https://phantom.com/download");
@@ -563,7 +592,7 @@ describe("Home Access Gate", () => {
     setPhantom(false);
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(PHANTOM_MOBILE_TITLE);
@@ -590,7 +619,7 @@ describe("Home Access Gate", () => {
     setPhantom(false);
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     const openButton = await screen.findByRole("button", {
       name: PHANTOM_MOBILE_OPEN_LABEL,
     });
@@ -614,7 +643,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(() => {
       expect(
@@ -636,7 +665,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // No editor, no $1: the unused right is discovered and admission is
     // granted in the same commit that moves the flow to paid.
@@ -670,7 +699,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // Authoritative NO-CREDIT answer: stay on Home, $1 offered.
     await waitFor(
@@ -691,7 +720,7 @@ describe("Home Access Gate", () => {
     expect(screen.queryByTestId("create-route")).toBeNull();
 
     // The single explicit payment trigger.
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     // Admission lands and the gate navigates by itself — no second click.
     await waitFor(
@@ -729,7 +758,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () =>
@@ -740,7 +769,7 @@ describe("Home Access Gate", () => {
     expect(signMessageMock).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId("create-route")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     await waitFor(
       () => expect(screen.getByTestId("create-route")).toBeTruthy(),
@@ -781,14 +810,14 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
       { timeout: 5000 }
     );
 
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     // Failure keeps the creator on Home with a clear retry state.
     await waitFor(
@@ -820,7 +849,7 @@ describe("Home Access Gate", () => {
     // second signature, no second discovery) and the SAME transaction is
     // re-verified.
     acceptVerification = true;
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     await waitFor(
       () => expect(screen.getByTestId("create-route")).toBeTruthy(),
@@ -860,13 +889,13 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
       { timeout: 5000 }
     );
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     await waitFor(
       () =>
@@ -902,7 +931,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () =>
@@ -916,7 +945,7 @@ describe("Home Access Gate", () => {
 
     // Explicit retry re-enters discovery (the retained proof makes this a
     // second attempt, not a second $1).
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(2),
@@ -931,7 +960,7 @@ describe("Home Access Gate", () => {
 
     render(tree({ seedAdmission: true }));
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () => expect(screen.getByTestId("create-route")).toBeTruthy(),
@@ -971,7 +1000,7 @@ describe("Home Access Gate", () => {
 
     // The access gate only discovers the entitlement on an explicit click —
     // exactly like the real Home page.
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // The affordance exists (authoritative, not hint-driven)...
     const recoverButton = await screen.findByRole("button", {
@@ -1021,7 +1050,7 @@ describe("Home Access Gate", () => {
 
     // The access gate only discovers the entitlement on an explicit click —
     // exactly like the real Home page.
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Restore creation right" })
@@ -1095,7 +1124,7 @@ describe("Home Access Gate", () => {
 
     // The access gate only discovers the entitlement on an explicit click —
     // exactly like the real Home page.
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Restore creation right" })
@@ -1142,7 +1171,7 @@ describe("Home Access Gate", () => {
 
     // The access gate only discovers the entitlement on an explicit click —
     // exactly like the real Home page.
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Restore creation right" })
@@ -1175,7 +1204,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // The click commits synchronously (CREATE_CLICKED → discovering), so
     // the busy disable is observable BEFORE the async verification chain
@@ -1216,7 +1245,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () =>
@@ -1251,7 +1280,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () =>
@@ -1280,7 +1309,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () => expect(screen.getByRole("status").textContent).not.toBe(""),
@@ -1319,7 +1348,7 @@ describe("Home Access Gate", () => {
 
     // The access gate only discovers the entitlement on an explicit click —
     // exactly like the real Home page.
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // Two independent affordances, one per authoritative attempt.
     const buttons = await screen.findAllByRole("button", {
@@ -1358,7 +1387,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(
@@ -1368,7 +1397,7 @@ describe("Home Access Gate", () => {
     );
 
     // Explicit pay: the re-check runs first and finds the right.
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     await waitFor(
       () => expect(screen.getByTestId("create-route")).toBeTruthy(),
@@ -1406,14 +1435,14 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
       { timeout: 8000 }
     );
 
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     // The creator is told why the payment has not started.
     await waitFor(
@@ -1461,14 +1490,14 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
       { timeout: 8000 }
     );
 
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     await waitFor(
       () =>
@@ -1517,7 +1546,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () =>
@@ -1553,7 +1582,7 @@ describe("Home Access Gate", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(
@@ -1562,7 +1591,7 @@ describe("Home Access Gate", () => {
       { timeout: 5000 }
     );
 
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     // The gate continues the EXISTING access flow: the authoritative
     // discovery admits the creator on the credit that already exists.
@@ -1797,7 +1826,7 @@ describe("Home Access Gate", () => {
     render(tree());
 
     // The creator performs ONLY the normal first step (discovery).
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // No "Pay $1" click: the saved attempt is verified and granted
     // automatically, and the creator lands in creation.
@@ -1898,13 +1927,13 @@ describe("Home Access Gate", () => {
     render(tree());
 
     // 1) The normal first step, then ONE explicit $1 that FAILS.
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
       { timeout: 5000 }
     );
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
     await waitFor(
       () =>
         expect(screen.getByRole("status").textContent).toContain(
@@ -1988,7 +2017,7 @@ describe("Home Access Gate", () => {
     ]);
 
     render(tree());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // The recovery confirmed the read-only check and entered the $1 step;
     // the completion is blocked, so the UI is unmistakably mid-payment.
@@ -2111,7 +2140,7 @@ describe("Home Access Gate", () => {
     render(tree());
 
     // The normal first step reaches the $1 step with NO saved attempt yet.
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
@@ -2154,7 +2183,7 @@ describe("Home Access Gate", () => {
      * that fails). The marker left by the recovery's own unwind must not
      * swallow it: the automatic recovery has to run again.
      */
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     await waitFor(
       () => expect(verifyCallsBy("payment-recheck-")).toBe(2),
@@ -2222,7 +2251,7 @@ describe("Home Access Gate", () => {
     ]);
 
     const view = render(tree());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // Under A the recovery confirmed the recorded transaction and entered the
     // $1 step to continue THAT attempt: the completion is genuinely pending.
@@ -2318,7 +2347,7 @@ describe("Home Access Gate", () => {
     ]);
 
     const view = render(tree());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () =>
@@ -2391,7 +2420,7 @@ describe("Home Access Gate", () => {
     ]);
 
     const view = render(tree());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
@@ -2400,7 +2429,7 @@ describe("Home Access Gate", () => {
 
     // The one explicit $1 is signed and sent under A; its verification is
     // withheld, so the flow really is mid-payment (Processing…).
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
     await waitFor(
       () =>
         expect(screen.getByRole("status").textContent).toContain("Processing"),
@@ -2485,7 +2514,7 @@ describe("Home Access Gate", () => {
     ]);
 
     const view = render(tree());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("status").textContent).toContain("Processing"),
@@ -2520,7 +2549,7 @@ describe("Home Access Gate", () => {
         ).toBeTruthy(),
       { timeout: 5000 }
     );
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await waitFor(
       () => expect(screen.getByTestId("create-route")).toBeTruthy(),
@@ -2569,7 +2598,7 @@ describe("Home Access Gate", () => {
     ]);
 
     render(tree());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () =>
         expect(screen.getByRole("status").textContent).toContain("Processing"),
@@ -2699,13 +2728,13 @@ describe("Home Access Gate — server refusal and in-flight protection", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () => expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
       { timeout: 5000 }
     );
 
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     await waitFor(
       () =>
@@ -2757,13 +2786,13 @@ describe("Home Access Gate — server refusal and in-flight protection", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
     await waitFor(
       () => expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
       { timeout: 5000 }
     );
 
-    fireEvent.click(screen.getByRole("button", { name: PAY_BUTTON }));
+    clickPayButton();
 
     await waitFor(
       () =>
@@ -2859,7 +2888,7 @@ describe("Home Access Gate — in-flight click protection", () => {
 
     render(tree());
 
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     // The signature window is open: exactly one challenge, one signature.
     await waitFor(() => expect(signMessageMock).toHaveBeenCalledTimes(1), {
@@ -3049,7 +3078,7 @@ describe("3BM-R4: bounded resume finalization from the unfinished-attempt card",
     );
 
     render(treeWithHold());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     const resumeButton = await screen.findByRole(
       "button",
@@ -3101,7 +3130,7 @@ describe("3BM-R4: bounded resume finalization from the unfinished-attempt card",
     // NO aeterna-prepared-capsule record.
 
     render(treeWithHold());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await screen.findByRole("button", { name: "Restore creation right" }, {
       timeout: 5000,
@@ -3121,7 +3150,7 @@ describe("3BM-R4: bounded resume finalization from the unfinished-attempt card",
     );
 
     render(treeWithHold());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await screen.findByRole("button", { name: "Restore creation right" }, {
       timeout: 5000,
@@ -3140,7 +3169,7 @@ describe("3BM-R4: bounded resume finalization from the unfinished-attempt card",
     );
 
     render(treeWithHold());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await screen.findByRole("button", { name: "Restore creation right" }, {
       timeout: 5000,
@@ -3161,7 +3190,7 @@ describe("3BM-R4: bounded resume finalization from the unfinished-attempt card",
     );
 
     render(treeWithHold());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await screen.findByRole("button", { name: "Restore creation right" }, {
       timeout: 5000,
@@ -3180,7 +3209,7 @@ describe("3BM-R4: bounded resume finalization from the unfinished-attempt card",
     );
 
     render(treeWithHold());
-    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    clickGateButton();
 
     await screen.findByRole("button", { name: "Restore creation right" }, {
       timeout: 5000,
@@ -3189,5 +3218,173 @@ describe("3BM-R4: bounded resume finalization from the unfinished-attempt card",
       screen.queryByRole("button", { name: "Resume finalization" })
     ).toBeNull();
     expect(screen.queryByTestId("hold-route")).toBeNull();
+  });
+});
+describe("R9-A46 Protocol consent gate", () => {
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+    signMessageMock.mockClear();
+    signSolanaUSDCPaymentMock.mockClear();
+    isMobileMock.mockReset();
+    isMobileMock.mockReturnValue(false);
+    mobileDeeplinkMock.mockReset();
+    stableWallet.connected = false;
+    stableWallet.account = null;
+    stableWallet.walletName = null;
+    setPhantom(false);
+    try {
+      localStorage.clear();
+    } catch {
+      /* jsdom always provides localStorage */
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    clearPendingPaymentAttempt();
+    setPhantom(false);
+  });
+
+  it("shows the acknowledgment on the entry gate with the exact wording and the Protocol link", () => {
+    setPhantom(true);
+    connectWallet();
+    render(tree());
+
+    const consent = screen.getByRole("checkbox");
+    expect(consent.getAttribute("aria-checked")).toBe("false");
+
+    const label = document.getElementById("creator-legal-consent")?.closest(
+      "label"
+    );
+    expect(label).toBeTruthy();
+    expect(label?.textContent).toBe(
+      "I have read and agree to the AETERNA Protocol."
+    );
+
+    const links = Array.from(label?.querySelectorAll("a") ?? []);
+    expect(links).toHaveLength(1);
+    const firstLink = links[0];
+    expect(firstLink?.getAttribute("href")).toBe("/protocol");
+    // R9-A48: same-tab navigation — no target, no rel.
+    expect(firstLink?.getAttribute("target")).toBeNull();
+    expect(firstLink?.getAttribute("rel")).toBeNull();
+    // Gold brand accent on the linked words only.
+    expect(firstLink?.className).toContain("text-amber-300");
+    expect(firstLink?.className).toContain("underline");
+
+    // Nothing starts before the acknowledgment.
+    fireEvent.click(screen.getByRole("button", { name: GATE_BUTTON }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks the AVAILABLE-credit path until acknowledged, then admits without any payment", async () => {
+    setPhantom(true);
+    connectWallet();
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: AVAILABLE_DISCOVERY },
+    ]);
+
+    render(tree());
+
+    const gate = screen.getByRole("button", { name: GATE_BUTTON });
+    expect(gate.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(gate);
+    expect(fetchCallsTo("/api/creator/issue-challenge")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(gate.hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(gate);
+
+    await waitFor(
+      () => expect(screen.getByTestId("create-route")).toBeTruthy(),
+      { timeout: 5000 }
+    );
+
+    // AVAILABLE credit: admission only — no $1, no grant, no consent re-ask.
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+    expect(fetchCallsTo("/api/creator/grant-credit")).toHaveLength(0);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("blocks the new-credit path until acknowledged and shows NO second checkbox in the $1 step", async () => {
+    setPhantom(true);
+    connectWallet();
+    installFetchRoutes([
+      { match: "/api/creator/issue-challenge", respond: CHALLENGE_RESPONSE },
+      { match: "/api/creator/credit-status", respond: NO_CREDIT_DISCOVERY },
+    ]);
+
+    render(tree());
+
+    const gate = screen.getByRole("button", { name: GATE_BUTTON });
+    expect(gate.hasAttribute("disabled")).toBe(true);
+
+    // Acknowledged once at the entry gate…
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(gate);
+
+    await waitFor(
+      () =>
+        expect(screen.getByRole("button", { name: PAY_BUTTON })).toBeTruthy(),
+      { timeout: 5000 }
+    );
+
+    // …the $1 step shows NO duplicate checkbox and the $1 action is enabled.
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: PAY_BUTTON }).hasAttribute("disabled")
+    ).toBe(false);
+    expect(signSolanaUSDCPaymentMock).not.toHaveBeenCalled();
+  });
+
+  it("runs the gold light sweep only until the consent is checked", () => {
+    setPhantom(true);
+    connectWallet();
+    render(tree());
+
+    const link = () => screen.getByRole("link", { name: "AETERNA Protocol" });
+    const checkbox = screen.getByRole("checkbox");
+
+    // Unchecked: the restrained sweep is armed.
+    expect(link().className).toContain("aeterna-consent-sweep");
+    expect(link().className).toContain("hover:brightness-110");
+
+    // Checked: the animation stops (the class is gone, the link stays gold).
+    fireEvent.click(checkbox);
+    expect(checkbox.getAttribute("aria-checked")).toBe("true");
+    expect(link().className).not.toContain("aeterna-consent-sweep");
+    expect(link().className).toContain("text-amber-300");
+    expect(link().className).toContain("underline");
+
+    // Unchecked again: the subtle sweep may resume.
+    fireEvent.click(checkbox);
+    expect(checkbox.getAttribute("aria-checked")).toBe("false");
+    expect(link().className).toContain("aeterna-consent-sweep");
+  });
+
+  it("requires a fresh acknowledgment for every new creation flow", () => {
+    setPhantom(true);
+    connectWallet();
+    render(tree());
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe(
+      "true"
+    );
+
+    // Returning to Home for a NEW capsule mounts a fresh gate.
+    cleanup();
+    render(tree());
+
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe(
+      "false"
+    );
+    expect(
+      screen.getByRole("button", { name: GATE_BUTTON }).hasAttribute("disabled")
+    ).toBe(true);
   });
 });

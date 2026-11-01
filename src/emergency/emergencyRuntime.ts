@@ -11,6 +11,14 @@ import {
 } from "@/shared/heartbeat/resolveEffectiveOpenAt";
 
 import {
+  resolveConfirmAvailability,
+} from "@/lib/heartbeat/confirmAvailability";
+
+import type {
+  ConfirmAvailability,
+} from "@/lib/heartbeat/confirmAvailability";
+
+import {
   getChunkPointerReadout,
 } from "@/lib/storage/storage";
 
@@ -196,11 +204,26 @@ export async function initEmergencyRuntime({
   updateWaitingDisplay(effectiveOpenAt);
   waiting = true;
 
+  /**
+   * R9-A53 / R9-A54 — the same presentation rule the primary runtime uses,
+   * computed from the trusted instant already fetched above: disabled with a
+   * day countdown while an interval longer than 30 days still has more than
+   * 30 days to run, and `Checking availability…` if that verdict cannot be
+   * computed. The button is never hidden; the server stays authoritative.
+   */
+  const confirmAvailability =
+    resolveConfirmAvailability({
+      heartbeatInterval,
+      effectiveOpenAt,
+      trustedNowMs: nowUtc,
+    });
+
   if (parsed.creatorAuthorityFragment) {
     wireConfirmPresence({
       status,
       manifest,
       creatorAuthorityFragment: parsed.creatorAuthorityFragment,
+      confirmAvailability,
       sendHeartbeat: sendHeartbeatSource,
       loadHeartbeat: loadHeartbeatSource,
       resolveOpenAt: resolveOpenAtSource,
@@ -340,6 +363,12 @@ function wireConfirmPresence(args: {
   status: HTMLElement;
   manifest: ManifestV1;
   creatorAuthorityFragment: string;
+  /**
+   * R9-A53 / R9-A54 — trusted-time availability verdict for the 30-day
+   * window. Unavailable -> the button stays visible but disabled, subdued,
+   * and labelled with the remaining wait.
+   */
+  confirmAvailability: ConfirmAvailability;
   sendHeartbeat: typeof sendHeartbeat;
   loadHeartbeat: typeof loadHeartbeatRecord;
   resolveOpenAt: typeof resolveEffectiveOpenAt;
@@ -357,6 +386,41 @@ function wireConfirmPresence(args: {
   }
 
   confirmWrap.style.display = "";
+
+  /**
+   * R9-A53 / R9-A54 — mirror the 30-day window: the button stays visible but
+   * disabled while the interval exceeds 30 days and more than 30 days
+   * remain, showing how long is left. Reuses the existing subdued "cooldown"
+   * look, so the styling does not change.
+   */
+  const availabilityLabel = ((): string => {
+    if (
+      args.confirmAvailability.awaitingWindow &&
+      args.confirmAvailability.waitDays !== null
+    ) {
+      const days = args.confirmAvailability.waitDays;
+      return `Available in ${days} ${days === 1 ? "day" : "days"}`;
+    }
+
+    if (args.confirmAvailability.unknown) {
+      return "Checking availability…";
+    }
+
+    return "Confirm Presence";
+  })();
+
+  const applyAvailability = (): void => {
+    if (args.confirmAvailability.available) {
+      confirmBtn.classList.remove("cooldown");
+      return;
+    }
+
+    confirmBtn.disabled = true;
+    confirmBtn.classList.add("cooldown");
+    confirmBtn.textContent = availabilityLabel;
+  };
+
+  applyAvailability();
 
   confirmBtn.onclick = async () => {
     if (confirmBtn.disabled) return;
@@ -419,7 +483,9 @@ function wireConfirmPresence(args: {
       args.status.textContent = "Heartbeat failed. Try again.";
     } finally {
       confirmBtn.disabled = false;
-      confirmBtn.textContent = "CONFIRM PRESENCE";
+      confirmBtn.textContent = availabilityLabel;
+      // Availability is independent of the attempt outcome.
+      applyAvailability();
     }
   };
 }

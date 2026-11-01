@@ -47,8 +47,12 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useReducer, useSyncExternalStore } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  protocolReturnState,
+} from "@/lib/navigation/protocolReturn";
 import { useAeternaWallet } from "@/context/AETERNAWalletContext";
 import { useCreateAccess } from "@/context/CreateAccessContext";
 import { useLandingPaymentGate } from "@/context/LandingPaymentGateContext";
@@ -464,13 +468,23 @@ export default function CreateAccessGate() {
 
   /* ---------- controller wiring (same order the inline gate used) ---------- */
 
+  /**
+   * R9-A44 — legal consent state. The $1 purchase step is reachable ONLY
+   * after an authoritative NO-CREDIT discovery, so the consent checkbox in
+   * the render below appears exactly when a NEW Creator Credit purchase is
+   * offered, and NEVER for an already-AVAILABLE credit. The controller's
+   * own protocolAccepted gate (confirmAndVerify) keeps enforcing this even
+   * if UI state were bypassed.
+   */
+  const [protocolConsentAccepted, setProtocolConsentAccepted] = useState(false);
+
   useEffect(() => {
     servicePayment.setParams({
       creatorIdentityId: null,
-      protocolAccepted: true,
+      protocolAccepted: protocolConsentAccepted,
       stopAfterCredit: true,
     });
-  }, [servicePayment]);
+  }, [servicePayment, protocolConsentAccepted]);
 
   /**
    * The AUTHORITATIVE unfinished lifecycles reported by the server. Every
@@ -1497,11 +1511,59 @@ export default function CreateAccessGate() {
     }
   })();
 
+  /**
+   * R9-A46 — the Protocol acknowledgment gate.
+   *
+   * Shown on the PRISTINE entry gate (state "ready") — the earliest common
+   * point that covers BOTH creation paths: a new USD 1.00 Creator Credit
+   * purchase and an already-AVAILABLE Creator Credit. The $1 step and any
+   * retry within the same flow show NO second checkbox: the acknowledgment
+   * is given once per creation flow. A fresh gate mount (returning to Home
+   * for a new capsule) resets the state, so every new flow needs a fresh
+   * acknowledgment. Frontend-only by design (R9-A46): no server persistence.
+   */
+  const needsProtocolConsent = createFlowState === "ready";
+
   return (
     <div className="w-full space-y-4">
+      {needsProtocolConsent && (
+        <label
+          htmlFor="creator-legal-consent"
+          className="flex items-start justify-center gap-3 cursor-pointer text-left"
+        >
+          <Checkbox
+            id="creator-legal-consent"
+            className="mt-0.5 shrink-0"
+            checked={protocolConsentAccepted}
+            disabled={busy}
+            onCheckedChange={(v) => setProtocolConsentAccepted(v === true)}
+          />
+          <span className="text-[11px] md:text-[12px] text-amber-100/70 leading-relaxed">
+            I have read and agree to the{" "}
+            <Link
+              to="/protocol"
+              state={protocolReturnState("home")}
+              className={[
+                "rounded-sm font-medium text-amber-300 underline decoration-amber-400/70 underline-offset-2 transition-colors hover:text-amber-200 hover:decoration-amber-300 hover:brightness-110 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/80",
+                /* R9-A49: the restrained light sweep stops as soon as the
+                   consent is checked and resumes if it is unchecked. */
+                protocolConsentAccepted ? "" : "aeterna-consent-sweep",
+              ].join(" ")}
+            >
+              AETERNA Protocol
+            </Link>
+            .
+          </span>
+        </label>
+      )}
+
       <Button
         type="button"
-        disabled={busy || recovering}
+        disabled={
+          busy ||
+          recovering ||
+          (needsProtocolConsent && !protocolConsentAccepted)
+        }
         onClick={
           createFlowState === "needs-payment" ? confirmPayment : start
         }
