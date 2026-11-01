@@ -85,8 +85,8 @@ describe("sealErrorDetail — publish failure diagnosability", () => {
     expect(sealErrorDetail(e)).toBe("WeirdError");
   });
 
-  it("preserves a Cyrillic + Latin mixed reason verbatim", () => {
-    const mixed = "Ошибка Irys upload: bundler недоступен";
+  it("preserves a mixed-script reason verbatim", () => {
+    const mixed = "Irys upload error: bundler unavailable — déjà vu";
     expect(sealErrorDetail(new Error(mixed))).toBe(mixed);
   });
 

@@ -20,7 +20,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import {
   CreatorCreditProvider,
@@ -219,8 +219,10 @@ const tree = (options?: { seedAdmission?: boolean }) =>
     )
   );
 
+// R9-A44: the /create Protocol Rules checkbox was removed; the legal consent
+// now lives in the Home gate's $1 step. Nothing to accept on /create.
 function acceptProtocol() {
-  fireEvent.click(screen.getByRole("checkbox"));
+  /* intentionally empty — see R9-A44 */
 }
 
 describe("/create admission contract", () => {
@@ -249,11 +251,6 @@ describe("/create admission contract", () => {
     });
 
     acceptProtocol();
-    await waitFor(() => {
-      expect(
-        (screen.getByRole("checkbox") as HTMLElement).dataset["state"]
-      ).toBe("checked");
-    });
 
     expect(signMessageMock).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();

@@ -24,10 +24,10 @@ const store = new Map<string, Entry>();
 
 /**
  * IMPORTANT:
- * Типизируем СТРУКТУРНО, а не как `Request`: так сохраняется поддержка
- * Cloudflare IncomingRequestCfProperties typing (любой объект с `.headers.get`),
- * но обращение к свойству остаётся проверяемым — `unknown` делал его
- * недопустимым под strict-режимом.
+ * We type STRUCTURALLY rather than as `Request`: this keeps support for
+ * Cloudflare IncomingRequestCfProperties typing (any object with `.headers.get`),
+ * while property access stays type-checked — typing it as `unknown` made it
+ * unusable under strict mode.
  */
 
 export function getClientIp(request: {

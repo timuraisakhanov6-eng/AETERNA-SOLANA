@@ -99,9 +99,15 @@ export default function CapsuleController({
       status: "loading",
     });
 
-  // [А] Отображаемая дата открытия — обновляется при heartbeat
+  // [A] Displayed opening date — updated on heartbeat
   const [displayOpenAt, setDisplayOpenAt] =
     useState<OpenAtUtc | null>(null);
+
+  // [A2] R9-A53 — trusted "now" for the Confirm Presence availability
+  // presentation. Populated from the SAME `getTrustedTime()` result the
+  // open check already uses: no extra request, no local-clock fallback.
+  const [trustedNowMs, setTrustedNowMs] =
+    useState<number | null>(null);
 
   const manifestRef =
     useRef<ManifestV1 | null>(null);
@@ -254,8 +260,9 @@ export default function CapsuleController({
 
     };
 
-    // [Б] Сбросить дату при смене capsuleId
+    // [B] Reset the date when capsuleId changes
     setDisplayOpenAt(null);
+    setTrustedNowMs(null);
 
 
     async function init(): Promise<void> {
@@ -340,8 +347,8 @@ export default function CapsuleController({
         if (isStale())
           return;
 
-        // [В] Вычислить effectiveOpenAt до первого рендера preview.
-        // React 18 батчит оба вызова — один рендер, без мерцания.
+        // [C] Compute effectiveOpenAt before the first preview render.
+        // React 18 batches both calls — one render, no flicker.
         setDisplayOpenAt(
           resolveEffectiveOpenAt({
             manifestOpenAt: manifest.openAt,
@@ -427,7 +434,7 @@ export default function CapsuleController({
                 heartbeatRef.current =
                   newTimestamp;
 
-                // [Г] Обновить отображаемую дату при изменении heartbeat
+                // [D] Update the displayed date when the heartbeat changes
                 if (manifestRef.current && !isStale()) {
                   setDisplayOpenAt(
                     resolveEffectiveOpenAt({
@@ -524,6 +531,16 @@ export default function CapsuleController({
         // capsule. Bail before any shared-ref mutation.
         if (isStale())
           return;
+
+        /**
+         * R9-A53 — publish the trusted instant this attempt already
+         * obtained, so the sealed card can mirror the server's 30-day
+         * Confirm Presence window. Presentation only: the value takes no
+         * part in the open decision below, and no request is added.
+         */
+        setTrustedNowMs((prev) =>
+          prev === nowUtc ? prev : nowUtc
+        );
 
 
         const effectiveOpenAt =
@@ -731,12 +748,11 @@ export default function CapsuleController({
         //
         // Without this branch the runtime would remain in the neutral
         // "checking" state forever on such an error — an infinite
-        // loader with no fail-closed outcome. The canonical
-        // fail-closed display is SEALED.
+        // loader with no fail-closed outcome.
         //
         // CAPABILITY-RETRY FIX: the capability is RESTORED to
-        // `secretRef.current` so the existing bounded retry mechanism
-        // can re-attempt opening WITHOUT a page reload.
+        // `secretRef.current` so the existing retry mechanism can
+        // re-attempt opening WITHOUT a page reload.
         //
         // `tookSecretOwnership` is cleared so the `finally` block does
         // NOT wipe the just-restored value. The restore itself is
@@ -1112,7 +1128,7 @@ export default function CapsuleController({
                     "[AETERNA] presence confirmed"
                   );
 
-                  // [Д] Перечитать свежий heartbeat и сразу обновить дату в UI
+                  // [E] Re-read the fresh heartbeat and immediately update the date in the UI
                   try {
                     const freshRecord = await loadHeartbeatRecord(capsuleId);
                     if (stale())
@@ -1188,12 +1204,24 @@ export default function CapsuleController({
           title:
             manifest.description ?? "",
 
-          // [Е] displayOpenAt с фоллбэком на manifest.openAt (защита от race
-          // между setDisplayOpenAt и первым рендером, теоретически невозможного
-          // из-за батчинга React 18, но явный контракт лучше молчаливого).
+          // [F] displayOpenAt with a fallback to manifest.openAt (guards against a race
+          // between setDisplayOpenAt and the first render — theoretically impossible
+          // due to React 18 batching, but an explicit contract beats a silent one).
           openAt:
               displayOpenAt ??
               manifest.openAt,
+
+          /**
+           * R9-A53 — inputs for the Confirm Presence availability rule.
+           * heartbeatInterval is the sealed interval; trustedNowMs is the
+           * instant already fetched for the open check (never the device
+           * clock). Unknown values keep the button available and leave the
+           * decision to the server.
+           */
+          heartbeatInterval:
+            manifest.heartbeatInterval,
+
+          trustedNowMs,
 
           shareUrl,
 

@@ -56,6 +56,10 @@ import {
 } from "../../lib/solana/legacyTransaction";
 import type { ParsedInstruction } from "../../lib/solana/legacyTransaction";
 import { getCreatorIdentity } from "../../../src/lib/creator/creatorIdentityStore";
+import {
+  isAcceptedLighthouseInfoData,
+  isAcceptedLighthouseTokenData,
+} from "../../../src/lib/solana/lighthouseAssertions";
 
 export interface SolanaBroadcastEnv {
   SOLANA_MAINNET_RPC_URL?: string;
@@ -249,54 +253,22 @@ function readU32LE(data: Uint8Array, offset: number): number {
 }
 
 /**
- * Lighthouse v2 assertion program and the EXACT payloads Phantom appended
- * to the production diagnostic transaction. The recorded SHA-256 values
- * are:
+ * Lighthouse v2 assertion program.
  *
- *   info  (16 B): 39bb93d1a828d59455ba9e8b9679901d04086bcf0c44251af08e7e60383e7fbc
- *   token (27 B): b4441240a9f8613e359bc99ff3ca06512982b4d7ef1db1378000d149e2bf5a5f
+ * The ACCEPTANCE RULE is not defined here: both payloads are validated by
+ * the pure shared module `src/lib/solana/lighthouseAssertions`, which the
+ * client payment guard imports as well. One implementation, one rule, so
+ * the client can never sign a payload this endpoint refuses, and this
+ * endpoint can never accept a payload the client would not have signed.
  *
- * Both are READ-ONLY assertions: they can make a transaction fail, but
- * cannot move tokens or mutate an account. A matching program id alone is
- * never accepted — the payload, order, account mapping and privileges are
- * all validated below.
+ * Two READ-ONLY INFO forms are accepted on the payer (16 bytes legacy,
+ * 26 bytes with a balance-derived `Lamports(X) >=`), plus the 27-byte
+ * TOKEN form on the source ATA whose only variable field is `Amount(X)`.
+ * They cannot move tokens or mutate an account; a matching program id
+ * alone is never accepted — the payload, order, account mapping and
+ * privileges are all validated below.
  */
 const LIGHTHOUSE_PROGRAM_ID = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
-
-const PHANTOM_LIGHTHOUSE_INFO_DATA = new Uint8Array([
-  6, 4, 2,
-  3, 0, 0,
-  1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-]);
-
-const PHANTOM_LIGHTHOUSE_TOKEN_DATA = new Uint8Array([
-  10, 4, 4,
-  2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
-  3, 0, 0,
-  6, 0, 0, 0, 0, 0, 0, 0, 0, 5,
-  8,
-]);
-
-function isPhantomLighthouseInfoData(data: Uint8Array): boolean {
-  return sameBytes(data, PHANTOM_LIGHTHOUSE_INFO_DATA);
-}
-
-/**
- * The ONLY variable field is the u64 Amount lower bound (bytes 4..11):
- * Phantom derives it from the simulated post-transfer balance, so pinning
- * one user's value would reject every other balance. The transfer itself
- * remains byte-identical to the canonical payment, and every other
- * discriminator, operator, option and value is fixed. The exact length
- * check rejects trailing bytes.
- */
-function isPhantomLighthouseTokenData(data: Uint8Array): boolean {
-  if (data.length !== PHANTOM_LIGHTHOUSE_TOKEN_DATA.length) return false;
-  for (let index = 0; index < data.length; index++) {
-    if (index >= 4 && index <= 11) continue;
-    if (data[index] !== PHANTOM_LIGHTHOUSE_TOKEN_DATA[index]) return false;
-  }
-  return true;
-}
 
 /**
  * A canonical wallet-added PRIORITY-FEE instruction: the ComputeBudget
@@ -649,13 +621,13 @@ export async function onRequestPost(
         if (!sameBytes(targetKey, payerBytes)) {
           return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
         }
-        if (!isPhantomLighthouseInfoData(data)) {
+        if (!isAcceptedLighthouseInfoData(data)) {
           return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
         }
         lighthouseKinds.push("info");
       } else if (data[0] === 10) {
         // AssertTokenAccountMulti v2, log level 4, on the source ATA.
-        if (!isPhantomLighthouseTokenData(data)) {
+        if (!isAcceptedLighthouseTokenData(data)) {
           return fail(origin, 400, "UNEXPECTED_INSTRUCTION_COUNT", false);
         }
         lighthouseTokenTargetIndex = targetIndex;

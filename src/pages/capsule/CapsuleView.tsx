@@ -1,15 +1,19 @@
 import type { OpenAtUtc } from "@/types/manifest";
-import { useState, useMemo, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { useState, useMemo, useEffect, useRef, useId } from "react";
 import { motion } from "framer-motion";
 import {
   ShieldCheck as ShieldIcon,
   Lock as LockIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  CreatorPresenceLink,
+  CREATOR_PRESENCE_RECIPIENT_LABEL,
+} from "@/components/capsule/presence/CreatorPresenceNotice";
 import { getUiTime } from "@/lib/utils/getUiTime";
 import QRCode from "qrcode";
 import type { ConfirmPresenceResult } from "@/lib/heartbeat/confirmPresence";
+import { resolveConfirmAvailability } from "@/lib/heartbeat/confirmAvailability";
 import {
   HEARTBEAT_COOLDOWN_MS,
   heartbeatCooldownKey,
@@ -28,6 +32,21 @@ export type CapsuleViewState =
       capsuleId: string;
 
       authorityMode?: boolean;
+
+      /**
+       * R9-A53 - manifest.heartbeatInterval: the ORIGINAL opening interval
+       * fixed at sealing time. Selects which availability rule applies
+       * (<= 30 days: always available; > 30 days: final-30-days window).
+       */
+      heartbeatInterval?: number;
+
+      /**
+       * R9-A53 - trusted "now" (UTC ms) from the existing Time Authority.
+       * Supplied by CapsuleController from the instant it already fetches
+       * for the open check. Deliberately nullable: absent trusted time must
+       * never be replaced by the device clock.
+       */
+      trustedNowMs?: number | null;
 
       onConfirmPresence?: () => Promise<ConfirmPresenceResult>;
 
@@ -86,6 +105,15 @@ const daysUntilFrom = (ts: number, now: number) => {
 /* ===== MAIN COMPONENT ===== */
 
 export default function CapsuleView({ state, className }: Props) {
+
+  /**
+   * R9-A55 - id for the static "CREATOR PRESENCE" caption above the button.
+   * Declared with the other top-level hooks: the component returns early for
+   * the opened/checking/opening states, so a hook introduced further down
+   * would run conditionally.
+   */
+  const confirmCaptionId =
+    useId();
 
   const [copied, setCopied] = useState(false);
   const [copiedCreator, setCopiedCreator] = useState(false);
@@ -278,7 +306,7 @@ export default function CapsuleView({ state, className }: Props) {
     );
   }
 
-  /* ===== RECOVERING ??? retryable recipient failure, still fail-closed ===== */
+  /* ===== RECOVERING — retryable recipient failure, still fail-closed ===== */
 
   if (state.status === "recovering") {
     return (
@@ -336,6 +364,48 @@ export default function CapsuleView({ state, className }: Props) {
   /* ===== CONFIRM HANDLER ===== */
 
   const handleConfirmPresence = state.onConfirmPresence;
+
+  /**
+   * R9-A53 - visual availability, mirroring the server's 30-day window
+   * rule. Trusted time only; when it is unknown the rule reports
+   * "available" and the server keeps the final say.
+   */
+  const confirmAvailability =
+    resolveConfirmAvailability({
+      heartbeatInterval: state.heartbeatInterval,
+      effectiveOpenAt: state.openAt,
+      trustedNowMs: state.trustedNowMs,
+    });
+
+  const confirmAwaitingWindow =
+    confirmAvailability.awaitingWindow;
+
+  const confirmUnknown =
+    confirmAvailability.unknown;
+
+  /**
+   * R9-A54 - resting label.
+   *
+   * While the 30-day window is still closed the button carries the live
+   * countdown ("Available in 60 days"); when the verdict cannot be computed
+   * it reads "Checking availability…" instead of guessing. Existing
+   * transient states keep their exact labels and precedence.
+   */
+  const confirmLabel =
+    confirming
+      ? "CONFIRMING..."
+      : confirmSuccess
+        ? "CONFIRMED ✓"
+        : heartbeatCooldownActive
+          ? "WAIT 15 MIN"
+          : confirmAwaitingWindow &&
+              confirmAvailability.waitDays !== null
+            ? `AVAILABLE IN ${confirmAvailability.waitDays} ${
+                confirmAvailability.waitDays === 1 ? "DAY" : "DAYS"
+              }`
+            : confirmUnknown
+              ? "CHECKING AVAILABILITY…"
+              : "CONFIRM PRESENCE";
 
   const handleConfirmPresenceClick = async () => {
 
@@ -739,9 +809,35 @@ export default function CapsuleView({ state, className }: Props) {
                     xl:max-w-[260px]
                   "
                 >
+                  <p
+                    id={confirmCaptionId}
+                    className="
+                      mb-2
+                      text-[9.5px]
+                      sm:text-[10px]
+                      font-semibold
+                      tracking-[0.22em]
+                      text-amber-200/45
+                    "
+                  >
+                    CREATOR PRESENCE
+                  </p>
+
                   <motion.button
                     onClick={handleConfirmPresenceClick}
-                    disabled={confirming || heartbeatCooldownActive}
+                    aria-describedby={confirmCaptionId}
+                    disabled={
+                      confirming ||
+                      heartbeatCooldownActive ||
+                      !confirmAvailability.available
+                    }
+                    data-confirm-availability={
+                      confirmAwaitingWindow
+                        ? "awaiting-window"
+                        : confirmUnknown
+                          ? "unknown"
+                          : "available"
+                    }
                     whileHover={{ scale: 1.04, filter: "brightness(1.12)" }}
                     whileTap={{ scale: 0.97 }}
                     transition={{ type: "tween", duration: 0.18 }}
@@ -754,7 +850,8 @@ export default function CapsuleView({ state, className }: Props) {
                             color: "#059669",
                             boxShadow: "0 0 16px rgba(5,150,105,0.25)",
                           }
-                        : heartbeatCooldownActive
+                        : (heartbeatCooldownActive ||
+                            !confirmAvailability.available)
                           ? {
                               background: "rgba(148,163,184,0.10)",
                               border: "1px solid rgba(148,163,184,0.30)",
@@ -770,13 +867,7 @@ export default function CapsuleView({ state, className }: Props) {
                             }
                     }
                   >
-                    {confirming
-                      ? "CONFIRMING..."
-                      : confirmSuccess
-                          ? "CONFIRMED ✓"
-                          : heartbeatCooldownActive
-                              ? "WAIT 15 MIN"
-                              : "CONFIRM PRESENCE"}
+                    {confirmLabel}
                   </motion.button>
 
                   {confirmFeedback && (
@@ -831,63 +922,103 @@ export default function CapsuleView({ state, className }: Props) {
             </div>
           </div>
 
-          {/* ── Recipient Notice — весь блок кликабелен ── */}
+          {/* ── Creator Presence link — recipient card only (R9-A52) ──
+              Directly BELOW the capsule card that carries the status, the
+              scheduled opening date, the Recipient Link and the capsule
+              actions.
+
+              Visibility: recipient view only. Creator Presence is part of
+              every capsule, so there is no presence condition; the creator
+              card never shows it.
+
+              Presentation only: no state read, no runtime call. */}
           {!authorityMode && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.8, delay: 1.0 }}
-              className="mt-7"
+              className="mt-6 text-center sm:mt-7"
             >
-              <Link
-                to="/protocol#creator-presence"
+              <CreatorPresenceLink
+                location="recipient"
+                label={CREATOR_PRESENCE_RECIPIENT_LABEL}
+              />
+            </motion.div>
+          )}
+
+          {/* ── X profile mark — recipient card only (R9-A59) ──
+              Replaces the old footer tagline on the recipient page.
+              Order: capsule card -> gold
+              Protocol link -> this mark, with a modest gap.
+
+              Same modern X glyph and the SAME official profile URL as Home
+              (no legacy bird). The destination is a fixed external URL:
+              the capsule id, the recipient fragment and any access data are
+              never appended, and the link opens in a new tab with
+              rel="noopener noreferrer".
+
+              Presentation only: no state read, no runtime call. */}
+          {!authorityMode && (
+            <div className="mt-5 flex justify-center">
+              <a
+                href="https://x.com/aeternacapsule"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="AETERNA on X"
+                data-capsule-x-link=""
                 className="
-                  block
-                  rounded-xl
-                  border border-amber-500/20
-                  bg-amber-500/5
-                  px-4 py-4
-                  text-center
+                  rounded-sm
+                  text-amber-100/35
                   transition-colors
-                  hover:bg-amber-500/10
-                  hover:border-amber-500/30
+                  duration-300
+                  hover:text-amber-200/70
+                  focus-visible:outline-none
+                  focus-visible:ring-1
+                  focus-visible:ring-amber-400/70
+                  focus-visible:ring-offset-2
+                  focus-visible:ring-offset-background
                 "
               >
-                <p className="text-sm text-foreground/90 leading-relaxed">
-                  The opening date of this capsule may change over time.
-                </p>
-                <p className="mt-2 text-sm font-medium text-amber-600">
-                  Learn why →
-                </p>
-              </Link>
-            </motion.div>
+                <svg
+                  viewBox="0 0 24 24"
+                  className="w-4 h-4"
+                  fill="currentColor"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                </svg>
+              </a>
+            </div>
           )}
         </motion.div>
 
-        {/* Footer */}
-        <footer className="flex justify-center px-6 pt-8">
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.8, delay: 1.2 }}
-            className="
-              w-full
-              max-w-[300px]
-              sm:max-w-[340px]
-              md:max-w-[380px]
-              lg:max-w-[420px]
-              xl:max-w-[460px]
-              2xl:max-w-[500px]
-              text-xs
-              text-muted-foreground/65
-              tracking-wide
-              text-center
-              leading-relaxed
-            "
-          >
-            A non-custodial digital time capsule
-          </motion.p>
-        </footer>
+        {/* Footer — creator/authority view keeps its existing tagline. */}
+        {authorityMode && (
+          <footer className="flex justify-center px-6 pt-8">
+            <motion.p
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.8, delay: 1.2 }}
+              className="
+                w-full
+                max-w-[300px]
+                sm:max-w-[340px]
+                md:max-w-[380px]
+                lg:max-w-[420px]
+                xl:max-w-[460px]
+                2xl:max-w-[500px]
+                text-xs
+                text-muted-foreground/65
+                tracking-wide
+                text-center
+                leading-relaxed
+              "
+            >
+              A non-custodial digital time capsule
+            </motion.p>
+          </footer>
+        )}
       </div>
 
       {/* ── PRINT ── */}

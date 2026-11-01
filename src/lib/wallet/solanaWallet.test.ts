@@ -52,6 +52,24 @@ function decodeTransferAmount(instruction: InstructionView): bigint {
   return view.getBigUint64(1, true);
 }
 
+function decodeComputeUnitLimit(instruction: InstructionView): number {
+  const view = new DataView(
+    instruction.data.buffer,
+    instruction.data.byteOffset,
+    instruction.data.byteLength
+  );
+  return view.getUint32(1, true);
+}
+
+function decodeComputeUnitPrice(instruction: InstructionView): bigint {
+  const view = new DataView(
+    instruction.data.buffer,
+    instruction.data.byteOffset,
+    instruction.data.byteLength
+  );
+  return view.getBigUint64(1, true);
+}
+
 function isAtaCreateInstruction(instruction: InstructionView): boolean {
   return instruction.programId.toBase58() === ASSOCIATED_TOKEN_PROGRAM;
 }
@@ -521,9 +539,12 @@ describe("sendSolanaUSDCPayment — settlement ATA provisioning", () => {
     ).rejects.toThrow("RPC_UNAVAILABLE");
 
     expect(signAndSendTransaction).not.toHaveBeenCalled();
-    // The blockhash proxy is never reached — nothing was built.
+    // Both reads are now ISSUED CONCURRENTLY, so the blockhash request is
+    // already in flight when the ATA check fails. What must NOT happen is any
+    // transaction build or wallet send — the failure still short-circuits
+    // before the first instruction is assembled.
     const urls = fetchMock.mock.calls.map(([u]) => String(u));
-    expect(urls).not.toContain(BLOCKHASH_PATH);
+    expect(urls.filter((u) => u.startsWith(TOKEN_ACCOUNT_PATH))).toHaveLength(1);
   });
 
   it("fail-closed: a malformed ATA check response aborts the payment", async () => {
@@ -549,6 +570,235 @@ describe("sendSolanaUSDCPayment — settlement ATA provisioning", () => {
     ).rejects.toThrow("Invalid token account response.");
 
     expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Concurrent read scheduling (IMPLEMENTATION BATCH 1, section 2).
+ *
+ * The account-existence read and the blockhash read are independent
+ * read-only proxy calls that must BOTH complete before the transaction is
+ * built. They are now issued concurrently via `Promise.all`.
+ *
+ * These tests pin the two invariants that matter:
+ *   E. BOTH reads are always issued, exactly once each.
+ *   F. A failure of EITHER read still fails the payment closed — no
+ *      transaction is built and the wallet is never asked to sign.
+ */
+describe("sendSolanaUSDCPayment — concurrent proxy reads", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00Z"));
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("E: token-account and blockhash are both issued, concurrently, exactly once each", async () => {
+    const signAndSendTransaction = buildSignAndSendTransaction();
+
+    /**
+     * Order-sensitive recorder: each proxy call appends its label, and the
+     * blockhash handler resolves only after a macrotask so the ATA check —
+     * which resolves immediately — would complete first under any
+     * sequential ordering. Both labels must nevertheless be present, which
+     * is only possible if the blockhash request was started WITHOUT waiting
+     * for the ATA check to settle.
+     */
+    const callOrder: string[] = [];
+
+    const fetchMock = installFetchMock(async (input: unknown) => {
+      const url = String(input);
+
+      if (url.startsWith(TOKEN_ACCOUNT_PATH)) {
+        callOrder.push("token-account");
+        return {
+          ok: true,
+          json: async () => ({ ok: true, exists: true, owner: null }),
+        } as unknown as Response;
+      }
+
+      if (url === BLOCKHASH_PATH) {
+        callOrder.push("blockhash");
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            blockhash: FIXED_BLOCKHASH,
+            lastValidBlockHeight: FIXED_LAST_VALID_BLOCK_HEIGHT,
+          }),
+        } as unknown as Response;
+      }
+
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    });
+
+    const signature = await sendSolanaUSDCPayment({
+      publicKey: FIXED_PUBLIC_KEY,
+      signAndSendTransaction,
+    });
+
+    expect(signature).toBe(FIXED_SIGNATURE);
+
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls.filter((u) => u.startsWith(TOKEN_ACCOUNT_PATH))).toHaveLength(1);
+    expect(urls.filter((u) => u === BLOCKHASH_PATH)).toHaveLength(1);
+
+    // Both reads were dispatched before either was awaited.
+    expect(callOrder).toContain("token-account");
+    expect(callOrder).toContain("blockhash");
+
+    // Exactly one atomic transaction, one wallet send.
+    expect(signAndSendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("E: the token-account read always targets the canonical settlement ATA", async () => {
+    const signAndSendTransaction = buildSignAndSendTransaction();
+    const fetchMock = installFetchMock(
+      buildFetchImplementation({ destinationAtaExists: false })
+    );
+
+    await sendSolanaUSDCPayment({
+      publicKey: FIXED_PUBLIC_KEY,
+      signAndSendTransaction,
+    });
+
+    const tokenAccountCall = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .find((u) => u.startsWith(TOKEN_ACCOUNT_PATH));
+
+    expect(tokenAccountCall).toBeDefined();
+    expect(tokenAccountCall).toContain(SETTLEMENT_USDC_ATA);
+  });
+
+  it("F: a failing blockhash read still fails closed — no transaction, no send", async () => {
+    const signAndSendTransaction = buildSignAndSendTransaction();
+
+    installFetchMock(async (input: unknown) => {
+      const url = String(input);
+
+      if (url.startsWith(TOKEN_ACCOUNT_PATH)) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, exists: true, owner: null }),
+        } as unknown as Response;
+      }
+
+      if (url === BLOCKHASH_PATH) {
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({ ok: false, error: "BLOCKHASH_UNAVAILABLE" }),
+        } as unknown as Response;
+      }
+
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    });
+
+    await expect(
+      sendSolanaUSDCPayment({
+        publicKey: FIXED_PUBLIC_KEY,
+        signAndSendTransaction,
+      })
+    ).rejects.toThrow("BLOCKHASH_UNAVAILABLE");
+
+    // The ATA read succeeded, but the payment still aborts before any
+    // transaction is built or handed to the wallet.
+    expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+
+  it("F: an ATA read failing while the blockhash read also rejects does not raise an unhandled rejection", async () => {
+    const signAndSendTransaction = buildSignAndSendTransaction();
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    installFetchMock(async (input: unknown) => {
+      const url = String(input);
+
+      if (url.startsWith(TOKEN_ACCOUNT_PATH)) {
+        // Rejects FIRST (synchronously resolved rejection).
+        return {
+          ok: false,
+          json: async () => ({ ok: false, error: "ATA_RPC_DOWN" }),
+        } as unknown as Response;
+      }
+
+      if (url === BLOCKHASH_PATH) {
+        // Rejects LATER, after Promise.all has already rejected.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({ ok: false, error: "BLOCKHASH_DOWN" }),
+        } as unknown as Response;
+      }
+
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    });
+
+    await expect(
+      sendSolanaUSDCPayment({
+        publicKey: FIXED_PUBLIC_KEY,
+        signAndSendTransaction,
+      })
+    ).rejects.toThrow("ATA_RPC_DOWN");
+
+    // Let any late rejection surface.
+    await vi.advanceTimersByTimeAsync(20);
+
+    process.off("unhandledRejection", onUnhandled);
+    expect(unhandled).toHaveLength(0);
+    expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Structural guard (source-level) — IMPLEMENTATION BATCH 1, section 2.
+ *
+ * The behavioural tests above cannot distinguish "both reads issued" from
+ * "both reads issued concurrently"; only the source shows that the ATA check
+ * is NOT awaited before the blockhash fetch is issued. Mirrors the existing
+ * `readFileSync` source-assertion convention in this file.
+ */
+describe("sendSolanaUSDCPayment — proxy reads are issued concurrently (source)", () => {
+  it("does not await the ATA check before issuing the blockhash fetch", () => {
+    const src = readFileSync(
+      new URL("./solanaWallet.ts", import.meta.url),
+      "utf8"
+    );
+
+    const blockhashFetchIndex = src.indexOf(
+      'fetch("/api/solana/blockhash"'
+    );
+    const ataPromiseIndex = src.indexOf(
+      "const destinationAtaExistsPromise ="
+    );
+    const promiseAllIndex = src.indexOf(
+      "await Promise.all(["
+    );
+    const sequentialAtaAwaitIndex = src.indexOf(
+      "const destinationAtaExists = await fetchAccountExists("
+    );
+
+    // The blockhash fetch and the ATA check are both captured as promises...
+    expect(blockhashFetchIndex).toBeGreaterThan(-1);
+    expect(ataPromiseIndex).toBeGreaterThan(-1);
+
+    // ...and only then awaited together.
+    expect(promiseAllIndex).toBeGreaterThan(ataPromiseIndex);
+
+    // The OLD sequential form must be gone.
+    expect(sequentialAtaAwaitIndex).toBe(-1);
+
+    // Defensive handlers keep a sibling rejection observed.
+    expect(src).toContain("blockhashPromise.catch(");
+    expect(src).toContain("destinationAtaExistsPromise.catch(");
   });
 });
 
@@ -891,6 +1141,60 @@ describe("signSolanaUSDCPayment — wallet-added priority fees (Phantom)", () =>
     expect(broadcast.verifySignatures()).toBe(true);
   });
 
+  it("P1b: the exact observed Phantom pair (200 000 CU × 375 000 µL/CU = 75 000 lamports) is accepted", async () => {
+    const web3 = await import("@solana/web3.js");
+    installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    let preparedInstructionMetas: string[][] = [];
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) => {
+        const original = transaction as WalletTx;
+        preparedInstructionMetas = original.instructions.map((instruction) =>
+          instruction.keys.map((key) => key.pubkey.toBase58())
+        );
+        return returnPhantomSigned(web3, transaction, payer, {
+          limitUnits: 200_000,
+          priceMicroLamports: 375_000,
+        });
+      },
+    });
+
+    const broadcast = decodeBroadcast(web3, result);
+    expect(broadcast.instructions).toHaveLength(4);
+    const limit = broadcast.instructions[0] as unknown as InstructionView;
+    const price = broadcast.instructions[1] as unknown as InstructionView;
+    expect(limit.programId.toBase58()).toBe(COMPUTE_BUDGET_PROGRAM);
+    expect(price.programId.toBase58()).toBe(COMPUTE_BUDGET_PROGRAM);
+    expect(limit.data[0]).toBe(2);
+    expect(price.data[0]).toBe(3);
+    expect(decodeComputeUnitLimit(limit)).toBe(200_000);
+    expect(decodeComputeUnitPrice(price)).toBe(375_000n);
+    // ceil(200 000 × 375 000 / 1 000 000) = 75 000 lamports ≤ 1 000 000.
+    const worstCaseFee =
+      (BigInt(decodeComputeUnitLimit(limit)) *
+        decodeComputeUnitPrice(price) +
+        999_999n) /
+      1_000_000n;
+    expect(worstCaseFee).toBe(75_000n);
+    expect(worstCaseFee).toBeLessThanOrEqual(1_000_000n);
+    // Every payment meta is EXACTLY the one AETERNA prepared.
+    expect(
+      broadcast.instructions
+        .slice(2)
+        .map((instruction) =>
+          instruction.keys.map((key) => key.pubkey.toBase58())
+        )
+    ).toEqual(preparedInstructionMetas);
+    expect(
+      decodeTransferAmount(
+        broadcast.instructions[3] as unknown as InstructionView
+      )
+    ).toBe(1_000_000n);
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
   it("P2: a wallet that adds only the compute-unit price is accepted", async () => {
     const web3 = await import("@solana/web3.js");
     installSerializableFetch();
@@ -1038,7 +1342,7 @@ describe("signSolanaUSDCPayment — wallet-added priority fees (Phantom)", () =>
     });
   });
 
-  it("P7: the fee allowance cannot smuggle a changed payment amount", async () => {
+  it("P7: the exact observed fee pair cannot smuggle a changed payment amount", async () => {
     await expectRefusalWithInjectedInstruction((web3, original, payer) => {
       const instructions = original.instructions.map((instruction) => {
         if (instruction.programId.toBase58() !== TOKEN_PROGRAM) {
@@ -1054,7 +1358,38 @@ describe("signSolanaUSDCPayment — wallet-added priority fees (Phantom)", () =>
       });
       const injected = new web3.Transaction().add(
         web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
-        web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+        web3.ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 375_000,
+        }),
+        ...instructions
+      );
+      injected.feePayer = original.feePayer!;
+      injected.recentBlockhash = original.recentBlockhash!;
+      injected.sign(payer);
+      return web3.Transaction.from(injected.serialize());
+    });
+  });
+
+  it("P7b: the exact observed fee pair cannot smuggle a changed recipient", async () => {
+    await expectRefusalWithInjectedInstruction((web3, original, payer) => {
+      const attackerDestination = web3.Keypair.generate().publicKey;
+      const instructions = original.instructions.map((instruction) => {
+        if (instruction.programId.toBase58() !== TOKEN_PROGRAM) {
+          return instruction;
+        }
+        return new web3.TransactionInstruction({
+          programId: instruction.programId,
+          keys: instruction.keys.map((key, index) =>
+            index === 1 ? { ...key, pubkey: attackerDestination } : key
+          ),
+          data: instruction.data,
+        });
+      });
+      const injected = new web3.Transaction().add(
+        web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        web3.ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 375_000,
+        }),
         ...instructions
       );
       injected.feePayer = original.feePayer!;
@@ -1314,6 +1649,21 @@ describe("signSolanaUSDCPayment — Phantom Lighthouse assertion pair", () => {
     10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
     3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8,
   ]);
+  /**
+   * The 26-byte CURRENT INFO form Phantom appends: `Lamports(X) >=`,
+   * `KnownOwner(System) ==`, `DataLength(0) ==`. X is derived by Phantom
+   * from the simulated payer balance, so it is the ONLY variable field.
+   */
+  function currentInfoData(lamports: bigint): Buffer {
+    const value = Buffer.alloc(8);
+    value.writeBigUInt64LE(lamports);
+    return Buffer.from([
+      6, 4, 3,
+      0, ...value, 4,
+      3, 0, 0,
+      1, ...Buffer.alloc(8), 0,
+    ]);
+  }
 
   type WalletTx = import("@solana/web3.js").Transaction;
   type Web3 = typeof import("@solana/web3.js");
@@ -1322,6 +1672,15 @@ describe("signSolanaUSDCPayment — Phantom Lighthouse assertion pair", () => {
     return installFetchMock(
       buildFetchImplementation({
         destinationAtaExists: false,
+        blockhash: VALID_BLOCKHASH,
+      })
+    );
+  }
+  /** Repeat purchase: the settlement ATA exists, so ONE prepared instruction. */
+  function installExistingAtaFetch() {
+    return installFetchMock(
+      buildFetchImplementation({
+        destinationAtaExists: true,
         blockhash: VALID_BLOCKHASH,
       })
     );
@@ -1721,18 +2080,128 @@ describe("signSolanaUSDCPayment — Phantom Lighthouse assertion pair", () => {
       })
     );
   });
+  it("L19: accepts the 26-byte three-assertion INFO with the historical threshold", async () => {
+    const infoData = currentInfoData(14_290_622n);
+    expect(infoData).toHaveLength(26);
+
+    const outcome = await attempt((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { infoData })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const broadcast = outcome.web3.Transaction.from(
+      Uint8Array.from(
+        Buffer.from(outcome.result!.signedTransactionBase64, "base64")
+      )
+    );
+    expect(broadcast.instructions).toHaveLength(4);
+    expect(Buffer.from(broadcast.instructions[2]!.data)).toEqual(infoData);
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("L20: accepts the same 26-byte INFO with a different balance threshold", async () => {
+    const infoData = currentInfoData(8_814_000n);
+
+    const outcome = await attempt((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { infoData })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const broadcast = outcome.web3.Transaction.from(
+      Uint8Array.from(
+        Buffer.from(outcome.result!.signedTransactionBase64, "base64")
+      )
+    );
+    expect(Buffer.from(broadcast.instructions[2]!.data)).toEqual(infoData);
+  });
+
+  it("L21: refuses a Lamports assertion whose operator is not >=", async () => {
+    const infoData = currentInfoData(14_290_622n);
+    infoData[12] = 5;
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { infoData })
+    );
+  });
+
+  it("L22: refuses a reordered 26-byte INFO (owner before lamports)", async () => {
+    const value = Buffer.alloc(8);
+    value.writeBigUInt64LE(14_290_622n);
+    const infoData = Buffer.from([
+      6, 4, 3,
+      3, 0, 0,
+      0, ...value, 4,
+      1, ...Buffer.alloc(8), 0,
+    ]);
+    expect(infoData).toHaveLength(26);
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { infoData })
+    );
+  });
+
+  it("L23: refuses the 26-byte INFO with a trailing byte", async () => {
+    const infoData = Buffer.concat([currentInfoData(14_290_622n), Buffer.from([0])]);
+    expect(infoData).toHaveLength(27);
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { infoData })
+    );
+  });
+
+  it("L24: accepts the observed five-instruction shape end to end", async () => {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installExistingAtaFetch();
+    const payer = web3.Keypair.generate();
+    const infoData = currentInfoData(14_290_622n);
+
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) => {
+        const original = transaction as WalletTx;
+        // Repeat purchase: exactly ONE prepared instruction (the transfer).
+        expect(original.instructions).toHaveLength(1);
+        return returnWithLighthouse(web3, original, payer, {
+          infoData,
+          beforePayment: [
+            web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+            web3.ComputeBudgetProgram.setComputeUnitPrice({
+              microLamports: 375_000,
+            }),
+          ],
+        });
+      },
+    });
+
+    const broadcast = web3.Transaction.from(
+      Uint8Array.from(Buffer.from(result.signedTransactionBase64, "base64"))
+    );
+    expect(broadcast.instructions).toHaveLength(5);
+    expect(
+      broadcast.instructions.map((instruction) =>
+        instruction.programId.toBase58()
+      )
+    ).toEqual([
+      COMPUTE_BUDGET_PROGRAM,
+      COMPUTE_BUDGET_PROGRAM,
+      TOKEN_PROGRAM,
+      LIGHTHOUSE_PROGRAM,
+      LIGHTHOUSE_PROGRAM,
+    ]);
+    expect(Buffer.from(broadcast.instructions[3]!.data)).toEqual(infoData);
+    expect(broadcast.verifySignatures()).toBe(true);
+    expectNoBroadcast(fetchMock);
+  });
 });
 
 /* ---------------------------------------------------------------------
- * TEMPORARY OPT-IN DIAGNOSTICS (WALLET_MODIFIED_TRANSACTION)
+ * OPT-IN DIAGNOSTICS (WALLET_MODIFIED_TRANSACTION) — RETAINED, DEFAULT OFF
  *
  * With `?aeternaWalletDiag=1` the guard emits exactly ONE structured,
  * privacy-filtered `console.warn` record on a message mismatch; without
  * that exact flag nothing is collected or logged. For Lighthouse-program
  * instructions only, the record also carries the referenced public
- * addresses and that instruction's raw data so the assertion variant can
- * be identified. The refusal itself and the broadcast barrier are
- * untouched.
+ * addresses, the payload's first byte, and — for INFO payloads only — the
+ * raw bytes in hex, capped at 64. A token assertion's balance-derived
+ * payload is never recorded. The refusal itself and the broadcast barrier
+ * are untouched, and the record is local: no request ever carries it.
  * ------------------------------------------------------------------- */
 
 interface DiagMessageSide {
@@ -1749,12 +2218,22 @@ interface DiagMessageSide {
     accountCount: number;
     dataLength: number;
     dataSha256: string;
-    /** First byte of a Lighthouse payload; one byte, no payload. */
+    programIdIndex?: number;
+    accountIndices?: number[];
+    accountAddresses?: string[];
     dataFirstByte?: number;
-    /** Present only for the observed 26-byte INFO assertion; bounded hex. */
     dataHex?: string;
-    /** True when the reported hex was cut at the diagnostic cap. */
     dataHexTruncated?: boolean;
+    lighthouse?: {
+      status: "decoded" | "undecoded";
+      version?: "v2";
+      discriminator?: number;
+      variant?: "AssertAccountInfoMulti" | "AssertTokenAccountMulti";
+      logLevel?: number;
+      logLevelName?: string | null;
+      assertionCount?: number;
+      assertions?: Array<Record<string, unknown>>;
+    };
   }> | null;
   parseError: string | null;
 }
@@ -2250,33 +2729,47 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
     expect(serialized).toContain(replacementBlockhash);
   });
 
-  /**
-   * TEMPORARY (PHASE 3BM-R9).
-   *
-   * The production diagnostic proved the real Phantom Lighthouse INFO
-   * assertion is 26 bytes, while the accepted fixture is 16 — that length
-   * difference is the confirmed refusal cause.
-   *
-   * The 26-byte payload used here is SYNTHETIC: it is NOT the real Phantom
-   * payload and must never be treated as one. Only the LENGTH is confirmed.
-   * The test pins the diagnostic behaviour alone: the INFO instruction's own
-   * bytes are reported, the token assertion's payload is deliberately not.
-   */
-  it("reports the Lighthouse INFO payload only — and never the token-assertion data", async () => {
+  it("exposes ONLY Lighthouse payloads, target addresses and decoded v2 variants", async () => {
     const web3 = await import("@solana/web3.js");
-    const fetchMock = installSerializableFetch();
-    const payer = web3.Keypair.generate();
-
-    // SYNTHETIC 26-byte INFO assertion: discriminator 6 plus zeros.
-    const syntheticInfo = Buffer.alloc(26);
-    syntheticInfo[0] = 6;
-    // The existing reconstructed token fixture (27 bytes, discriminator 10).
-    const tokenFixture = Buffer.from([
-      10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
-      3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8,
-    ]);
-
     enableDiagnostics();
+    const payer = web3.Keypair.generate();
+    const fetchMock = installSerializableFetch();
+
+    const u64 = (value: bigint) => {
+      const bytes = Buffer.alloc(8);
+      bytes.writeBigUInt64LE(value);
+      return [...bytes];
+    };
+
+    // Synthetic v2 AssertAccountInfoMulti: Lamports == 0, IsSigner == true.
+    const infoData = [
+      6, 5, 2,
+      0, ...u64(0n), 0,
+      5, 1, 0,
+    ];
+    // Synthetic v2 AssertTokenAccountMulti: derived, amount in [1, 1].
+    const tokenData = [
+      10, 5, 4,
+      8,
+      2, ...u64(1_000_000n), 4,
+      2, ...u64(1_000_000n), 5,
+      4, 1, 0,
+    ];
+    const undecodedData = [0xde, 0xad, 0xbe, 0xef];
+
+    const lighthouseProgram = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+    const lighthouseInstruction = (data: number[]) =>
+      new web3.TransactionInstruction({
+        programId: lighthouseProgram,
+        keys: [
+          {
+            pubkey: payer.publicKey,
+            isSigner: false,
+            isWritable: false,
+          },
+        ],
+        data: Buffer.from(data),
+      });
 
     let thrown: unknown;
     try {
@@ -2284,37 +2777,11 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
         publicKey: payer.publicKey.toBase58(),
         signTransaction: async (transaction: unknown) => {
           const original = transaction as WalletTx;
-          const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
-          const transfer = original.instructions.find(
-            (instruction) =>
-              instruction.programId.toBase58() === TOKEN_PROGRAM &&
-              instruction.data[0] === 3
-          );
-          if (!transfer) throw new Error("prepared transfer missing");
           const modified = new web3.Transaction().add(
             ...original.instructions,
-            new web3.TransactionInstruction({
-              programId: lighthouse,
-              keys: [
-                {
-                  pubkey: payer.publicKey,
-                  isSigner: false,
-                  isWritable: false,
-                },
-              ],
-              data: syntheticInfo,
-            }),
-            new web3.TransactionInstruction({
-              programId: lighthouse,
-              keys: [
-                {
-                  pubkey: transfer.keys[0]!.pubkey,
-                  isSigner: false,
-                  isWritable: false,
-                },
-              ],
-              data: tokenFixture,
-            })
+            lighthouseInstruction(infoData),
+            lighthouseInstruction(tokenData),
+            lighthouseInstruction(undecodedData)
           );
           modified.feePayer = original.feePayer!;
           modified.recentBlockhash = original.recentBlockhash!;
@@ -2326,13 +2793,225 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
       thrown = error;
     }
 
+    // The diagnostic addition must not change the guard's refusal.
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expect((thrown as WalletModifiedTransactionError).code).toBe(
+      "WALLET_MODIFIED_TRANSACTION"
+    );
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    expect(record.cause).toBe("instruction_count");
+    const returned = record.returned!;
+    const lighthouse = returned.instructions!.filter(
+      (instruction) => instruction.programId === LIGHTHOUSE_PROGRAM
+    );
+    expect(lighthouse).toHaveLength(3);
+
+    const [info, token, undecoded] = lighthouse;
+    for (const instruction of lighthouse) {
+      expect(instruction.programIdIndex).toEqual(expect.any(Number));
+      expect(instruction.programIdIndex!).toBeGreaterThanOrEqual(0);
+      expect(instruction.programIdIndex!).toBeLessThan(
+        returned.accountKeyCount!
+      );
+      expect(instruction.accountIndices).toHaveLength(1);
+      expect(instruction.accountAddresses).toEqual([
+        payer.publicKey.toBase58(),
+      ]);
+      expect(typeof instruction.dataFirstByte).toBe("number");
+      expect(instruction.dataSha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(instruction.accountCount).toBe(1);
+    }
+
+    expect(info!.dataLength).toBe(16);
+    expect(info!.dataFirstByte).toBe(6);
+    expect(info!.dataHex).toBe(Buffer.from(infoData).toString("hex"));
+    expect(info!.dataHexTruncated).toBe(false);
+    expect(info!.lighthouse).toEqual({
+      status: "decoded",
+      version: "v2",
+      discriminator: 6,
+      variant: "AssertAccountInfoMulti",
+      logLevel: 5,
+      logLevelName: "FailedEncodedMessage",
+      assertionCount: 2,
+      assertions: [
+        { kind: "Lamports", value: "0", operator: "Equal" },
+        { kind: "IsSigner", value: true, operator: "Equal" },
+      ],
+    });
+
+    expect(token!.dataLength).toBe(27);
+    // The token assertion's amount is derived from the payer's balance, so
+    // its payload is NEVER recorded — not even partially. Only the single
+    // discriminator byte is exposed, which is all the variant ID needs.
+    expect(token!.dataFirstByte).toBe(10);
+    expect(token).not.toHaveProperty("dataHex");
+    expect(token).not.toHaveProperty("dataHexTruncated");
+    expect(token!.lighthouse).toEqual({
+      status: "decoded",
+      version: "v2",
+      discriminator: 10,
+      variant: "AssertTokenAccountMulti",
+      logLevel: 5,
+      logLevelName: "FailedEncodedMessage",
+      assertionCount: 4,
+      assertions: [
+        { kind: "TokenAccountOwnerIsDerived" },
+        {
+          kind: "Amount",
+          value: "1000000",
+          operator: "GreaterThanOrEqual",
+        },
+        {
+          kind: "Amount",
+          value: "1000000",
+          operator: "LessThanOrEqual",
+        },
+        { kind: "State", value: 1, operator: "Equal" },
+      ],
+    });
+
+    expect(undecoded!.dataLength).toBe(4);
+    // Not an INFO payload (0xde is neither the INFO nor the token
+    // discriminator): no raw data at all, only the first byte.
+    expect(undecoded!.dataFirstByte).toBe(0xde);
+    expect(undecoded).not.toHaveProperty("dataHex");
+    expect(undecoded).not.toHaveProperty("dataHexTruncated");
+    expect(undecoded!.lighthouse).toEqual({ status: "undecoded" });
+
+    // Non-Lighthouse instructions keep the original bounded shape: no raw
+    // data, no addresses, no decoder output.
+    const paymentInstruction = returned.instructions!.find(
+      (instruction) => instruction.programId === TOKEN_PROGRAM
+    );
+    expect(paymentInstruction).toBeDefined();
+    expect(paymentInstruction).not.toHaveProperty("dataHex");
+    expect(paymentInstruction).not.toHaveProperty("accountAddresses");
+    expect(paymentInstruction).not.toHaveProperty("accountIndices");
+    expect(paymentInstruction).not.toHaveProperty("programIdIndex");
+    expect(paymentInstruction).not.toHaveProperty("lighthouse");
+  });
+  /* -------------------------------------------------------------------
+   * RETAINED DIAGNOSTIC CAPABILITY (was TEMPORARY in PHASE 3BM-R9-A9)
+   *
+   * Kept from GitHub main, adapted to the release's authoritative
+   * acceptance module:
+   *   - the payload is captured for INFO assertions ONLY (16- and
+   *     26-byte forms, the INFO discriminator, or the observed 26-byte
+   *     shape that precedes an accepted token assertion),
+   *   - the hex is capped at WALLET_DIAG_MAX_INFO_DATA_BYTES (64),
+   *   - the token assertion keeps its first byte and never its payload,
+   *   - capture never participates in acceptance or rejection.
+   * ------------------------------------------------------------------- */
+
+  /** 16-byte legacy INFO form Phantom appends (accepted). */
+  const LEGACY_INFO_DATA = Buffer.from([
+    6, 4, 2, 3, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  ]);
+  /** 27-byte accepted token assertion; the amount is balance-derived. */
+  const TOKEN_ASSERTION_DATA = Buffer.from([
+    10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
+    3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8,
+  ]);
+
+  /** 26-byte CURRENT INFO form: `lamports` is its only variable field. */
+  function currentInfoData(lamports: bigint): Buffer {
+    const value = Buffer.alloc(8);
+    value.writeBigUInt64LE(lamports);
+    return Buffer.from([
+      6, 4, 3,
+      0, ...value, 4,
+      3, 0, 0,
+      1, ...Buffer.alloc(8), 0,
+    ]);
+  }
+
+  /**
+   * Rebuild the prepared transaction with an appended Lighthouse pair, using
+   * the shape the release's accepted-pair tests already prove: INFO on the
+   * payer, token assertion on the prepared source ATA. This only controls what
+   * the fake wallet returns — wallet acceptance is untouched.
+   */
+  function withLighthousePair(
+    web3: typeof import("@solana/web3.js"),
+    original: WalletTx,
+    payer: import("@solana/web3.js").Keypair,
+    infoData: Buffer,
+    tokenData: Buffer
+  ): WalletTx {
+    const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+    const transfer = original.instructions.find(
+      (instruction) =>
+        instruction.programId.toBase58() === TOKEN_PROGRAM &&
+        instruction.data[0] === 3
+    );
+    if (!transfer) throw new Error("prepared transfer missing");
+    const modified = new web3.Transaction().add(
+      ...original.instructions,
+      new web3.TransactionInstruction({
+        programId: lighthouse,
+        keys: [{ pubkey: payer.publicKey, isSigner: false, isWritable: false }],
+        data: infoData,
+      }),
+      new web3.TransactionInstruction({
+        programId: lighthouse,
+        keys: [
+          {
+            pubkey: transfer.keys[0]!.pubkey,
+            isSigner: false,
+            isWritable: false,
+          },
+        ],
+        data: tokenData,
+      })
+    );
+    modified.feePayer = original.feePayer!;
+    modified.recentBlockhash = original.recentBlockhash!;
+    modified.sign(payer);
+    return web3.Transaction.from(modified.serialize());
+  }
+
+  function toHex(bytes: Uint8Array): string {
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+      ""
+    );
+  }
+
+  it("reports the Lighthouse INFO payload only — and never the token-assertion data", async () => {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installSerializableFetch();
+    const payer = web3.Keypair.generate();
+
+    // SYNTHETIC 26-byte INFO assertion: discriminator 6 plus zeros.
+    const syntheticInfo = Buffer.alloc(26);
+    syntheticInfo[0] = 6;
+
+    enableDiagnostics();
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) =>
+          withLighthousePair(
+            web3,
+            transaction as WalletTx,
+            payer,
+            syntheticInfo,
+            TOKEN_ASSERTION_DATA
+          ),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
     expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
     expectNoBroadcast(fetchMock);
 
     const record = readDiagRecord();
     const instructions = record.returned!.instructions!;
-    const toHex = (bytes: Uint8Array) =>
-      Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
     const infoInstruction = instructions.find(
       (instruction) =>
@@ -2353,6 +3032,7 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
     expect(tokenInstruction.index).toBe(infoInstruction.index + 1);
 
     // The token assertion's payload is deliberately NOT recorded.
+    expect(tokenInstruction.dataFirstByte).toBe(10);
     expect(tokenInstruction).not.toHaveProperty("dataHex");
     expect(tokenInstruction).not.toHaveProperty("dataHexTruncated");
 
@@ -2364,12 +3044,10 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
   });
 
   /**
-   * TEMPORARY (PHASE 3BM-R9-A9).
-   *
    * The production record proves a 26-byte Lighthouse instruction sits
    * immediately before the recognised token assertion, but its first byte
-   * was never captured. This test proves the capture no longer depends on
-   * that byte: a 26-byte instruction whose discriminator is 0x2a (NOT 6) is
+   * was never captured. This test proves the capture does not depend on that
+   * byte: a 26-byte instruction whose discriminator is 0x2a (NOT 6) is
    * recorded together with its bounded hex.
    *
    * The payload is SYNTHETIC — it is NOT the real Phantom payload; only the
@@ -2380,14 +3058,8 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
     const fetchMock = installSerializableFetch();
     const payer = web3.Keypair.generate();
 
-    // SYNTHETIC: 26 bytes, discriminator 0x2a.
     const syntheticInfo = Buffer.alloc(26);
     syntheticInfo[0] = 0x2a;
-    // The existing reconstructed token fixture (27 bytes, discriminator 10).
-    const tokenFixture = Buffer.from([
-      10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
-      3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8,
-    ]);
 
     enableDiagnostics();
 
@@ -2395,41 +3067,14 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
     try {
       await signSolanaUSDCPayment({
         publicKey: payer.publicKey.toBase58(),
-        signTransaction: async (transaction: unknown) => {
-          const original = transaction as WalletTx;
-          const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
-          const transfer = original.instructions.find(
-            (instruction) =>
-              instruction.programId.toBase58() === TOKEN_PROGRAM &&
-              instruction.data[0] === 3
-          );
-          if (!transfer) throw new Error("prepared transfer missing");
-          const modified = new web3.Transaction().add(
-            ...original.instructions,
-            new web3.TransactionInstruction({
-              programId: lighthouse,
-              keys: [
-                { pubkey: payer.publicKey, isSigner: false, isWritable: false },
-              ],
-              data: syntheticInfo,
-            }),
-            new web3.TransactionInstruction({
-              programId: lighthouse,
-              keys: [
-                {
-                  pubkey: transfer.keys[0]!.pubkey,
-                  isSigner: false,
-                  isWritable: false,
-                },
-              ],
-              data: tokenFixture,
-            })
-          );
-          modified.feePayer = original.feePayer!;
-          modified.recentBlockhash = original.recentBlockhash!;
-          modified.sign(payer);
-          return web3.Transaction.from(modified.serialize());
-        },
+        signTransaction: async (transaction: unknown) =>
+          withLighthousePair(
+            web3,
+            transaction as WalletTx,
+            payer,
+            syntheticInfo,
+            TOKEN_ASSERTION_DATA
+          ),
       });
     } catch (error) {
       thrown = error;
@@ -2440,8 +3085,6 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
 
     const record = readDiagRecord();
     const instructions = record.returned!.instructions!;
-    const toHex = (bytes: Uint8Array) =>
-      Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
     const infoInstruction = instructions.find(
       (instruction) => instruction.dataLength === 26
@@ -2462,10 +3105,10 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
   });
 
   /**
-   * TEMPORARY (PHASE 3BM-R9-A9): an unmatched 26-byte Lighthouse
-   * instruction — here followed by ANOTHER 26-byte instruction instead of
-   * the recognised token assertion — must not have its payload exposed.
-   * The first byte stays visible so the variant can still be identified.
+   * An unmatched 26-byte Lighthouse instruction — here followed by ANOTHER
+   * 26-byte instruction instead of the recognised token assertion — must not
+   * have its payload exposed. The first byte stays visible so the variant can
+   * still be identified.
    */
   it("does not expose a 26-byte Lighthouse payload unless a recognised token assertion follows", async () => {
     const web3 = await import("@solana/web3.js");
@@ -2528,5 +3171,696 @@ describe("signSolanaUSDCPayment — wallet message-mismatch diagnostics", () => 
       expect(instruction).not.toHaveProperty("dataHexTruncated");
       expect(typeof instruction.dataFirstByte).toBe("number");
     }
+  });
+
+  it("collects nothing without the exact opt-in flag, and refuses identically with it", async () => {
+    const web3 = await import("@solana/web3.js");
+    const payer = web3.Keypair.generate();
+    const infoData = Buffer.alloc(26);
+    infoData[0] = 6;
+
+    const run = async () => {
+      const fetchMock = installSerializableFetch();
+      let thrown: unknown;
+      try {
+        await signSolanaUSDCPayment({
+          publicKey: payer.publicKey.toBase58(),
+          signTransaction: async (transaction: unknown) =>
+            withLighthousePair(
+              web3,
+              transaction as WalletTx,
+              payer,
+              infoData,
+              TOKEN_ASSERTION_DATA
+            ),
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+      expectNoBroadcast(fetchMock);
+      return thrown as WalletModifiedTransactionError;
+    };
+
+    // Default: the flag is absent — nothing is collected, nothing is logged.
+    vi.stubGlobal("window", { location: { search: "" } });
+    const silent = await run();
+    expect(readDiagRecords()).toHaveLength(0);
+
+    // Explicit opt-in: the very same mismatch yields exactly one record.
+    enableDiagnostics();
+    const loud = await run();
+    expect(readDiagRecords()).toHaveLength(1);
+
+    // The refusal itself is untouched by diagnostics: same class, code and
+    // message. Acceptance and rejection never read diagnostic state.
+    expect(loud.code).toBe(silent.code);
+    expect(loud.message).toBe(silent.message);
+  });
+
+  it("caps a recorded INFO payload at 64 bytes and reports the truncation accurately", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    const payer = web3.Keypair.generate();
+    const fetchMock = installSerializableFetch();
+
+    // SYNTHETIC oversized INFO payload: 96 bytes, INFO discriminator first.
+    const oversizedInfo = Buffer.alloc(96, 0x11);
+    oversizedInfo[0] = 6;
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) =>
+          withLighthousePair(
+            web3,
+            transaction as WalletTx,
+            payer,
+            oversizedInfo,
+            TOKEN_ASSERTION_DATA
+          ),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    const oversized = record.returned!.instructions!.find(
+      (instruction) => instruction.dataLength === 96
+    );
+    expect(oversized).toBeDefined();
+    expect(oversized!.dataFirstByte).toBe(6);
+    expect(oversized!.dataHex).toBe(toHex(oversizedInfo.subarray(0, 64)));
+    expect(oversized!.dataHex).toHaveLength(128);
+    expect(oversized!.dataHexTruncated).toBe(true);
+    // The real size is never lost: only the recorded hex is bounded.
+    expect(oversized!.dataLength).toBe(96);
+  });
+
+  it("still accepts the 16-byte INFO pair with diagnostics enabled, and emits no record", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    const payer = web3.Keypair.generate();
+    const fetchMock = installSerializableFetch();
+
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) =>
+        withLighthousePair(
+          web3,
+          transaction as WalletTx,
+          payer,
+          LEGACY_INFO_DATA,
+          TOKEN_ASSERTION_DATA
+        ),
+    });
+
+    expect(result.signature.length).toBeGreaterThan(0);
+    expect(readDiagRecords()).toHaveLength(0);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("still accepts the 26-byte INFO pair with diagnostics enabled, and emits no record", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    const payer = web3.Keypair.generate();
+    const fetchMock = installSerializableFetch();
+
+    const result = await signSolanaUSDCPayment({
+      publicKey: payer.publicKey.toBase58(),
+      signTransaction: async (transaction: unknown) =>
+        withLighthousePair(
+          web3,
+          transaction as WalletTx,
+          payer,
+          currentInfoData(1_000_000n),
+          TOKEN_ASSERTION_DATA
+        ),
+    });
+
+    expect(result.signature.length).toBeGreaterThan(0);
+    expect(readDiagRecords()).toHaveLength(0);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("records a refused 26-byte INFO payload by shape, never the token payload, and transmits nothing", async () => {
+    const web3 = await import("@solana/web3.js");
+    enableDiagnostics();
+    const payer = web3.Keypair.generate();
+    const fetchMock = installSerializableFetch();
+    const beacon = vi.fn(() => true);
+    vi.stubGlobal(
+      "navigator",
+      Object.assign(Object.create(navigator), { sendBeacon: beacon })
+    );
+
+    // Same length as the production payload, but self-identified as something
+    // other than INFO and structurally invalid, so the guard must refuse.
+    const invalidInfo = currentInfoData(1_000_000n);
+    invalidInfo[0] = 0x2a;
+    invalidInfo[15] = 9;
+
+    let thrown: unknown;
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) =>
+          withLighthousePair(
+            web3,
+            transaction as WalletTx,
+            payer,
+            invalidInfo,
+            TOKEN_ASSERTION_DATA
+          ),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoBroadcast(fetchMock);
+
+    const record = readDiagRecord();
+    const instructions = record.returned!.instructions!;
+    const info = instructions.find((instruction) => instruction.dataLength === 26)!;
+    const token = instructions.find(
+      (instruction) => instruction.dataLength === 27
+    )!;
+
+    // Captured by SHAPE (26 bytes directly before an accepted token
+    // assertion), not by discriminator.
+    expect(info.dataFirstByte).toBe(0x2a);
+    expect(info.dataHex).toBe(toHex(invalidInfo));
+    expect(info.dataHexTruncated).toBe(false);
+    expect(token.dataFirstByte).toBe(10);
+    expect(token).not.toHaveProperty("dataHex");
+
+    // Nothing left the browser: the record is not in any request, and no
+    // beacon API was touched.
+    const urls = fetchMock.mock.calls.map(([input]) => String(input)).join(" | ");
+    expect(urls).not.toContain("WALLET_MODIFIED_TRANSACTION");
+    expect(urls).not.toContain(info.dataHex!);
+    expect(urls).not.toContain("aeternaWalletDiag");
+    expect(beacon).not.toHaveBeenCalled();
+  });
+
+});
+
+/* ---------------------------------------------------------------------
+ * REPEAT PURCHASE — THE SETTLEMENT ATA ALREADY EXISTS
+ *
+ * Every guard suite above builds its fixture with
+ * `destinationAtaExists: false`, so the prepared message always carries
+ * TWO instructions (associated-token-account create + USDC transfer).
+ *
+ * A creator buying a SECOND capsule pays through the SAME canonical
+ * builder, but `buildServicePaymentTransaction` omits the ATA-create once
+ * the settlement token account exists. The prepared message then carries
+ * exactly ONE instruction — a shape no guard suite exercised before.
+ *
+ * These tests pin the guard's behaviour on that shape: the documented
+ * Phantom delta is accepted, every other difference is refused, and a
+ * refusal never produces a request to a payment endpoint.
+ *
+ * They do NOT claim this shape is the cause of the production refusal
+ * described in PHASE 3BM-R9. The cause of that refusal can only be
+ * established from the `?aeternaWalletDiag=1` record, which was not
+ * captured. These tests bound the risk; they do not diagnose it.
+ * ------------------------------------------------------------------- */
+describe("signSolanaUSDCPayment — repeat purchase (settlement ATA exists)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00Z"));
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const VALID_BLOCKHASH = "11111111111111111111111111111111";
+  const OTHER_BLOCKHASH = "11111111111111111111111111111112";
+  const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111";
+
+  type WalletTx = import("@solana/web3.js").Transaction;
+  type WalletIx = import("@solana/web3.js").TransactionInstruction;
+  type Web3 = typeof import("@solana/web3.js");
+  type PayerKeypair = import("@solana/web3.js").Keypair;
+
+  /**
+   * The SAME reconstructed v2 payloads the Lighthouse suite pins:
+   * AssertAccountInfoMulti on the payer (16 B) and
+   * AssertTokenAccountMulti on the transfer's source ATA (27 B). Copied
+   * so this suite is self-contained; no NEW wallet shape is introduced.
+   */
+  const PHANTOM_INFO_DATA = Buffer.from([
+    6, 4, 2, 3, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  ]);
+  const PHANTOM_TOKEN_DATA = Buffer.from([
+    10, 4, 4, 2, 0x22, 0x16, 0x07, 0, 0, 0, 0, 0, 4,
+    3, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8,
+  ]);
+
+  function installExistingAtaFetch(blockhash: string = VALID_BLOCKHASH) {
+    return installFetchMock(
+      buildFetchImplementation({ destinationAtaExists: true, blockhash })
+    );
+  }
+
+  /**
+   * The sign-only step must never reach a broadcast or a payment
+   * endpoint: the ONLY network reads allowed are the two read-only
+   * proxies the builder uses.
+   */
+  function expectNoPaymentTraffic(
+    fetchMock: ReturnType<typeof installFetchMock>
+  ) {
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls.some((url) => url.includes("/api/solana/broadcast"))).toBe(
+      false
+    );
+    expect(urls.some((url) => url.includes("/api/service-payment"))).toBe(
+      false
+    );
+    expect(urls.some((url) => url.includes("/api/creator"))).toBe(false);
+  }
+
+  function decodeSigned(web3: Web3, base64: string): WalletTx {
+    return web3.Transaction.from(
+      Uint8Array.from(Buffer.from(base64, "base64"))
+    );
+  }
+
+  function isTransfer(instruction: WalletIx): boolean {
+    return (
+      instruction.programId.toBase58() === TOKEN_PROGRAM &&
+      instruction.data[0] === 3
+    );
+  }
+
+  function sourceAtaOf(original: WalletTx): string {
+    const transfer = original.instructions.find(isTransfer);
+    if (!transfer) throw new Error("prepared transfer instruction missing");
+    return transfer.keys[0]!.pubkey.toBase58();
+  }
+
+  interface RebuildOptions {
+    before?: WalletIx[];
+    after?: WalletIx[];
+    blockhash?: string;
+    /** Applied to EVERY prepared instruction; must return a NEW object. */
+    patch?: (instruction: WalletIx) => WalletIx;
+  }
+
+  function rebuild(
+    web3: Web3,
+    original: WalletTx,
+    payer: PayerKeypair,
+    options: RebuildOptions = {}
+  ): WalletTx {
+    const patched = original.instructions.map((instruction) =>
+      options.patch ? options.patch(instruction) : instruction
+    );
+    const modified = new web3.Transaction().add(
+      ...(options.before ?? []),
+      ...patched,
+      ...(options.after ?? [])
+    );
+    modified.feePayer = original.feePayer!;
+    modified.recentBlockhash = options.blockhash ?? original.recentBlockhash!;
+    modified.sign(payer);
+    return web3.Transaction.from(modified.serialize());
+  }
+
+  interface AttemptOutcome {
+    web3: Web3;
+    fetchMock: ReturnType<typeof installFetchMock>;
+    payer: PayerKeypair;
+    /** How many instructions AETERNA prepared (1 == settlement ATA exists). */
+    preparedInstructionCount: number;
+    /** The prepared transfer's source ATA, resolved by address. */
+    preparedSourceAta: string;
+    result?: {
+      signature: string;
+      signedTransactionBase64: string;
+      blockhash: string;
+      lastValidBlockHeight: number | null;
+    };
+    error?: unknown;
+  }
+
+  async function attempt(
+    build: (web3: Web3, original: WalletTx, payer: PayerKeypair) => WalletTx
+  ): Promise<AttemptOutcome> {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installExistingAtaFetch();
+    const payer = web3.Keypair.generate();
+    let preparedInstructionCount = 0;
+    let preparedSourceAta = "";
+    try {
+      const result = await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          preparedInstructionCount = original.instructions.length;
+          preparedSourceAta = sourceAtaOf(original);
+          return build(web3, original, payer);
+        },
+      });
+      return {
+        web3,
+        fetchMock,
+        payer,
+        preparedInstructionCount,
+        preparedSourceAta,
+        result,
+      };
+    } catch (error) {
+      return {
+        web3,
+        fetchMock,
+        payer,
+        preparedInstructionCount,
+        preparedSourceAta,
+        error,
+      };
+    }
+  }
+
+  async function expectRefusal(
+    build: (web3: Web3, original: WalletTx, payer: PayerKeypair) => WalletTx
+  ): Promise<AttemptOutcome> {
+    const outcome = await attempt(build);
+    expect(outcome.result).toBeUndefined();
+    expect(outcome.error).toBeInstanceOf(WalletModifiedTransactionError);
+    expect((outcome.error as WalletModifiedTransactionError).code).toBe(
+      "WALLET_MODIFIED_TRANSACTION"
+    );
+    // The refusal is proven pre-send: no broadcast, no payment endpoint.
+    expectNoPaymentTraffic(outcome.fetchMock);
+    // The repeat-purchase shape really is the ONE-instruction message.
+    expect(outcome.preparedInstructionCount).toBe(1);
+    return outcome;
+  }
+
+  it("R1: the unchanged one-instruction payment (settlement ATA exists) is accepted and signed as prepared", async () => {
+    const outcome = await attempt((web3, original, payer) =>
+      rebuild(web3, original, payer)
+    );
+
+    expect(outcome.error).toBeUndefined();
+    // STRUCTURAL PRECONDITION: this is the repeat-purchase shape — no
+    // ATA-create, exactly ONE prepared instruction.
+    expect(outcome.preparedInstructionCount).toBe(1);
+    expect(outcome.preparedSourceAta).not.toBe("");
+
+    const signed = decodeSigned(
+      outcome.web3,
+      outcome.result!.signedTransactionBase64
+    );
+    expect(signed.instructions).toHaveLength(1);
+    expect(signed.instructions[0]!.programId.toBase58()).toBe(TOKEN_PROGRAM);
+    expect(
+      decodeTransferAmount(signed.instructions[0] as unknown as InstructionView)
+    ).toBe(1_000_000n);
+    // Canonical destination: the settlement wallet's USDC ATA.
+    expect(
+      signed.instructions[0]!.keys[1]!.pubkey.toBase58()
+    ).toBe(SETTLEMENT_USDC_ATA);
+    expect(signed.verifySignatures()).toBe(true);
+    expectNoPaymentTraffic(outcome.fetchMock);
+  });
+
+  it("R2: the repeat purchase plus Phantom's documented fee pair is accepted — the fee pair is the ONLY delta", async () => {
+    const outcome = await attempt((web3, original, payer) =>
+      rebuild(web3, original, payer, {
+        before: [
+          web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+          web3.ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 5_000,
+          }),
+        ],
+      })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.preparedInstructionCount).toBe(1);
+    const signed = decodeSigned(
+      outcome.web3,
+      outcome.result!.signedTransactionBase64
+    );
+    expect(signed.instructions).toHaveLength(3);
+    expect(signed.instructions[0]!.programId.toBase58()).toBe(
+      COMPUTE_BUDGET_PROGRAM
+    );
+    expect(signed.instructions[1]!.programId.toBase58()).toBe(
+      COMPUTE_BUDGET_PROGRAM
+    );
+    expect(signed.instructions[2]!.programId.toBase58()).toBe(TOKEN_PROGRAM);
+    expect(
+      decodeTransferAmount(signed.instructions[2] as unknown as InstructionView)
+    ).toBe(1_000_000n);
+    const keys = signed.instructions[2]!.keys.map((key) =>
+      key.pubkey.toBase58()
+    );
+    expect(keys[0]).toBe(outcome.preparedSourceAta);
+    expect(keys[1]).toBe(SETTLEMENT_USDC_ATA);
+    expect(signed.verifySignatures()).toBe(true);
+  });
+
+  it("R3: the repeat purchase plus Phantom's Lighthouse assertion pair alone is accepted", async () => {
+    const outcome = await attempt((web3, original, payer) => {
+      const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+      const sourceAta = new web3.PublicKey(sourceAtaOf(original));
+      return rebuild(web3, original, payer, {
+        after: [
+          new web3.TransactionInstruction({
+            programId: lighthouse,
+            keys: [{ pubkey: payer.publicKey, isSigner: false, isWritable: false }],
+            data: PHANTOM_INFO_DATA,
+          }),
+          new web3.TransactionInstruction({
+            programId: lighthouse,
+            keys: [{ pubkey: sourceAta, isSigner: false, isWritable: false }],
+            data: PHANTOM_TOKEN_DATA,
+          }),
+        ],
+      });
+    });
+
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.preparedInstructionCount).toBe(1);
+    const signed = decodeSigned(
+      outcome.web3,
+      outcome.result!.signedTransactionBase64
+    );
+    expect(signed.instructions).toHaveLength(3);
+    expect(signed.instructions.map((i) => i.programId.toBase58())).toEqual([
+      TOKEN_PROGRAM,
+      LIGHTHOUSE_PROGRAM,
+      LIGHTHOUSE_PROGRAM,
+    ]);
+    expect(signed.verifySignatures()).toBe(true);
+  });
+
+  it("R4: the repeat purchase plus the fee pair AND the Lighthouse pair is accepted (5 instructions total)", async () => {
+    const outcome = await attempt((web3, original, payer) => {
+      const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+      const sourceAta = new web3.PublicKey(sourceAtaOf(original));
+      return rebuild(web3, original, payer, {
+        before: [
+          web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+          web3.ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 5_000,
+          }),
+        ],
+        after: [
+          new web3.TransactionInstruction({
+            programId: lighthouse,
+            keys: [{ pubkey: payer.publicKey, isSigner: false, isWritable: false }],
+            data: PHANTOM_INFO_DATA,
+          }),
+          new web3.TransactionInstruction({
+            programId: lighthouse,
+            keys: [{ pubkey: sourceAta, isSigner: false, isWritable: false }],
+            data: PHANTOM_TOKEN_DATA,
+          }),
+        ],
+      });
+    });
+
+    expect(outcome.error).toBeUndefined();
+    const signed = decodeSigned(
+      outcome.web3,
+      outcome.result!.signedTransactionBase64
+    );
+    expect(signed.instructions).toHaveLength(5);
+    expect(signed.instructions.map((i) => i.programId.toBase58())).toEqual([
+      COMPUTE_BUDGET_PROGRAM,
+      COMPUTE_BUDGET_PROGRAM,
+      TOKEN_PROGRAM,
+      LIGHTHOUSE_PROGRAM,
+      LIGHTHOUSE_PROGRAM,
+    ]);
+    expect(signed.verifySignatures()).toBe(true);
+  });
+
+  it("R5: a price-only injection is accepted on the repeat-purchase shape", async () => {
+    const outcome = await attempt((web3, original, payer) =>
+      rebuild(web3, original, payer, {
+        before: [
+          web3.ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 5_000,
+          }),
+        ],
+      })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const signed = decodeSigned(
+      outcome.web3,
+      outcome.result!.signedTransactionBase64
+    );
+    expect(signed.instructions).toHaveLength(2);
+    expect(
+      decodeComputeUnitPrice(signed.instructions[0] as unknown as InstructionView)
+    ).toBe(5_000n);
+  });
+
+  it("R6: a limit-only injection is accepted on the repeat-purchase shape", async () => {
+    const outcome = await attempt((web3, original, payer) =>
+      rebuild(web3, original, payer, {
+        before: [
+          web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        ],
+      })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const signed = decodeSigned(
+      outcome.web3,
+      outcome.result!.signedTransactionBase64
+    );
+    expect(signed.instructions).toHaveLength(2);
+    expect(
+      decodeComputeUnitLimit(signed.instructions[0] as unknown as InstructionView)
+    ).toBe(200_000);
+  });
+
+  it("R7: a refreshed blockhash on the repeat-purchase shape is refused before any broadcast", async () => {
+    await expectRefusal((web3, original, payer) =>
+      rebuild(web3, original, payer, { blockhash: OTHER_BLOCKHASH })
+    );
+  });
+
+  it("R8: an altered transfer amount on the repeat-purchase shape is refused before any broadcast", async () => {
+    await expectRefusal((web3, original, payer) =>
+      rebuild(web3, original, payer, {
+        patch: (instruction) => {
+          if (!isTransfer(instruction)) return instruction;
+          const data = Buffer.from(instruction.data);
+          data.writeBigUInt64LE(2_000_000n, 1);
+          return new web3.TransactionInstruction({
+            programId: instruction.programId,
+            keys: instruction.keys,
+            data,
+          });
+        },
+      })
+    );
+  });
+
+  it("R9: an altered destination token account on the repeat-purchase shape is refused before any broadcast", async () => {
+    await expectRefusal((web3, original, payer) => {
+      const alienAta = web3.Keypair.generate().publicKey;
+      return rebuild(web3, original, payer, {
+        patch: (instruction) => {
+          if (!isTransfer(instruction)) return instruction;
+          const keys = instruction.keys.map((key, index) =>
+            index === 1 ? { ...key, pubkey: alienAta } : key
+          );
+          return new web3.TransactionInstruction({
+            programId: instruction.programId,
+            keys,
+            data: instruction.data,
+          });
+        },
+      });
+    });
+  });
+
+  it("R10: an extra instruction on a program AETERNA never prepared is refused before any broadcast", async () => {
+    await expectRefusal((web3, original, payer) =>
+      rebuild(web3, original, payer, {
+        after: [
+          new web3.TransactionInstruction({
+            programId: web3.SystemProgram.programId,
+            keys: [],
+            data: Buffer.from([0]),
+          }),
+        ],
+      })
+    );
+  });
+
+  it("R11: a THIRD Lighthouse assertion on the repeat-purchase shape is refused before any broadcast", async () => {
+    await expectRefusal((web3, original, payer) => {
+      const lighthouse = new web3.PublicKey(LIGHTHOUSE_PROGRAM);
+      const sourceAta = new web3.PublicKey(sourceAtaOf(original));
+      const info = () =>
+        new web3.TransactionInstruction({
+          programId: lighthouse,
+          keys: [{ pubkey: payer.publicKey, isSigner: false, isWritable: false }],
+          data: PHANTOM_INFO_DATA,
+        });
+      return rebuild(web3, original, payer, {
+        after: [
+          info(),
+          new web3.TransactionInstruction({
+            programId: lighthouse,
+            keys: [{ pubkey: sourceAta, isSigner: false, isWritable: false }],
+            data: PHANTOM_TOKEN_DATA,
+          }),
+          info(),
+        ],
+      });
+    });
+  });
+
+  it("R12: a different fee payer is refused BEFORE the message-identity guard and never reaches a payment endpoint", async () => {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installExistingAtaFetch();
+    const payer = web3.Keypair.generate();
+    const alien = web3.Keypair.generate();
+    let thrown: unknown;
+
+    try {
+      await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) => {
+          const original = transaction as WalletTx;
+          const modified = new web3.Transaction().add(
+            ...original.instructions
+          );
+          modified.feePayer = alien.publicKey;
+          modified.recentBlockhash = original.recentBlockhash!;
+          modified.sign(payer, alien);
+          return web3.Transaction.from(modified.serialize());
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    // A swapped fee payer forces a SECOND signature slot, so the payment
+    // path refuses on the signature contract before the guard ever runs.
+    // The guard's payer branch is therefore not reachable from this entry
+    // point — documented here instead of asserted through a fake message.
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain("not fully signed");
+    expect(thrown).not.toBeInstanceOf(WalletModifiedTransactionError);
+    expectNoPaymentTraffic(fetchMock);
   });
 });

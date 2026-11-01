@@ -272,3 +272,77 @@ html {
   }
 
 }
+/* ============================================================= */
+/* Consent link — restrained gold light sweep (R9-A49, geometry   */
+/* corrected in R9-A50).                                         */
+/*                                                               */
+/* GEOMETRY (why the 200% version left the last letters lit):     */
+/* with `background-size: 200%` the resting position 0% shows     */
+/* the gradient's first half, whose bright band (36–64%, peak at  */
+/* 50%) sits exactly on the RIGHT EDGE of the text — the final    */
+/* letters stayed illuminated during the pause.                   */
+/*                                                               */
+/* FIX: the image is 300% wide and the band is narrow (38–62%,    */
+/* peak 50%). The visible window is one third of the image:       */
+/*   • position 100% -> window shows 66.7–100% (band is entirely  */
+/*     LEFT of the text) — start of the sweep;                    */
+/*   • position 0%   -> window shows 0–33.3% (band is entirely    */
+/*     RIGHT of the text) — REST: the whole link is uniform gold. */
+/* The band therefore enters, crosses, and fully exits the text;  */
+/* nothing remains lit during the 2.5 s pause.                    */
+/*                                                               */
+/* Cycle 4 s: linear travel 1.5 s (37.5%), rest 2.5 s. CSS-only:  */
+/* no timers, no library, no layout impact (gradient clipped to   */
+/* the text). Reduced motion disables it entirely.                */
+/* ============================================================= */
+
+@keyframes aeterna-consent-sweep {
+  0% {
+    /* band parked just LEFT of the text (fully outside the glyphs) */
+    background-position: 100% 0;
+  }
+  37.5% {
+    /* 1.5 s: the band has fully passed beyond the right edge */
+    background-position: 0% 0;
+  }
+  100% {
+    /* uniform gold rest until the next cycle restarts at 0% */
+    background-position: 0% 0;
+  }
+}
+
+@layer components {
+
+  @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+
+    .aeterna-consent-sweep {
+      background-image: linear-gradient(
+        90deg,
+        #fcd34d 0%,
+        #fcd34d 38%,
+        #fff6cf 50%,
+        #fcd34d 62%,
+        #fcd34d 100%
+      );
+      background-size: 300% 100%;
+      background-repeat: no-repeat;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: aeterna-consent-sweep 4s linear infinite;
+    }
+
+  }
+
+}
+
+/* Users who ask for less motion get the static gold link. */
+@media (prefers-reduced-motion: reduce) {
+
+  .aeterna-consent-sweep {
+    animation: none !important;
+    background-image: none !important;
+    -webkit-text-fill-color: currentColor !important;
+  }
+
+}

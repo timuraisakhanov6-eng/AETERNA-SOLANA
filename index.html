@@ -64,62 +64,15 @@ name="twitter:image"
 content="https://aeterna-solana.pages.dev/og/aeterna-og-1200x630.png"
 />
 
-<!-- ===== EMERGENCY WATCHDOG (Spec §25) ===== -->
-
-<script>
-(function () {
-
-  if (!window.location.pathname.startsWith("/capsule/"))
-    return;
-
-  var TIMEOUT_MS = 8000;
-
-  var timer = setTimeout(function () {
-
-    var hash =
-      window.location.hash;
-
-    /**
-     * Fragment presence guard.
-     *
-     * Watchdog transports capability fragments
-     * transparently but MUST NOT redirect
-     * empty or missing fragments.
-     */
-
-    if (
-      typeof hash !== "string" ||
-      hash.length < 2
-    ) {
-      return;
-    }
-
-    var capsuleId =
-      window.location.pathname
-        .split("/capsule/")[1] || "";
-
-    /* strict capsuleId validation */
-
-    if (!/^[a-f0-9]{64}$/.test(capsuleId))
-      return;
-
-    window.location.replace(
-      "/emergency.html?capsuleId=" +
-      encodeURIComponent(capsuleId) +
-      hash
-    );
-
-  }, TIMEOUT_MS);
-
-  window.addEventListener(
-    "aeterna:ready",
-    function () {
-      clearTimeout(timer);
-    }
-  );
-
-})();
-</script>
+<!-- ===== BOOT RECOVERY SUPERVISOR (R9-A65) ===== -->
+<!--
+  Replaces the former 8 s automatic redirect to /emergency.html.
+  This classic (non-module) script runs even when the SPA entry chunk
+  fails: it detects a real startup failure, retries at most twice, and
+  otherwise shows an in-page recovery panel at the SAME capsule URL.
+  It never navigates on its own.
+-->
+<script defer src="/boot-recovery.js"></script>
 
 </head>
 

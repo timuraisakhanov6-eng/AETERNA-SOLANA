@@ -1,10 +1,10 @@
 /**
  * AETERNA: MANIFEST SCHEMA DEFINITIONS (v1.2 CANONICAL TYPES)
  *
- * Manifest — публичная, неизменяемая часть капсулы времени.
- * Хранится в Arweave / Irys. Доступна любому человеку по ID.
+ * The Manifest is the public, immutable part of a time capsule.
+ * Stored on Arweave / Irys. Accessible to anyone by ID.
  *
- * ⚠️ НЕ содержит секретов, ключей или расшифрованных данных.
+ * ⚠️ Contains NO secrets, keys, or decrypted data.
  *
  * Protocol guarantees:
  * - version pinned

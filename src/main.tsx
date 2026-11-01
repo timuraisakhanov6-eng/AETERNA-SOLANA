@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
+import AppMountedSignal from "@/components/system/AppMountedSignal";
 import { CapsuleProvider } from "@/context/CapsuleContext";
 import { CreatorIdentityProvider, CreatorCreditProvider } from "@/context/CreatorRuntimeContext";
 import { LandingPaymentGateProvider } from "@/context/LandingPaymentGateContext";
@@ -44,6 +45,7 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <BrowserRouter>
+    <AppMountedSignal />
     <AETERNAWalletProvider>
       <CapsuleProvider>
         <CreatorIdentityProvider>

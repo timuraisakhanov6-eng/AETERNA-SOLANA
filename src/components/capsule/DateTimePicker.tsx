@@ -75,7 +75,7 @@ export function DateTimePicker({
 
   const isComplete = Boolean(date);
 
-  // вынесено чтобы не дублировать ?? (() => {}) дважды
+  // hoisted so `?? (() => {})` is not duplicated twice
   const handleTimeChange = onTimeChange ?? (() => {});
 
   /* ========================= FORMATTED DISPLAY ========================= */

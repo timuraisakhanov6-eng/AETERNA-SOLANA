@@ -233,13 +233,10 @@ const tree = () =>
     )
   );
 
+// R9-A44: the /create Protocol Rules checkbox was removed; the legal consent
+// now lives in the Home gate's $1 step. Nothing to accept on /create.
 async function acceptProtocol() {
-  fireEvent.click(screen.getByRole("checkbox"));
-  await waitFor(() => {
-    expect(
-      (screen.getByRole("checkbox") as HTMLElement).dataset["state"]
-    ).toBe("checked");
-  });
+  /* intentionally empty — see R9-A44 */
 }
 
 describe("PATCH-2M service-payment result batch race (Home gate architecture)", () => {

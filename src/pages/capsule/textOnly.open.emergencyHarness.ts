@@ -40,10 +40,24 @@ vi.mock("@/shared/time/getTrustedTime", () => ({
   getTrustedTime: hoisted.getTrustedTime,
 }));
 
-vi.mock("@/shared/heartbeat/resolveEffectiveOpenAt", () => ({
-  resolveEffectiveOpenAt: ({ manifestOpenAt }: { manifestOpenAt: number }) =>
-    manifestOpenAt,
-}));
+/**
+ * Partial mock: the harness only needs the resolver pinned to manifestOpenAt
+ * (no heartbeat drift). R9-A53 added a second consumer of this module
+ * (resolveConfirmAvailability reads THIRTY_DAYS_MS), so the real exports are
+ * spread back in instead of being dropped by the stub.
+ */
+vi.mock("@/shared/heartbeat/resolveEffectiveOpenAt", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/shared/heartbeat/resolveEffectiveOpenAt")
+    >();
+
+  return {
+    ...actual,
+    resolveEffectiveOpenAt: ({ manifestOpenAt }: { manifestOpenAt: number }) =>
+      manifestOpenAt,
+  };
+});
 
 vi.mock("@/lib/capsule/loadHeartbeatRecord", () => ({
   loadHeartbeatRecord: async () => null,
