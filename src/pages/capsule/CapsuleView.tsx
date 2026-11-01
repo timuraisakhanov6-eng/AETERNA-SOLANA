@@ -1,6 +1,7 @@
 import type { OpenAtUtc } from "@/types/manifest";
 import { useState, useMemo, useEffect, useRef, useId } from "react";
 import { motion } from "framer-motion";
+import { BrandMark } from "@/components/BrandMark";
 import {
   ShieldCheck as ShieldIcon,
   Lock as LockIcon,
@@ -540,7 +541,7 @@ export default function CapsuleView({ state, className }: Props) {
           >
             <div className="flex flex-col items-center text-center">
 
-              {/* Capsule glyph — heartbeat pulse */}
+              {/* AETERNA brand mark — heartbeat pulse (R9-A83) */}
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -550,8 +551,7 @@ export default function CapsuleView({ state, className }: Props) {
                 {/* Glow ring */}
                 <motion.div
                   aria-hidden
-                  className="absolute rounded-full bg-amber-400/25 blur-md"
-                  style={{ width: "54px", height: "80px" }}
+                  className="absolute inset-0 rounded-full bg-amber-400/25 blur-md"
                   animate={{
                     opacity: [0, 0.85, 0.12, 0.5, 0, 0, 0, 0, 0, 0],
                     scale:   [0.8, 1.1,  1.3,  1.1, 1.6, 1.6, 1.6, 1.6, 1.6, 0.8],
@@ -564,34 +564,10 @@ export default function CapsuleView({ state, className }: Props) {
                   }}
                 />
 
-                {/* Pill shape */}
+                {/* Circular brand mark */}
                 <motion.div
-                  className="
-                    relative z-10
-                    w-8 h-14
-                    sm:w-9 sm:h-16
-                    xl:w-10 xl:h-[72px]
-                    rounded-full
-                    border border-amber-400/80
-                    bg-gradient-to-b from-amber-400/10 to-transparent
-                    overflow-hidden
-                    will-change-transform
-                  "
-                  animate={{
-                    scale:       [1, 1.18, 0.97, 1.09, 1, 1, 1, 1, 1, 1],
-                    borderColor: [
-                      "rgba(255,180,90,0.8)",
-                      "rgba(255,190,110,1)",
-                      "rgba(255,180,90,0.85)",
-                      "rgba(255,185,100,0.95)",
-                      "rgba(255,180,90,0.8)",
-                      "rgba(255,180,90,0.8)",
-                      "rgba(255,180,90,0.8)",
-                      "rgba(255,180,90,0.8)",
-                      "rgba(255,180,90,0.8)",
-                      "rgba(255,180,90,0.8)",
-                    ],
-                  }}
+                  className="relative z-10 w-14 h-14 sm:w-16 sm:h-16 xl:w-[72px] xl:h-[72px]"
+                  animate={{ scale: [1, 1.18, 0.97, 1.09, 1, 1, 1, 1, 1, 1] }}
                   transition={{
                     duration: 1.4,
                     repeat: Infinity,
@@ -599,8 +575,7 @@ export default function CapsuleView({ state, className }: Props) {
                     times: [0, 0.08, 0.16, 0.26, 0.38, 0.5, 0.6, 0.7, 0.85, 1],
                   }}
                 >
-                  <div className="absolute inset-x-2 top-3 h-px bg-amber-300/60" />
-                  <div className="absolute inset-x-0 top-1/2 h-px bg-amber-300/40" />
+                  <BrandMark className="w-full h-full" />
                 </motion.div>
               </motion.div>
 

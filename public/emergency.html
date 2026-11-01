@@ -107,35 +107,22 @@ body{
 }
 .pill-glow{
   position:absolute;
-  width:34px; height:52px;
+  width:52px; height:52px;
   border-radius:999px;
   background:rgba(251,191,36,0.5);
   filter:blur(10px);
   animation:glow-pulse 1.4s ease-out infinite;
 }
-.pill-shape{
+/* R9-A83: approved circular AETERNA brand mark (replaces the vertical pill). */
+.brand-mark{
   position:relative;
   z-index:1;
-  width:30px; height:52px;
-  border-radius:999px;
-  border:1px solid rgba(251,191,36,0.3);
-  background:linear-gradient(to bottom,rgba(251,191,36,0.05),transparent);
-  overflow:hidden;
-  animation:pill-pulse 1.4s ease-out infinite;
-}
-.pill-shape::before{
-  content:'';
-  position:absolute;
-  left:6px; right:6px; top:10px;
-  height:1px;
-  background:rgba(251,191,36,0.2);
-}
-.pill-shape::after{
-  content:'';
-  position:absolute;
-  left:0; right:0; top:50%;
-  height:1px;
-  background:rgba(251,191,36,0.12);
+  display:block;
+  width:52px; height:52px;
+  object-fit:contain;
+  user-select:none;
+  -webkit-user-drag:none;
+  animation:brand-pulse 1.4s ease-out infinite;
 }
 
 @keyframes glow-pulse{
@@ -146,13 +133,13 @@ body{
   40% { opacity:0; transform:scale(1.6); }
   100%{ opacity:0; transform:scale(0.8); }
 }
-@keyframes pill-pulse{
-  0%  { transform:scale(1); border-color:rgba(251,191,36,0.3); }
-  8%  { transform:scale(1.18); border-color:rgba(251,191,36,0.75); }
-  16% { transform:scale(0.97); border-color:rgba(251,191,36,0.4); }
-  26% { transform:scale(1.09); border-color:rgba(251,191,36,0.6); }
-  38% { transform:scale(1); border-color:rgba(251,191,36,0.3); }
-  100%{ transform:scale(1); border-color:rgba(251,191,36,0.3); }
+@keyframes brand-pulse{
+  0%  { transform:scale(1); }
+  8%  { transform:scale(1.18); }
+  16% { transform:scale(0.97); }
+  26% { transform:scale(1.09); }
+  38% { transform:scale(1); }
+  100%{ transform:scale(1); }
 }
 
 /* Sealed badge */
@@ -459,7 +446,7 @@ footer{
 
 /* ── REDUCED MOTION ── */
 @media(prefers-reduced-motion:reduce){
-  .pill-glow,.pill-shape,.sealed-badge,.opening-icon{ animation:none; }
+  .pill-glow,.brand-mark,.sealed-badge,.opening-icon{ animation:none; }
   @keyframes card-enter{ from{ opacity:0; } to{ opacity:1; } }
   @keyframes fade-up   { from{ opacity:0; } to{ opacity:1; } }
 }
@@ -532,10 +519,10 @@ body.is-opened footer{
 
     <div class="capsule-card">
 
-      <!-- Pill glyph -->
+      <!-- AETERNA brand mark (R9-A83) -->
       <div class="pill-wrap">
         <div class="pill-glow"></div>
-        <div class="pill-shape"></div>
+        <img class="brand-mark" src="/assets/aeterna-brand-mark.png" alt="AETERNA" width="512" height="512" draggable="false" />
       </div>
 
       <!-- SEALED badge -->

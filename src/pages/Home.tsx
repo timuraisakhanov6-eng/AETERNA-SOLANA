@@ -1,5 +1,6 @@
 import { motion } from "framer-motion"
 import CreateAccessGate from "@/components/access/CreateAccessGate"
+import { BrandMark } from "@/components/BrandMark"
 
 const Home = () => {
   return (
@@ -60,38 +61,15 @@ const Home = () => {
               transition={{ duration: 0.8, delay: 0.2 }}
               className="mb-6 xl:mb-8"
             >
-              <div className="relative w-8 sm:w-9 xl:w-10">
+              <div className="relative w-14 h-14 sm:w-16 sm:h-16 xl:w-[72px] xl:h-[72px]">
                 {/* Soft glow layer, kept separate so the icon itself stays crisp */}
                 <motion.div
                   animate={{ opacity: [0.35, 0.55, 0.35] }}
-                  transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }
-                  }
-                  className="
-                    absolute inset-0
-                    rounded-full
-                    blur-md
-                    bg-amber-400/25
-                  "
+                  transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+                  className="absolute inset-0 rounded-full blur-md bg-amber-400/25"
                 />
-                {/* Crisp icon */}
-                <div
-                  className="
-                    relative
-                    w-8 h-14
-                    sm:w-9 sm:h-16
-                    xl:w-10 xl:h-18
-                    rounded-full
-                    border
-                    border-amber-400/80
-                    bg-gradient-to-b
-                    from-amber-400/10
-                    to-transparent
-                    overflow-hidden
-                  "
-                >
-                  <div className="absolute inset-x-2 top-3 h-px bg-amber-300/60" />
-                  <div className="absolute inset-x-0 top-1/2 h-px bg-amber-300/40" />
-                </div>
+                {/* Approved circular AETERNA brand mark (R9-A83) */}
+                <BrandMark className="relative w-full h-full" />
               </div>
             </motion.div>
 
