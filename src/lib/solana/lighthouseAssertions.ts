@@ -30,12 +30,19 @@
  *       byte-for-byte by the caller.
  *
  *   TOKEN (discriminator 10) on the transfer's source ATA:
- *     - 27 bytes:
+ *     - 27-byte form:
  *         Amount(X) >= GreaterThanOrEqual
  *         Delegate(None) == Equal
  *         DelegatedAmount(0) <= LessThanOrEqual
  *         TokenAccountOwnerIsDerived
  *       X is ANY u64 (the same balance-derived field).
+ *     - 17-byte form (observed on Production; Phantom omits its OWN Amount
+ *       assertion here — this is the wallet's balance protection, never
+ *       AETERNA's payment-amount control):
+ *         Delegate(None) == Equal
+ *         DelegatedAmount(0) <= LessThanOrEqual
+ *         TokenAccountOwnerIsDerived
+ *       Every field is fixed; the form carries no balance-derived u64.
  *
  * Refused, always: another discriminator or log level, a non-canonical
  * assertion count, an unknown / duplicated / reordered assertion, an
@@ -57,7 +64,10 @@ const ACCEPTED_LOG_LEVEL = 4
 
 const LEGACY_INFO_LENGTH = 16
 const CURRENT_INFO_LENGTH = 26
-const TOKEN_LENGTH = 27
+/** Historical 27-byte TOKEN form: Amount, Delegate, DelegatedAmount, derived. */
+const TOKEN_WITH_AMOUNT_LENGTH = 27
+/** Observed 17-byte TOKEN form: the same, with Phantom's Amount assertion omitted. */
+const TOKEN_WITHOUT_AMOUNT_LENGTH = 17
 
 const INFO_TAG_LAMPORTS = 0
 const INFO_TAG_DATA_LENGTH = 1
@@ -223,19 +233,32 @@ function infoShapeIsAccepted(assertions: readonly InfoAssertion[]): boolean {
   return index === assertions.length
 }
 
+/**
+ * Accepts the 4-assertion (Amount-bearing) form and the 3-assertion form
+ * observed on Production, which is the same triplet with Phantom's own Amount
+ * assertion omitted. The omitted assertion is the WALLET's balance protection,
+ * not AETERNA's payment-amount control: the SPL Transfer is still compared
+ * byte-for-byte by the caller, so this shape changes no payment semantics.
+ */
 function tokenShapeIsAccepted(assertions: readonly TokenAssertion[]): boolean {
-  if (assertions.length !== 4) return false
-  const [amount, delegate, delegatedAmount, ownerIsDerived] = assertions
-  if (amount === undefined || amount.kind !== "amount") return false
-  if (amount.operator !== OPERATOR_GREATER_THAN_OR_EQUAL) return false
+  if (assertions.length !== 4 && assertions.length !== 3) return false
+  let index = 0
+  if (assertions.length === 4) {
+    const amount = assertions[index++]
+    if (amount === undefined || amount.kind !== "amount") return false
+    if (amount.operator !== OPERATOR_GREATER_THAN_OR_EQUAL) return false
+  }
+  const delegate = assertions[index++]
   if (delegate === undefined || delegate.kind !== "delegate") return false
   if (delegate.hasOwner) return false
   if (delegate.operator !== OPERATOR_EQUAL) return false
+  const delegatedAmount = assertions[index++]
   if (delegatedAmount === undefined || delegatedAmount.kind !== "delegatedAmount") return false
   if (delegatedAmount.value !== 0n) return false
   if (delegatedAmount.operator !== OPERATOR_LESS_THAN_OR_EQUAL) return false
+  const ownerIsDerived = assertions[index++]
   if (ownerIsDerived === undefined || ownerIsDerived.kind !== "ownerIsDerived") return false
-  return true
+  return index === assertions.length
 }
 
 /**
@@ -260,19 +283,31 @@ export function isAcceptedLighthouseInfoData(data: Uint8Array): boolean {
 }
 
 /**
- * `true` only for the exact 27-byte TOKEN structure, with the Amount u64 as
- * its single variable field.
+ * `true` only for one of the two accepted TOKEN structures: the historical
+ * 27-byte form with the Amount u64 as its single variable field, or the
+ * 17-byte form observed on Production, whose fields are all fixed.
  */
 export function isAcceptedLighthouseTokenData(data: Uint8Array): boolean {
   try {
     if (!(data instanceof Uint8Array)) return false
-    if (data.length !== TOKEN_LENGTH) return false
+    /**
+     * The LENGTH decides the only permitted assertion count; the count in the
+     * payload must then match it exactly. Two forms are accepted, nothing else:
+     * 27 bytes with Amount, and the observed 17 bytes without it.
+     */
+    const expectedCount =
+      data.length === TOKEN_WITH_AMOUNT_LENGTH
+        ? 4n
+        : data.length === TOKEN_WITHOUT_AMOUNT_LENGTH
+          ? 3n
+          : null
+    if (expectedCount === null) return false
     const cursor: Cursor = { bytes: data, offset: 0 }
     if (readU8(cursor) !== TOKEN_DISCRIMINATOR) return false
     if (readU8(cursor) !== ACCEPTED_LOG_LEVEL) return false
-    if (readCanonicalLeb128U64(cursor) !== 4n) return false
+    if (readCanonicalLeb128U64(cursor) !== expectedCount) return false
     const assertions: TokenAssertion[] = []
-    for (let index = 0; index < 4; index++) {
+    for (let index = 0; index < Number(expectedCount); index++) {
       const assertion = readTokenAssertion(cursor)
       if (assertion === null) return false
       assertions.push(assertion)

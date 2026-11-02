@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   sendSolanaUSDCPayment,
   signSolanaUSDCPayment,
@@ -1931,6 +1932,128 @@ describe("signSolanaUSDCPayment — Phantom Lighthouse assertion pair", () => {
 
     expect(outcome.error).toBeUndefined();
     expect(outcome.result!.signature.length).toBeGreaterThan(0);
+  });
+
+  /* ===================================================================
+   * R9-A84.5 - the 17-byte TOKEN form observed on Production.
+   *
+   * Phantom omitted its own Amount assertion; every remaining field is
+   * fixed. Payload and digest come from R9-A84-4/EVIDENCE-GATE.md.
+   * ================================================================= */
+
+  const OBSERVED_17_TOKEN_HEX = "0a04030300000600000000000000000508";
+  const OBSERVED_17_TOKEN_SHA256 =
+    "81a7d1806a75a5572fa5a1492decf48b8e98531f955c22767ae78bb9b4380015";
+
+  function observedToken17(): Buffer {
+    return Buffer.from(OBSERVED_17_TOKEN_HEX, "hex");
+  }
+
+  /** Repeat purchase: the settlement ATA exists, so ONE prepared instruction. */
+  async function attemptExistingAta(
+    build: (
+      web3: Web3,
+      original: WalletTx,
+      payer: import("@solana/web3.js").Keypair
+    ) => WalletTx
+  ) {
+    const web3 = await import("@solana/web3.js");
+    const fetchMock = installExistingAtaFetch();
+    const payer = web3.Keypair.generate();
+    try {
+      const result = await signSolanaUSDCPayment({
+        publicKey: payer.publicKey.toBase58(),
+        signTransaction: async (transaction: unknown) =>
+          build(web3, transaction as WalletTx, payer),
+      });
+      return { web3, fetchMock, result };
+    } catch (error) {
+      return { web3, fetchMock, error };
+    }
+  }
+
+  it("L17-1: the captured payload is exactly the production bytes", () => {
+    const data = observedToken17();
+    expect(data).toHaveLength(17);
+    expect(createHash("sha256").update(data).digest("hex")).toBe(
+      OBSERVED_17_TOKEN_SHA256
+    );
+  });
+
+  it("L17-2: accepts fee pair + payment + captured INFO + 17-byte TOKEN (one prepared instruction)", async () => {
+    const outcome = await attemptExistingAta((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        infoData: currentInfoData(8_729_000n),
+        tokenData: observedToken17(),
+        beforePayment: [
+          web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+          web3.ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 375_000,
+          }),
+        ],
+      })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const broadcast = outcome.web3.Transaction.from(
+      Uint8Array.from(
+        Buffer.from(outcome.result!.signedTransactionBase64, "base64")
+      )
+    );
+    // 2 fee instructions + the 1 prepared transfer + INFO + TOKEN
+    expect(broadcast.instructions).toHaveLength(5);
+    const transfer = broadcast.instructions[2]!;
+    expect(transfer.programId.toBase58()).toBe(TOKEN_PROGRAM);
+    expect(transfer.data[0]).toBe(3);
+    expect(Buffer.from(transfer.data).readBigUInt64LE(1)).toBe(1_000_000n);
+    expect(Buffer.from(broadcast.instructions[3]!.data)).toEqual(
+      currentInfoData(8_729_000n)
+    );
+    expect(Buffer.from(broadcast.instructions[4]!.data)).toEqual(
+      observedToken17()
+    );
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("L17-3: accepts the 17-byte TOKEN with the ATA-create flow (two prepared instructions)", async () => {
+    const outcome = await attempt((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        infoData: currentInfoData(8_729_000n),
+        tokenData: observedToken17(),
+      })
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const broadcast = outcome.web3.Transaction.from(
+      Uint8Array.from(
+        Buffer.from(outcome.result!.signedTransactionBase64, "base64")
+      )
+    );
+    // ATA-create + transfer + INFO + TOKEN
+    expect(broadcast.instructions).toHaveLength(4);
+    expect(isAtaCreateInstruction(broadcast.instructions[0]!)).toBe(true);
+    expect(isTransferInstruction(broadcast.instructions[1]!)).toBe(true);
+    expect(Buffer.from(broadcast.instructions[3]!.data)).toEqual(
+      observedToken17()
+    );
+    expect(broadcast.verifySignatures()).toBe(true);
+  });
+
+  it("L17-4: refuses the 17-byte TOKEN when it targets a different account", async () => {
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, {
+        tokenData: observedToken17(),
+        tokenTarget: web3.Keypair.generate().publicKey,
+      })
+    );
+  });
+
+  it("L17-5: refuses a single-byte mutation of the 17-byte TOKEN", async () => {
+    const mutated = Buffer.from(observedToken17());
+    mutated[15] = 4; // DelegatedAmount operator '<=' -> '>='
+    await expectRefusal((web3, original, payer) =>
+      returnWithLighthouse(web3, original, payer, { tokenData: mutated })
+    );
   });
 
   it("L2: a single info assertion is refused", async () => {

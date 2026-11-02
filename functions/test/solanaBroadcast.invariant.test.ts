@@ -51,6 +51,23 @@ const BLOCKHASH = "11111111111111111111111111111111";
 /** A second, equally valid 32-byte blockhash (different message). */
 const ALT_BLOCKHASH = base58Encode(new Uint8Array(32).fill(2));
 
+/** Lighthouse v2 assertion program - a read-only, unsigned program key. */
+const LIGHTHOUSE_PROGRAM_ID = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
+
+/**
+ * R9-A84.5 - the exact captured Production Lighthouse payloads, proven by
+ * SHA-256 in the R9-A84-4 evidence gate. The TOKEN form is the 17-byte one
+ * Phantom returned: its OWN Amount assertion omitted, every field fixed.
+ */
+const OBSERVED_INFO_26 = Buffer.from(
+  "06040300a8318500000000000403000001000000000000000000",
+  "hex"
+);
+const OBSERVED_TOKEN_17 = Buffer.from(
+  "0a04030300000600000000000000000508",
+  "hex"
+);
+
 /** The canonical mainnet-beta genesis hash the endpoint must observe. */
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 /** A different chain's genesis hash (stand-in for devnet/testnet). */
@@ -118,12 +135,27 @@ function canonicalSignedTransaction(options: {
   mintKey?: PublicKey;
   /** Different message => a genuinely different signature. */
   blockhash?: string;
+  /** R9-A84.5: prepend the canonical wallet fee pair (Phantom priority fees). */
+  feePair?: boolean;
+  /** R9-A84.5: append the observed Phantom Lighthouse pair after the payment. */
+  lighthouse?: {
+    info?: Uint8Array;
+    token?: Uint8Array;
+    /** Send the TOKEN assertion here instead of the prepared source ATA. */
+    tokenTarget?: PublicKey;
+  };
 } = {}): { base64: string; signature: string } {
   const amount = options.amount ?? 1_000_000n;
   const destination = options.destination ?? destinationAta;
   const mintKey = options.mintKey ?? mint;
 
   const tx = new Transaction();
+  if (options.feePair) {
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 375_000 })
+    );
+  }
   if (options.includeAtaCreate ?? true) {
     tx.add(
       createAssociatedTokenAccountInstruction(
@@ -145,6 +177,28 @@ function canonicalSignedTransaction(options: {
       TOKEN_PROGRAM_ID
     )
   );
+  if (options.lighthouse) {
+    tx.add(
+      new TransactionInstruction({
+        programId: new PublicKey(LIGHTHOUSE_PROGRAM_ID),
+        keys: [{ pubkey: payer.publicKey, isSigner: false, isWritable: false }],
+        data: Buffer.from(options.lighthouse.info ?? OBSERVED_INFO_26),
+      })
+    );
+    tx.add(
+      new TransactionInstruction({
+        programId: new PublicKey(LIGHTHOUSE_PROGRAM_ID),
+        keys: [
+          {
+            pubkey: options.lighthouse.tokenTarget ?? sourceAta,
+            isSigner: false,
+            isWritable: false,
+          },
+        ],
+        data: Buffer.from(options.lighthouse.token ?? OBSERVED_TOKEN_17),
+      })
+    );
+  }
   tx.feePayer = payer.publicKey;
   tx.recentBlockhash = options.blockhash ?? BLOCKHASH;
   tx.sign(payer);
@@ -261,6 +315,65 @@ describe("strict broadcast — canonical acceptance", () => {
       signedTransaction: base64,
     });
     expect(res.status).toBe(200);
+  });
+
+  it("R9-A84.5: accepts the captured 26-byte INFO + 17-byte TOKEN pair with the fee pair", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64, signature } = canonicalSignedTransaction({
+      includeAtaCreate: false,
+      feePair: true,
+      lighthouse: {},
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as Record<string, unknown>;
+    expect(payload["signature"]).toBe(signature);
+    expect(rpcCalls.map(methodOf)).toEqual(["getGenesisHash", "sendTransaction"]);
+    const params = (rpcCalls[1]!.body as Record<string, unknown>)[
+      "params"
+    ] as unknown[];
+    expect(params[0]).toBe(base64);
+  });
+
+  it("R9-A84.5: accepts the pair together with the ATA-create flow", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64 } = canonicalSignedTransaction({
+      includeAtaCreate: true,
+      feePair: true,
+      lighthouse: {},
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("R9-A84.5: rejects the 17-byte TOKEN when it targets a different account", async () => {
+    const env = buildEnv();
+    await reserveAttempt(env);
+    const { base64 } = canonicalSignedTransaction({
+      includeAtaCreate: false,
+      lighthouse: { tokenTarget: destinationAta },
+    });
+
+    const res = await post(env, {
+      paymentIntentId: INTENT,
+      creatorIdentityId: IDENTITY,
+      signedTransaction: base64,
+    });
+    expect(res.status).toBe(400);
+    expect(sendCalls()).toHaveLength(0);
   });
 
   it("ignores any client-supplied RPC URL (server configuration only)", async () => {
