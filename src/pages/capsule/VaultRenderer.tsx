@@ -1034,7 +1034,101 @@ function MediaItemV2Block({
     }
   };
 
+  /**
+   * R9-A85.2 — explicit download state for a `file` attachment.
+   *
+   * idle   → the control is available;
+   * busy   → one download is in flight (further clicks are ignored, so a
+   *          double click cannot start two);
+   * failed → the last attempt failed and the control offers a retry.
+   */
+  const [fileDownload, setFileDownload] =
+    useState<"idle" | "busy" | "failed">("idle");
+
+  /**
+   * Re-entrancy guard. State alone cannot carry this: two clicks dispatched in
+   * the same tick would both read the old value before React re-renders.
+   */
+  const fileDownloadBusyRef =
+    useRef(false);
+
+  /**
+   * Download an attachment ONLY because the user asked for it.
+   *
+   * The session is opened here and disposed in this function's own `finally`,
+   * deliberately NOT through `mediaSessionRef`: an unmount, a dependency
+   * change or a re-render must never be able to abort a download the user
+   * started, and equally must never keep one alive by accident.
+   */
+  const onDownloadFile = useCallback(
+    async () => {
+
+      if (fileDownloadBusyRef.current) return;
+
+      fileDownloadBusyRef.current = true;
+
+      setFileDownload("busy");
+
+      let session: MediaSession | null = null;
+
+      try {
+
+        const media: OpenableMediaItem =
+          resolveOpenableMedia(item, containerChunks);
+
+        session = await downloadFile({
+          capsuleId,
+          cryptoKey,
+          media,
+        });
+
+        await sessionToDownloadStream(
+          session,
+          media.size,
+          media.mimeType,
+          media.filename,
+        );
+
+        setFileDownload("idle");
+
+      } catch {
+
+        setFileDownload("failed");
+
+      } finally {
+
+        /**
+         * `sessionToDownloadStream` disposes the session in its own `finally`;
+         * this is a backstop so a failure between opening and streaming can
+         * never leak one. A throwing dispose() must not mask the outcome.
+         */
+        try {
+          session?.dispose();
+        } catch {
+          // ignored by design
+        }
+
+        fileDownloadBusyRef.current = false;
+
+      }
+
+    },
+    [capsuleId, cryptoKey, item, containerChunks],
+  );
+
   useEffect(() => {
+
+    /**
+     * R9-A85.2 — RENDERING NEVER DOWNLOADS AN ATTACHMENT.
+     *
+     * A `file` item has no inline preview, and the previous implementation
+     * answered that by streaming the whole decrypted file to disk from this
+     * effect — so opening or refreshing a capsule produced a download every
+     * time. Nothing is opened, read or written here now: the card renders
+     * metadata, and the bytes are fetched only by the explicit control, which
+     * owns and disposes its own session.
+     */
+    if (item.mediaType === "file") return;
 
     const chunks =
       item.chunks ?? [];
@@ -1150,33 +1244,8 @@ function MediaItemV2Block({
          * The legacy pointer-map path is untouched for items that have no
          * container entry, so a legacy capsule behaves exactly as before.
          */
-        const resolvedChunks =
-          (item.chunks ?? []).map((chunk) => {
-
-            /**
-             * Every logical chunk of this item MUST have a container
-             * position: the publication record is the media authority, so
-             * a chunk the record does not cover means the record does not
-             * describe this Vault — fail closed. There is NO legacy
-             * pointer-map fallback: Container V1 is the only model.
-             */
-            const resolved =
-              containerChunks?.get(chunk.chunkId);
-
-            if (!resolved) {
-              throw new Error(
-                "[AETERNA] Container publication does not cover this chunk"
-              );
-            }
-
-            return resolved;
-
-          });
-
-        const media: OpenableMediaItem = {
-          ...item,
-          chunks: resolvedChunks,
-        };
+        const media: OpenableMediaItem =
+          resolveOpenableMedia(item, containerChunks);
 
         const request = {
           capsuleId,
@@ -1278,28 +1347,12 @@ function MediaItemV2Block({
 
           case "file": {
 
-            const session =
-              await downloadFile(request);
-
-            if (!isCurrent()) {
-              try {
-                session.dispose();
-              } catch {
-                // best-effort
-              }
-              return;
-            }
-
-            mediaSessionRef.current =
-              session;
-
-            await sessionToDownloadStream(
-              session,
-              media.size,
-              media.mimeType,
-              media.filename,
-            );
-
+            /**
+             * Unreachable: `file` items return before any session is opened
+             * (see the top of this effect). Kept so the switch stays total and
+             * a future edit cannot silently fall through to `default`, which
+             * throws for an unsupported type.
+             */
             break;
 
           }
@@ -1509,6 +1562,24 @@ function MediaItemV2Block({
   }
 
 
+  /**
+   * R9-A85.2 — a file attachment has no inline preview, so it renders a
+   * metadata card with ONE explicit control. Placed before the loading/error
+   * branches: the card is this item type's terminal surface and does not
+   * depend on any load having been attempted.
+   */
+  if (item.mediaType === "file") {
+    return (
+      <FileAttachmentCard
+        filename={sanitizeFilename(item.filename)}
+        mimeType={item.mimeType}
+        size={item.size}
+        state={fileDownload}
+        onDownload={onDownloadFile}
+      />
+    );
+  }
+
   if (loading)
     return (
       <LoadingBlock
@@ -1519,7 +1590,12 @@ function MediaItemV2Block({
     );
 
 
-  if (error || !objectUrl || item.mediaType === "file")
+  /**
+   * Reached only for `image` items now: video/audio returned above and every
+   * `file` item renders the metadata card, so no media-shaped surface can be
+   * produced without a URL.
+   */
+  if (error || !objectUrl)
     return (
       <ErrorBlock
         filename={sanitizeFilename(item.filename)}
@@ -1622,6 +1698,107 @@ export async function openStreamableOrFallback(
     );
 
   }
+
+}
+
+
+/**
+ * Resolve the openable payload for one item.
+ *
+ * Every logical chunk MUST have a published container position: the
+ * publication record is the media authority, so a chunk the record does not
+ * cover means the record does not describe this Vault — fail closed. There is
+ * NO legacy pointer-map fallback: Container V1 is the only model.
+ *
+ * Shared by the preview loader and the explicit download so the two can never
+ * disagree about what an item refers to.
+ */
+function resolveOpenableMedia(
+  item: MediaItemV2,
+  containerChunks?:
+    | ReadonlyMap<string, PublishedChunkMetadata>
+    | null,
+): OpenableMediaItem {
+
+  const resolvedChunks =
+    (item.chunks ?? []).map((chunk) => {
+
+      const resolved =
+        containerChunks?.get(chunk.chunkId);
+
+      if (!resolved) {
+        throw new Error(
+          "[AETERNA] Container publication does not cover this chunk"
+        );
+      }
+
+      return resolved;
+
+    });
+
+  return {
+    ...item,
+    chunks: resolvedChunks,
+  };
+
+}
+
+
+/**
+ * R9-A85.2 — the terminal surface for an attachment with no inline preview.
+ *
+ * Shows what the item is (filename, MIME type, size) and exactly ONE action.
+ * Rendering it performs no I/O: the download begins only when the user
+ * activates the control.
+ */
+function FileAttachmentCard({
+  filename,
+  mimeType,
+  size,
+  state,
+  onDownload,
+}: {
+  filename: string;
+  mimeType?: string;
+  size?: number;
+  state: "idle" | "busy" | "failed";
+  onDownload: () => void;
+}) {
+
+  return (
+    <div className="space-y-2 text-sm">
+
+      <div className="font-medium break-all">
+        {filename}
+      </div>
+
+      <div className="text-muted-foreground">
+        {mimeType ?? "unknown type"}
+        {" · "}
+        {typeof size === "number"
+          ? `${size} bytes`
+          : "unknown size"}
+      </div>
+
+      <div className="text-muted-foreground">
+        No preview is available for this file type.
+      </div>
+
+      <button
+        type="button"
+        onClick={onDownload}
+        disabled={state === "busy"}
+        className="underline text-sm disabled:opacity-50"
+      >
+        {state === "busy"
+          ? "Downloading…"
+          : state === "failed"
+            ? "Download failed — retry"
+            : "Download file"}
+      </button>
+
+    </div>
+  );
 
 }
 

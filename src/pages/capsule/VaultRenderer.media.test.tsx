@@ -1227,3 +1227,217 @@ describe("A/V src ownership — identical URL is never re-written", () => {
     expect(msRevoked).toContain(attached);
   });
 });
+
+describe("R9-A85.2 — file attachments download ONLY on explicit request", () => {
+  const ZIP_NAME =
+    "AETERNA_Model_02_Security_and_Evolution_Plan.zip";
+
+  function zipItem(
+    overrides: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    return {
+      type: "media",
+      mediaType: "file",
+      filename: ZIP_NAME,
+      mimeType: "application/x-zip-compressed",
+      size: 42596,
+      chunks: [],
+      ...overrides,
+    };
+  }
+
+  /** Counts every object URL the renderer creates. */
+  function countingUrl() {
+    const create = vi.fn(() => "blob:download");
+    const revoke = vi.fn();
+    vi.stubGlobal("URL", {
+      createObjectURL: create,
+      revokeObjectURL: revoke,
+    });
+    return { create, revoke };
+  }
+
+  function renderZip() {
+    return render(
+      <VaultRenderer
+        vault={makeVault([zipItem()]) as never}
+        cryptoKey={fakeKey}
+      />
+    );
+  }
+
+  it("1: opening a capsule with a ZIP downloads nothing", async () => {
+    const url = countingUrl();
+    renderZip();
+
+    await waitFor(() => expect(screen.getByText(ZIP_NAME)).toBeTruthy());
+
+    expect(openRuntime.downloadFile).not.toHaveBeenCalled();
+    expect(url.create).not.toHaveBeenCalled();
+  });
+
+  it("2: remounting the capsule downloads nothing", async () => {
+    const url = countingUrl();
+
+    const first = renderZip();
+    await waitFor(() => expect(screen.getByText(ZIP_NAME)).toBeTruthy());
+    first.unmount();
+
+    renderZip();
+    await waitFor(() => expect(screen.getByText(ZIP_NAME)).toBeTruthy());
+
+    expect(openRuntime.downloadFile).not.toHaveBeenCalled();
+    expect(url.create).not.toHaveBeenCalled();
+  });
+
+  it("3: re-rendering with a fresh item identity downloads nothing", async () => {
+    const url = countingUrl();
+
+    const view = renderZip();
+    await waitFor(() => expect(screen.getByText(ZIP_NAME)).toBeTruthy());
+
+    view.rerender(
+      <VaultRenderer
+        vault={makeVault([zipItem()]) as never}
+        cryptoKey={fakeKey}
+      />
+    );
+    await waitFor(() => expect(screen.getByText(ZIP_NAME)).toBeTruthy());
+
+    expect(openRuntime.downloadFile).not.toHaveBeenCalled();
+    expect(url.create).not.toHaveBeenCalled();
+  });
+
+  it("4: the card shows filename, MIME type and size", () => {
+    countingUrl();
+    renderZip();
+
+    expect(screen.getByText(ZIP_NAME)).toBeTruthy();
+    expect(screen.getByText(/application\/x-zip-compressed/)).toBeTruthy();
+    expect(screen.getByText(/42596 bytes/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Download file/i })
+    ).toBeTruthy();
+  });
+
+  it("5: each explicit click starts exactly one download", async () => {
+    const url = countingUrl();
+    vi.mocked(openRuntime.downloadFile).mockResolvedValue(
+      okSession() as never
+    );
+
+    renderZip();
+
+    const first = screen.getByRole("button", { name: /Download file/i });
+    await act(async () => {
+      first.click();
+    });
+    await waitFor(() =>
+      expect(openRuntime.downloadFile).toHaveBeenCalledTimes(1)
+    );
+    await waitFor(() =>
+      expect(url.create).toHaveBeenCalledTimes(1)
+    );
+
+    const second = screen.getByRole("button", { name: /Download file/i });
+    await act(async () => {
+      second.click();
+    });
+    await waitFor(() =>
+      expect(openRuntime.downloadFile).toHaveBeenCalledTimes(2)
+    );
+  });
+
+  it("6: two clicks in the same tick start only one download", async () => {
+    countingUrl();
+    vi.mocked(openRuntime.downloadFile).mockResolvedValue(
+      okSession() as never
+    );
+
+    renderZip();
+
+    const button = screen.getByRole("button", { name: /Download file/i });
+    await act(async () => {
+      button.click();
+      button.click();
+    });
+
+    await waitFor(() =>
+      expect(openRuntime.downloadFile).toHaveBeenCalledTimes(1)
+    );
+  });
+
+  it("7: unmounting mid-download does not abort the user's download", async () => {
+    const url = countingUrl();
+
+    let release: (value: unknown) => void = () => {};
+    vi.mocked(openRuntime.downloadFile).mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }) as never
+    );
+
+    const view = renderZip();
+    const button = screen.getByRole("button", { name: /Download file/i });
+
+    await act(async () => {
+      button.click();
+    });
+    await waitFor(() =>
+      expect(openRuntime.downloadFile).toHaveBeenCalledTimes(1)
+    );
+
+    view.unmount();
+
+    await act(async () => {
+      release(okSession());
+    });
+
+    await waitFor(() => expect(url.create).toHaveBeenCalledTimes(1));
+  });
+
+  it("8: a text item alongside a ZIP still renders, with no download", async () => {
+    countingUrl();
+    render(
+      <VaultRenderer
+        vault={
+          makeVault([
+            { type: "text", text: "Hello capsule" },
+            zipItem(),
+          ]) as never
+        }
+        cryptoKey={fakeKey}
+      />
+    );
+
+    expect(screen.getByText("Hello capsule")).toBeTruthy();
+    expect(screen.getByText(ZIP_NAME)).toBeTruthy();
+    expect(openRuntime.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it("9: legacy V1 file items keep an explicit-only link", () => {
+    countingUrl();
+    const vault = {
+      version: 1,
+      capsule: {
+        items: [
+          {
+            type: "media",
+            mediaType: "file",
+            filename: "legacy.zip",
+            data: "data:application/zip;base64,AA==",
+          },
+        ],
+      },
+    };
+
+    render(
+      <VaultRenderer vault={vault as never} cryptoKey={fakeKey} />
+    );
+
+    const link = screen.getByText("legacy.zip");
+    expect(link.tagName).toBe("A");
+    expect(link.getAttribute("download")).not.toBeNull();
+    expect(openRuntime.downloadFile).not.toHaveBeenCalled();
+  });
+});
