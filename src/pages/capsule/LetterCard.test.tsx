@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, act, within, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, act, within, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import LetterCard from "./LetterCard";
@@ -388,6 +388,19 @@ describe("LetterCard — media player isolation", () => {
         containerChunks={new Map()}
       />
     );
+
+    /**
+     * R9-A86.2 — videos are LAZY.
+     *
+     * A video item owns no element, no session and no URL until the user
+     * activates it, so there is no sibling player to disturb until the
+     * explicit control is used. Activating it here is what makes the
+     * isolation assertions below meaningful: they now run against a player
+     * that really started, with a real session and a real blob URL.
+     */
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Play video" }));
+    });
 
     // Wait for the video to reach a real element with a blob source.
     await waitFor(() => {

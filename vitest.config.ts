@@ -50,6 +50,7 @@ export default defineConfig({
       "src/components/capsule/ErrorNoticeOverflow.test.tsx",
       "src/pages/capsule/Create.admission.test.tsx",
       "src/pages/capsule/VaultRenderer.media.test.tsx",
+      "src/pages/capsule/VaultRenderer.multiVideo.test.tsx",
       "src/pages/capsule/LetterCard.test.tsx",
       "src/pages/capsule/CapsuleController.openState.test.tsx",
       "src/pages/Protocol.legalCenter.test.tsx",

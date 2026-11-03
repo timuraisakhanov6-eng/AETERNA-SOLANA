@@ -796,6 +796,29 @@ function VaultV2Renderer({
     > | null | undefined;
 }) {
 
+  /**
+   * R9-A86.2 — SINGLE-ACTIVE-VIDEO OWNERSHIP.
+   *
+   * `activeVideoIndex` is the ONE authority for which video item owns a
+   * playback session. `null` means no video is active: every video renders
+   * a lightweight card and owns no session, no ByteRuntime, no bytes and
+   * no object URL. The state lives here (the parent), not in the blocks,
+   * so two video items can never both believe they are active — selecting
+   * one is what deactivates the other, in a single state commit.
+   *
+   * Declared before the fail-closed guards so the hook order is identical
+   * on every render that reaches the hooks at all.
+   */
+  const [activeVideoIndex, setActiveVideoIndex] =
+    useState<number | null>(null);
+
+  const selectVideo = useCallback(
+    (index: number) => {
+      setActiveVideoIndex(index);
+    },
+    [],
+  );
+
   const items =
     vault?.capsule?.items ?? [];
 
@@ -828,7 +851,12 @@ function VaultV2Renderer({
             item,
             cryptoKey,
             capsuleId,
-            containerChunks
+            containerChunks,
+            {
+              index,
+              activeIndex: activeVideoIndex,
+              onSelect: selectVideo,
+            }
           )}
         </div>
       ))}
@@ -888,7 +916,12 @@ function renderItemV2(
     ReadonlyMap<
       string,
       PublishedChunkMetadata
-    > | null | undefined
+    > | null,
+  videoControl?: {
+    index: number;
+    activeIndex: number | null;
+    onSelect: (index: number) => void;
+  } | undefined,
 ) {
 
   if (!item)
@@ -910,6 +943,7 @@ function renderItemV2(
           cryptoKey={cryptoKey}
           capsuleId={capsuleId}
           containerChunks={containerChunks}
+          videoControl={videoControl}
         />
       );
 
@@ -933,6 +967,7 @@ function MediaItemV2Block({
   cryptoKey,
   capsuleId,
   containerChunks,
+  videoControl,
 }: {
   item: MediaItemV2;
   cryptoKey: CryptoKey;
@@ -942,7 +977,50 @@ function MediaItemV2Block({
       string,
       PublishedChunkMetadata
     > | null | undefined;
+  /**
+   * R9-A86.2 — parent-owned single-active-video control. Supplied for
+   * every media item by `renderItemV2`; only `video` items act on it.
+   * Audio, image and file items keep their pre-existing mount-time
+   * behaviour untouched.
+   */
+  videoControl?: {
+    index: number;
+    activeIndex: number | null;
+    onSelect: (index: number) => void;
+  } | undefined;
 }) {
+
+  const isVideo =
+    item.mediaType === "video";
+
+  /**
+   * R9-A86.2 — a video item is ACTIVE only when the parent's single
+   * authority says so, and a video whose control is somehow MISSING can
+   * never self-activate (fail closed). Non-video types are always active,
+   * which reproduces their original mount-time pipeline exactly.
+   */
+  const active = isVideo
+    ? videoControl !== undefined &&
+      videoControl.activeIndex === videoControl.index
+    : true;
+
+  /** Activate THIS item as the single active video. */
+  const activateVideo = useCallback(() => {
+    videoControl?.onSelect(videoControl.index);
+  }, [videoControl]);
+
+  /**
+   * R9-A86.2 — explicit retry. Bumped ONLY by the Retry control on the
+   * terminal error surface of an active video; including it in the load
+   * effect's dependencies re-runs the attempt through the exact same
+   * generation/cleanup machinery as any other rerun.
+   */
+  const [retryNonce, setRetryNonce] =
+    useState(0);
+
+  const retryLoad = useCallback(() => {
+    setRetryNonce((n) => n + 1);
+  }, []);
 
   const [objectUrl, setObjectUrl] =
     useState<string | null>(null);
@@ -1129,6 +1207,29 @@ function MediaItemV2Block({
      * owns and disposes its own session.
      */
     if (item.mediaType === "file") return;
+
+    /**
+     * R9-A86.2 — LAZY VIDEO INITIALIZATION.
+     *
+     * A video that is not the single active video must never open a
+     * session, read bytes, or create any media object. Reaching this body
+     * with `active === false` means the PREVIOUS run's cleanup (below) has
+     * already aborted the attempt, disposed the session and revoked its
+     * URL — React runs every effect destroy before any effect create in a
+     * commit, so the previous owner is disposed BEFORE any newly selected
+     * video starts. The generation bump here additionally invalidates any
+     * still-in-flight async work of a deactivated attempt, so a stale
+     * initialization can never write state or reactivate a disposed
+     * player after a newer selection.
+     *
+     * Audio keeps its mount-time pipeline: `active` is always true for
+     * non-video types, so this branch is unreachable for them.
+     */
+    if (item.mediaType === "video" && !active) {
+      generationRef.current += 1;
+      startedSignatureRef.current = null;
+      return;
+    }
 
     const chunks =
       item.chunks ?? [];
@@ -1458,6 +1559,8 @@ function MediaItemV2Block({
     };
 
   }, [
+    active,
+    retryNonce,
     cryptoKey,
     capsuleId,
     item,
@@ -1519,12 +1622,34 @@ function MediaItemV2Block({
   if (item.mediaType === "video" || item.mediaType === "audio") {
     const filename = sanitizeFilename(item.filename);
 
+    /**
+     * R9-A86.2 — Step 1: an INACTIVE video renders a lightweight metadata
+     * card and owns nothing: no <video> element, no session, no ByteRuntime,
+     * no chunk resolution, no MediaSource/SourceBuffer, no Blob URL. The
+     * only metadata shown is what the Vault itself carries (filename, MIME
+     * type, size); no poster is invented, because a poster would require
+     * reading the encrypted bytes — which is exactly what the card must not
+     * do. Audio never reaches this branch (always active) and keeps its
+     * pre-existing element-plus-mount-time-pipeline behaviour.
+     */
+    if (isVideo && !active) {
+      return (
+        <VideoCard
+          filename={filename}
+          mimeType={item.mimeType}
+          size={item.size}
+          onPlay={videoControl ? activateVideo : undefined}
+        />
+      );
+    }
+
     return (
       <div className="space-y-2">
         {item.mediaType === "video" ? (
           <video
             ref={setMediaEl}
             controls
+            playsInline
             className="w-full rounded-xl"
           />
         ) : (
@@ -1545,6 +1670,7 @@ function MediaItemV2Block({
             size={item.size}
             notice={notice ?? undefined}
             fallbackTrigger={fallbackTriggerNotice ?? undefined}
+            onRetry={isVideo ? retryLoad : undefined}
           />
         )}
 
@@ -1745,6 +1871,63 @@ function resolveOpenableMedia(
 
 
 /**
+ * R9-A86.2 — the lazy video card: the ONLY surface an inactive video item
+ * renders.
+ *
+ * It performs no I/O of any kind: no session, no ByteRuntime, no chunk
+ * resolution or decryption, no MediaSource/SourceBuffer, no Blob or object
+ * URL, and no download session. Playback begins only when the user
+ * activates the control, which asks the parent's single-active-video
+ * authority to select this item. The metadata shown is exactly what the
+ * Vault carries — nothing invented, no poster decoded.
+ */
+function VideoCard({
+  filename,
+  mimeType,
+  size,
+  onPlay,
+}: {
+  filename?: string | undefined;
+  mimeType?: string | undefined;
+  size?: number | undefined;
+  onPlay?: (() => void) | undefined;
+}) {
+
+  return (
+    <div className="space-y-2 text-sm">
+
+      <div className="font-medium break-all">
+        {filename}
+      </div>
+
+      <div className="text-muted-foreground">
+        {mimeType ?? "unknown type"}
+        {" · "}
+        {typeof size === "number"
+          ? `${size} bytes`
+          : "unknown size"}
+      </div>
+
+      <button
+        type="button"
+        onClick={onPlay}
+        disabled={!onPlay}
+        className="underline text-sm disabled:opacity-50"
+      >
+        Play video
+      </button>
+
+      <div className="text-muted-foreground">
+        Video is loaded only when you start it.
+      </div>
+
+    </div>
+  );
+
+}
+
+
+/**
  * R9-A85.2 — the terminal surface for an attachment with no inline preview.
  *
  * Shows what the item is (filename, MIME type, size) and exactly ONE action.
@@ -1937,6 +2120,7 @@ function ErrorBlock({
   size,
   notice,
   fallbackTrigger,
+  onRetry,
 }: {
   filename?: string;
   mimeType?: string;
@@ -1949,6 +2133,12 @@ function ErrorBlock({
    * failure happened inside it — never composed here.
    */
   fallbackTrigger?: string | undefined;
+  /**
+   * R9-A86.2 — explicit retry for an ACTIVE video's terminal failure.
+   * Present only when the caller provides one; the image/file surfaces
+   * pass none, so their behaviour is unchanged.
+   */
+  onRetry?: (() => void) | undefined;
 }) {
 
   return (
@@ -1986,6 +2176,16 @@ function ErrorBlock({
           ? `${size} bytes`
           : "unknown"}
       </div>
+
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="underline text-sm"
+        >
+          Retry
+        </button>
+      )}
 
       <div className="text-muted-foreground">
         Media preview unavailable

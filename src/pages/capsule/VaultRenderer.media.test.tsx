@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup, act } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, act, fireEvent } from "@testing-library/react";
 
 vi.mock("@/lib/capsule/open/openRuntime", () => ({
   openImage: vi.fn(),
@@ -83,6 +83,15 @@ function okSession() {
   };
 }
 
+/**
+ * R9-A86.2 — videos are lazy: nothing loads until the user activates the
+ * card's control. Every video lifecycle test starts its attempt through
+ * this explicit activation, mirroring the real user gesture.
+ */
+function clickPlay(): void {
+  fireEvent.click(screen.getByRole("button", { name: "Play video" }));
+}
+
 beforeEach(() => {
   stubUrl();
   vi.clearAllMocks();
@@ -106,6 +115,13 @@ describe("MediaItemV2Block lifecycle", () => {
     // Text renders independently and immediately.
     expect(screen.getByText("Hello capsule")).toBeTruthy();
 
+    // R9-A86.2: the video renders a lazy card — nothing loads on mount.
+    expect(screen.queryByText(/Loading/i)).toBeNull();
+    expect(openRuntime.openVideo).not.toHaveBeenCalled();
+
+    // The explicit user activation is what starts the attempt.
+    clickPlay();
+
     // Video starts in Loading...
     expect(screen.getByText(/Loading video\.webm/i)).toBeTruthy();
 
@@ -127,6 +143,7 @@ describe("MediaItemV2Block lifecycle", () => {
     render(
       <VaultRenderer vault={makeVault([videoItem()]) as never} cryptoKey={fakeKey} />,
     );
+    clickPlay();
 
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
     // jsdom has no MediaSource, so this bare WebM first hits the
@@ -147,6 +164,7 @@ describe("MediaItemV2Block lifecycle", () => {
     const { unmount } = render(
       <VaultRenderer vault={makeVault([videoItem()]) as never} cryptoKey={fakeKey} />,
     );
+    clickPlay();
 
     // Attempt 1 is in flight (never resolves on its own).
     await waitFor(() => expect(openRuntime.openVideo).toHaveBeenCalledTimes(1));
@@ -159,6 +177,7 @@ describe("MediaItemV2Block lifecycle", () => {
     render(
       <VaultRenderer vault={makeVault([videoItem()]) as never} cryptoKey={fakeKey} />,
     );
+    clickPlay();
     await waitFor(() => expect(openRuntime.openVideo).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
     expect(document.querySelector("video")).not.toBeNull();
@@ -182,6 +201,7 @@ describe("MediaItemV2Block lifecycle", () => {
     const { rerender } = render(
       <VaultRenderer vault={makeVault([videoItem()]) as never} cryptoKey={fakeKey} />,
     );
+    clickPlay();
 
     // Attempt 1 is in flight awaiting its late read.
     await waitFor(() => expect(openRuntime.openVideo).toHaveBeenCalledTimes(1));
@@ -221,6 +241,7 @@ describe("MediaItemV2Block lifecycle", () => {
     const { rerender } = render(
       <VaultRenderer vault={makeVault([videoItem()]) as never} cryptoKey={fakeKey} />,
     );
+    clickPlay();
 
     // Attempt 1 fails terminally: capability gate -> fallback -> read fails.
     await waitFor(() =>
@@ -406,8 +427,13 @@ describe("range read deadline — media layer", () => {
       />,
     );
 
-    // Text renders independently; media is still loading.
+    // Text renders independently; the video card is still idle.
     expect(screen.getByText("Hello capsule")).toBeTruthy();
+    expect(openRuntime.openVideo).not.toHaveBeenCalled();
+
+    clickPlay();
+
+    // Media is loading after activation.
     expect(screen.getByText(/Loading video\.webm/i)).toBeTruthy();
 
     await act(async () => {
@@ -438,6 +464,7 @@ describe("range read deadline — media layer", () => {
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     expect(screen.getByText(/Loading/i)).toBeTruthy();
 
@@ -474,6 +501,7 @@ describe("MediaItemV2Block — diagnostic codes on the rendered surface", () => 
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
 
@@ -500,6 +528,7 @@ describe("MediaItemV2Block — diagnostic codes on the rendered surface", () => 
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
     expect(screen.getByText(/PREVIEW_OBJECT_URL_FAILED/)).toBeTruthy();
@@ -527,6 +556,7 @@ describe("MediaItemV2Block — diagnostic codes on the rendered surface", () => 
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
 
@@ -636,6 +666,7 @@ describe("MSE read timeout is a stream-read timeout, never MSE setup", () => {
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     // Past the 30 s chunk-read deadline.
     await act(async () => {
@@ -706,6 +737,7 @@ describe("MSE setup failure is distinguishable from a capability rejection", () 
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     // Advance past the 20 s sourceopen timeout so the MSE layer fails at
     // SETUP, then let the fallback read reject.
@@ -748,6 +780,7 @@ describe("Phase E2.4 — the fallback trigger is shown beside the final failure"
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
 
@@ -802,6 +835,7 @@ describe("Phase E2.4 — the fallback trigger is shown beside the final failure"
     );
 
     // Past the 20 s sourceopen timeout, then the fallback read rejects.
+    clickPlay();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(20_500);
     });
@@ -847,6 +881,7 @@ describe("Phase E2.4 — the fallback trigger is shown beside the final failure"
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() => expect(document.querySelector("video")).not.toBeNull());
 
@@ -876,6 +911,7 @@ describe("Phase E2.4 — the fallback trigger is shown beside the final failure"
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
 
@@ -912,6 +948,13 @@ describe("A/V element is mounted BEFORE the load resolves", () => {
       />,
     );
 
+    // R9-A86.2: before activation there is no element at all — the card
+    // owns no player.
+    expect(document.querySelectorAll("video").length).toBe(0);
+    expect(screen.getByRole("button", { name: "Play video" })).toBeTruthy();
+
+    clickPlay();
+
     // Still loading…
     expect(screen.getByText(/Loading video\.webm/i)).toBeTruthy();
     // …yet the element the MediaSource will attach to already exists,
@@ -929,6 +972,7 @@ describe("A/V element is mounted BEFORE the load resolves", () => {
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     const before = document.querySelector("video");
     expect(before).not.toBeNull();
@@ -1134,6 +1178,7 @@ describe("A/V src ownership — identical URL is never re-written", () => {
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() => {
       const v = document.querySelector("video") as HTMLVideoElement | null;
@@ -1166,6 +1211,7 @@ describe("A/V src ownership — identical URL is never re-written", () => {
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     expect(document.querySelectorAll("video").length).toBe(1);
 
@@ -1188,6 +1234,7 @@ describe("A/V src ownership — identical URL is never re-written", () => {
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() => {
       const v = document.querySelector("video") as HTMLVideoElement | null;
@@ -1213,6 +1260,7 @@ describe("A/V src ownership — identical URL is never re-written", () => {
         cryptoKey={fakeKey}
       />,
     );
+    clickPlay();
 
     await waitFor(() =>
       expect(
