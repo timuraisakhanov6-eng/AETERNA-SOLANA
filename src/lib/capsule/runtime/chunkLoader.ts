@@ -40,6 +40,7 @@ export async function loadChunk(
     capsuleId: string,
     chunk: PublishedChunkMetadata,
     cryptoKey: CryptoKey,
+    signal?: AbortSignal,
 ): Promise<Uint8Array> {
 
     /**
@@ -136,7 +137,7 @@ export async function loadChunk(
      * three-argument call.
      */
     const encrypted =
-        containerHint === undefined
+        containerHint === undefined && signal === undefined
             ? await storage.downloadRange(
                   chunk.pointer,
                   offset,
@@ -147,6 +148,7 @@ export async function loadChunk(
                   offset,
                   expectedLength,
                   containerHint,
+                  signal,
               );
 
     /**

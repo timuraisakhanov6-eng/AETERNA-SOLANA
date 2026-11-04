@@ -81,6 +81,7 @@ function createRuntime(
  */
 export async function openImage(
     request: OpenMediaRequest,
+    signal?: AbortSignal,
 ): Promise<OpenImageResult> {
 
     const runtime =
@@ -91,6 +92,7 @@ export async function openImage(
         return await openImageRuntime(
             runtime,
             request,
+            signal,
         );
 
     } finally {

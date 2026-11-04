@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react"; 
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 import type {
   Vault,
@@ -22,6 +22,8 @@ import { LetterCard } from "./LetterCard";
 import type {
   MediaSession,
   OpenableMediaItem,
+  OpenMediaRequest,
+  OpenImageResult,
 } from "@/lib/capsule/open/openTypes";
 
 import {
@@ -43,8 +45,14 @@ import {
 
 import {
   awaitEvent,
-  withTimeout,
+  BoundedAwaitTimeoutError,
 } from "@/lib/capsule/open/boundedAwait";
+
+import {
+  retainContainerWindowStream,
+} from "@/lib/storage/container/containerWindowStream";
+
+import { isStorageRangeError } from "@/lib/storage/storageRangeFailure";
 
 /**
  * Upper bound for a single bounded media handshake (sourceopen /
@@ -55,7 +63,176 @@ import {
  */
 const MEDIA_SOURCE_OPEN_TIMEOUT_MS = 20_000;
 const MEDIA_APPEND_TIMEOUT_MS = 20_000;
+
+/**
+ * R9-A87.7 (F3) — PROGRESS-AWARE READ BUDGET.
+ *
+ * The old wrapper gave EVERY read a flat 30 s. That bound is simultaneously too
+ * short and too long, depending on what the read actually has to move:
+ *
+ *   - a 206 answer transfers exactly `length` bytes;
+ *   - a 200 answer (the gateway ignored `Range`) must stream and DISCARD every
+ *     byte before `offset` first, so its honest cost is `offset + length`.
+ *
+ * A late window of the real 22.47 MiB container therefore needs ~46 s at
+ * 0.5 MiB/s and could never finish inside 30 s. The budget below is derived
+ * from the ABSOLUTE END position of the request — the honest HTTP-200 cost —
+ * with the old 30 s kept as the FLOOR (so a cheap read behaves exactly as
+ * before) and a finite 130 s CEILING.
+ *
+ * The ceiling sits above the reader's own 120 s hard ceiling and above the
+ * storage layer's progress-aware deadline, so the storage layer always wins the
+ * race and its typed `StorageRangeError` (`range-timeout`) reaches the
+ * diagnostic layer instead of being replaced by a generic caller abort.
+ *
+ * Honest limit, documented rather than hidden: a late window of a 100 MiB
+ * container needs ~200 s at 0.5 MiB/s and CANNOT be guaranteed under a 130 s
+ * ceiling. It fails closed with a typed timeout; it never hangs.
+ */
 const MEDIA_READ_TIMEOUT_MS = 30_000;
+const MEDIA_READ_CEILING_MS = 130_000;
+const MEDIA_READ_SETUP_MS = 1_500;
+const MEDIA_READ_MIN_BYTES_PER_SEC = 512 * 1024;
+/**
+ * Deliberate head start for the storage layer's own deadline.
+ *
+ * Both clocks measure the same transfer with the same formula, so without this
+ * they would expire at the same instant and the OUTER wrapper could win the
+ * race — replacing the storage layer's typed `StorageRangeError` with a
+ * generic caller timeout. The grace guarantees the typed failure is the one
+ * the diagnostic layer sees.
+ */
+const MEDIA_READ_GRACE_MS = 5_000;
+
+/**
+ * Budget for ONE media read, given the absolute end byte of the range:
+ *
+ *   `clamp(30 s, 1.5 s + end / 0.5 MiB/s + 5 s, 130 s)`
+ *
+ * Mirrors the storage layer's own formula plus the grace, so the two clocks
+ * cannot disagree about what "too slow" means for the same window while the
+ * storage layer always classifies the failure first.
+ */
+function mediaReadBudgetMs(absoluteEnd: number): number {
+
+  if (!Number.isFinite(absoluteEnd) || absoluteEnd <= 0) {
+    return MEDIA_READ_TIMEOUT_MS;
+  }
+
+  const transferMs = Math.ceil(
+    (absoluteEnd / MEDIA_READ_MIN_BYTES_PER_SEC) * 1000,
+  );
+
+  return Math.min(
+    MEDIA_READ_CEILING_MS,
+    Math.max(
+      MEDIA_READ_TIMEOUT_MS,
+      MEDIA_READ_SETUP_MS + transferMs + MEDIA_READ_GRACE_MS,
+    ),
+  );
+}
+
+/**
+ * Runs one read under a budget, with REAL cancellation.
+ *
+ * Two properties matter, and the old `withTimeout` had neither:
+ *
+ *   1. when the budget expires the signal is ABORTED, so the storage layer
+ *      cancels its fetch/stream instead of running on for up to 120 s;
+ *   2. the caller is released by the DEADLINE, not by the callee's good
+ *      behaviour — a read that ignores its signal cannot hang the UI.
+ */
+async function readWithBudget<T>(
+  label: string,
+  budgetMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+
+  const controller = new AbortController();
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      // Abort FIRST: losing the race must still tear the transport down.
+      try {
+        controller.abort();
+      } catch {
+        /* best-effort */
+      }
+      reject(new BoundedAwaitTimeoutError(label, budgetMs));
+    }, budgetMs);
+  });
+
+  const running = operation(controller.signal);
+
+  /**
+   * A read that loses the race may still reject later (its abort surfaces as
+   * a storage error). That rejection is expected and must never be reported as
+   * an unhandled rejection.
+   */
+  void running.catch(() => undefined);
+
+  try {
+
+    return await Promise.race([running, expired]);
+
+  } catch (err) {
+
+    /**
+     * R9-A87.7 (F3) - the storage layer reports its own typed failure first
+     * (its deadline is strictly shorter than this budget); that diagnostic is
+     * preserved verbatim. Only a read that produced NO typed failure of its
+     * own is reported as a timeout — so a cancellation is never disguised as a
+     * data defect, and a data defect is never disguised as a timeout.
+     */
+    if (err instanceof BoundedAwaitTimeoutError) throw err;
+
+    if (controller.signal.aborted && !isStorageRangeError(err)) {
+      throw new BoundedAwaitTimeoutError(label, budgetMs);
+    }
+
+    throw err;
+
+  } finally {
+
+    if (timer) clearTimeout(timer);
+
+  }
+}
+
+/** One bounded, cancellable media-window read. */
+function readWithCeiling(
+  session: MediaSession,
+  start: number,
+  end: number,
+  label: string,
+): Promise<Uint8Array<ArrayBuffer>> {
+  return readWithBudget(
+    label,
+    mediaReadBudgetMs(end),
+    (signal) => session.read(start, end, signal),
+  );
+}
+
+/**
+ * R9-A87.7 (F3) - the same bounded, cancellable read for the IMAGE path.
+ *
+ * An image preview materialises the whole file, so it is the read most likely
+ * to exceed a fixed budget; wrapping `openImage()` in `withTimeout` left that
+ * read running after the caller had already given up. Here the budget aborts
+ * the signal that reaches `runtime.getBytes`, so the storage read is torn down
+ * with the preview.
+ */
+function openImageWithCeiling(
+  request: OpenMediaRequest,
+): Promise<OpenImageResult> {
+  return readWithBudget(
+    "image preview",
+    mediaReadBudgetMs(request.media.size),
+    (signal) => openImage(request, signal),
+  );
+}
 
 /**
  * Maximum whole-file fallback size for a NON-streamable media item.
@@ -86,10 +263,12 @@ export async function sessionToObjectUrl(
     assertInlinePreviewSize(size, "Image");
 
     // Bounded read: a stalled read must reach a terminal error
-    // instead of hanging the caller.
-    const bytes = await withTimeout(
-      session.read(0, size),
-      MEDIA_READ_TIMEOUT_MS,
+    // instead of hanging the caller — and the ceiling ABORTS the read
+    // rather than abandoning it.
+    const bytes = await readWithCeiling(
+      session,
+      0,
+      size,
       "media object url read",
     );
 
@@ -176,12 +355,10 @@ export async function sessionToDownloadStream(
             // Bounded chunk read: a stalled read must terminate the
             // download rather than hang it.
             const bytes =
-              await withTimeout(
-                session.read(
-                  offset,
-                  end,
-                ),
-                MEDIA_READ_TIMEOUT_MS,
+              await readWithCeiling(
+                session,
+                offset,
+                end,
                 "media download chunk read",
               );
 
@@ -233,9 +410,10 @@ export async function sessionToDownloadStream(
 
     // Bounded read for the small-file fallback.
     const bytes =
-      await withTimeout(
-        session.read(0, size),
-        MEDIA_READ_TIMEOUT_MS,
+      await readWithCeiling(
+        session,
+        0,
+        size,
         "media download fallback read",
       );
 
@@ -500,12 +678,10 @@ export async function sessionToMediaSource(
             // fetch/decrypt rejects and the promise settles to a
             // terminal error.
             bytes =
-              await withTimeout(
-                session.read(
-                  offset,
-                  end,
-                ),
-                MEDIA_READ_TIMEOUT_MS,
+              await readWithCeiling(
+                session,
+                offset,
+                end,
                 "media chunk read",
               );
 
@@ -631,12 +807,13 @@ export async function sessionToBoundedBlobUrl(
     );
   }
 
-  // Bounded read. MediaSession exposes no cancellation primitive, so a
-  // late resolution after the timeout is simply discarded — the caller
-  // has already moved to a terminal state and the bytes are unused.
-  const bytes = await withTimeout(
-    session.read(0, size),
-    MEDIA_READ_TIMEOUT_MS,
+  // Bounded read. R9-A87.7: MediaSession.read() now takes an AbortSignal, so
+  // the ceiling cancels the storage read instead of discarding a late
+  // resolution; the `signal` check below remains for the caller's own signal.
+  const bytes = await readWithCeiling(
+    session,
+    0,
+    size,
     "media fallback read",
   );
 
@@ -818,6 +995,40 @@ function VaultV2Renderer({
     },
     [],
   );
+
+  /**
+   * R9-A87.7 (F2) — CAPSULE-SCOPED STREAM TEARDOWN.
+   *
+   * The bounded window reader keeps ONE forward HTTP stream per container so
+   * ascending windows can reuse it. That stream must not outlive the capsule.
+   * Disposing here — at the component that owns media rendering, and keyed by
+   * the CONTAINER identity — is capsule-scoped: a different capsule's stream is
+   * unaffected, and unmounting a single media item never runs this.
+   */
+  const containerTxId = useMemo(() => {
+    if (!containerChunks) return null;
+    for (const entry of containerChunks.values()) {
+      const id = entry.container?.containerTxId;
+      if (id) return String(id);
+    }
+    return null;
+  }, [containerChunks]);
+
+  useEffect(() => {
+    if (!containerTxId) return;
+
+    /**
+     * R9-A87.7 (F2) - a LEASE, not a hard close.
+     *
+     * The stream belongs to the capsule, and several media readers inside it
+     * share that stream. Releasing here therefore only decrements the capsule's
+     * reference; the reader is closed when the LAST owner goes away. That keeps
+     * a route transition or a React StrictMode remount from destroying a stream
+     * it is about to reuse, and it never lets one child reader's teardown kill
+     * another child's live stream.
+     */
+    return retainContainerWindowStream(containerTxId);
+  }, [containerTxId]);
 
   const items =
     vault?.capsule?.items ?? [];
@@ -1363,11 +1574,7 @@ function MediaItemV2Block({
             // Bounded open: a stalled image read must reach a terminal
             // state instead of leaving the UI on "Loading" forever.
             const result =
-              await withTimeout(
-                openImage(request),
-                MEDIA_READ_TIMEOUT_MS,
-                "image preview",
-              );
+              await openImageWithCeiling(request);
 
             url = result.objectUrl;
 

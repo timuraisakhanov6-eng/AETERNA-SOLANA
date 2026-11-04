@@ -89,6 +89,13 @@ export interface MediaSession {
     read(
         start: number,
         end: number,
+        /**
+         * R9-A87.7 (F3) — caller-scoped cancellation.
+         *
+         * The caller aborts this signal when its own bound expires or the
+         * component is disposed; the abort must reach the storage stream.
+         */
+        signal?: AbortSignal,
     ): Promise<Uint8Array<ArrayBuffer>>;
 
     /**

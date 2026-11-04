@@ -26,6 +26,12 @@ import {
 export async function openImage(
     runtime: ByteRuntime,
     request: OpenMediaRequest,
+    /**
+     * R9-A87.7 (F3) - caller-scoped cancellation. The caller aborts this
+     * signal when its own ceiling expires, so the read is actually torn down
+     * instead of being abandoned mid-flight.
+     */
+    signal?: AbortSignal,
 ): Promise<OpenImageResult> {
 
     try {
@@ -35,11 +41,22 @@ export async function openImage(
             "Image",
         );
 
+        /**
+         * R9-A87.7 (F3) - the signal is forwarded only when the caller
+         * supplied one. The legacy two-argument read shape is preserved
+         * exactly, so an unchanged call site is not silently re-plumbed.
+         */
         const bytes =
-            await runtime.getBytes(
-                0,
-                request.media.size,
-            );
+            signal === undefined
+                ? await runtime.getBytes(
+                      0,
+                      request.media.size,
+                  )
+                : await runtime.getBytes(
+                      0,
+                      request.media.size,
+                      signal,
+                  );
 
         /**
          * The read has SUCCEEDED. Blob / object-URL construction is a

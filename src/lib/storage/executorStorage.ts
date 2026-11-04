@@ -28,6 +28,11 @@ import {
   StorageRangeError,
   type StorageRangeRejectionReason,
 } from "./storageRangeFailure";
+
+import {
+  readContainerWindow,
+  windowStreamDeadlineMs,
+} from "./container/containerWindowStream";
 import {
   HEADER_SIZE,
   parseContainerHeader,
@@ -609,7 +614,8 @@ export type ExecutorReadStorageAdapter = Pick<
     pointer: StoragePointer,
     offset: number,
     length: number,
-    containerHint?: ContainerReadHint
+    containerHint?: ContainerReadHint,
+    signal?: AbortSignal
   ): Promise<Uint8Array<ArrayBuffer>>;
 };
 
@@ -1043,7 +1049,8 @@ export const executorStorage: ExecutorReadStorageAdapter = {
     txId: StoragePointer,
     offset: number,
     length: number,
-    containerHint?: ContainerReadHint
+    containerHint?: ContainerReadHint,
+    signal?: AbortSignal
   ): Promise<Uint8Array<ArrayBuffer>> {
     assertStoragePointer(txId);
 
@@ -1069,10 +1076,39 @@ export const executorStorage: ExecutorReadStorageAdapter = {
      */
     const controller = new AbortController();
 
+    /**
+     * R9-A87.7 (F3) — EXTERNAL CANCELLATION.
+     *
+     * The caller's signal is linked to the ONE controller that already governs
+     * this operation, so aborting it cancels the in-flight fetch, the stream
+     * reader and the deadline together. No second cancellation path, no
+     * orphaned transport.
+     */
+    const onExternalAbort = (): void => {
+      try {
+        controller.abort();
+      } catch {
+        /* best-effort */
+      }
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        controller.abort();
+      } else {
+        signal.addEventListener("abort", onExternalAbort, { once: true });
+      }
+    }
+
     const deadlineMs =
-      isContainerReadHint(containerHint) &&
-      containerHint.size <= CONTAINER_FULL_FALLBACK_MAX_BYTES
-        ? containerRangeDeadlineMs(window.length, containerHint.size)
+      isContainerReadHint(containerHint)
+        ? containerHint.size <= CONTAINER_FULL_FALLBACK_MAX_BYTES
+          ? containerRangeDeadlineMs(window.length, containerHint.size)
+          : windowStreamDeadlineMs(
+              window.offset,
+              window.length,
+              containerHint.size
+            )
         : rangeDownloadDeadlineMs(window.length);
 
     const deadline = setTimeout(
@@ -1193,36 +1229,81 @@ export const executorStorage: ExecutorReadStorageAdapter = {
        * Eligibility is deliberately narrow: every gateway was rejected by
        * the STATUS gate (exactly `status-not-206` — the very condition that
        * produces `PREVIEW_RANGE_STATUS_REJECTED`), no transport failure was
-       * observed, and the container is known (trusted hint) to be within
-       * the 20 MiB ceiling. Anything else keeps the pure fail-closed path.
+       * observed, and a TRUSTED container hint exists. Anything else keeps
+       * the pure fail-closed path.
+       *
+       * The recovery SHAPE depends on the declared container size (R9-A87.5):
+       * within the 20 MiB ceiling the bounded whole-object GET is used
+       * unchanged; above it, a bounded WINDOWED STREAM keeps memory
+       * proportional to the window instead of the object.
        */
       if (
         !controller.signal.aborted &&
         !sawNetworkFailure &&
         rejectionReasons.size === 1 &&
         rejectionReasons.has("status-not-206") &&
-        isContainerReadHint(containerHint) &&
-        containerHint.size <= CONTAINER_FULL_FALLBACK_MAX_BYTES
+        isContainerReadHint(containerHint)
       ) {
-        const full = await getFullContainer(
-          txId,
-          containerHint,
-          controller.signal
-        );
-
-        if (full) {
-          const windowBytes = sliceContainerWindow(
-            full,
-            window.offset,
-            window.length
+        if (
+          containerHint.size <=
+          CONTAINER_FULL_FALLBACK_MAX_BYTES
+        ) {
+          /**
+           * Within the ceiling: the pre-existing bounded whole-object GET.
+           * Unchanged — same cap, same validation, same single-flight cache.
+           */
+          const full = await getFullContainer(
+            txId,
+            containerHint,
+            controller.signal
           );
-          if (windowBytes) return windowBytes;
+
+          if (full) {
+            const windowBytes = sliceContainerWindow(
+              full,
+              window.offset,
+              window.length
+            );
+            if (windowBytes) return windowBytes;
+          }
+        } else {
+          /**
+           * R9-A87.5 — ABOVE the ceiling: never buffer the object. Stream it
+           * and keep only the requested window. Memory is bounded by the
+           * WINDOW, so the 20 MiB constant keeps its meaning and the container
+           * may be arbitrarily large.
+           *
+           * Gateways are tried in the canonical order; the first that yields
+           * a valid, header-validated window wins. Every attempt shares this
+           * operation's ONE deadline, so the total stays bounded.
+           */
+          const hint = {
+            size: containerHint.size,
+            chunkCount: containerHint.chunkCount,
+          };
+
+          for (const gateway of GATEWAYS) {
+
+            if (controller.signal.aborted) break;
+
+            const streamed = await readContainerWindow({
+              url: buildRangeUrl(gateway, txId),
+              txId,
+              offset: window.offset,
+              length: window.length,
+              hint,
+              signal: controller.signal,
+            });
+
+            if (streamed) return streamed;
+          }
         }
 
-        // Any fallback problem falls through to the ORIGINAL typed error
+        // Any recovery problem falls through to the ORIGINAL typed error
         // below — the primary failure cause is never masked.
       }
     } finally {
+      signal?.removeEventListener("abort", onExternalAbort);
       clearTimeout(deadline);
     }
 

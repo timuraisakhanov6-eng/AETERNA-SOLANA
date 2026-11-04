@@ -317,7 +317,14 @@ export async function downloadRange(
    * by the status gate. Omitted for legacy per-chunk reads, which therefore
    * keep the unchanged fail-closed behaviour.
    */
-  containerHint?: ContainerReadHint
+  containerHint?: ContainerReadHint,
+
+  /**
+   * R9-A87.7 (F3) — caller-scoped cancellation. Linked to the adapter's ONE
+   * operation controller, so an abort here tears the transport down instead of
+   * leaving an orphaned read running behind a rejected promise.
+   */
+  signal?: AbortSignal
 
 ): Promise<Uint8Array<ArrayBuffer>> {
 
@@ -355,12 +362,20 @@ export async function downloadRange(
   try {
 
     const data =
-      await storageAdapter.downloadRange(
-        txId,
-        window.offset,
-        window.length,
-        containerHint
-      );
+      signal === undefined
+        ? await storageAdapter.downloadRange(
+            txId,
+            window.offset,
+            window.length,
+            containerHint
+          )
+        : await storageAdapter.downloadRange(
+            txId,
+            window.offset,
+            window.length,
+            containerHint,
+            signal
+          );
 
 
     /**

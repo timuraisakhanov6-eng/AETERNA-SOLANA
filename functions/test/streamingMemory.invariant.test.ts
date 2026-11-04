@@ -11,6 +11,19 @@ import type {
   OpenMediaRequest,
 } from "@/lib/capsule/open/openTypes";
 
+/**
+ * R9-A87.7 (F3) — CANCELLATION-AWARE READ CONTRACT.
+ *
+ * `MediaSession.read(start, end, signal?)` now forwards a cancellation signal
+ * to `ByteRuntime.getBytes(start, end, signal)`. The ALGORITHMIC contract is
+ * unchanged: the exact requested range still reaches the runtime exactly once,
+ * eagerly and as a bounded range rather than a whole-object read.
+ *
+ * The third argument is therefore asserted as "a live AbortSignal" instead of
+ * being ignored, so a future change that silently drops cancellation support
+ * fails here rather than passing unnoticed.
+ */
+
 function createRuntimeStub(
   overrides: Partial<ByteRuntime> = {},
 ): ByteRuntime {
@@ -42,6 +55,7 @@ describe(
         expect(runtime.getBytes).toHaveBeenCalledWith(
           0,
           3,
+          expect.any(AbortSignal),
         );
         expect(bytes).toEqual(
           new Uint8Array([1, 2, 3]),
@@ -117,6 +131,7 @@ describe(
         expect(runtime.getBytes).toHaveBeenCalledWith(
           0,
           3,
+          expect.any(AbortSignal),
         );
         expect(bytes).toEqual(
           new Uint8Array([1, 2, 3]),
@@ -155,6 +170,7 @@ describe(
         expect(runtime.getBytes).toHaveBeenCalledWith(
           0,
           3,
+          expect.any(AbortSignal),
         );
         expect(bytes).toEqual(
           new Uint8Array([1, 2, 3]),
@@ -194,6 +210,8 @@ describe(
           );
 
         expect(runtime.getBytes).toHaveBeenCalledTimes(1);
+        // No session-owned guard on the image path: with no caller signal the
+        // legacy two-argument read shape is preserved exactly (R9-A87.7 F3).
         expect(runtime.getBytes).toHaveBeenCalledWith(
           0,
           3,
@@ -301,13 +319,13 @@ describe(
 
         expect(
           videoRuntime.getBytes,
-        ).toHaveBeenCalledWith(100, 200);
+        ).toHaveBeenCalledWith(100, 200, expect.any(AbortSignal));
         expect(
           audioRuntime.getBytes,
-        ).toHaveBeenCalledWith(100, 200);
+        ).toHaveBeenCalledWith(100, 200, expect.any(AbortSignal));
         expect(
           downloadRuntime.getBytes,
-        ).toHaveBeenCalledWith(100, 200);
+        ).toHaveBeenCalledWith(100, 200, expect.any(AbortSignal));
       });
 
       it("image path uses ByteRuntime once and disposes runtime after open", async () => {
@@ -330,6 +348,8 @@ describe(
         // for the requested image range, then creates an
         // object URL from that decoded bytes.
         expect(runtime.getBytes).toHaveBeenCalledTimes(1);
+        // No session-owned guard on the image path: with no caller signal the
+        // legacy two-argument read shape is preserved exactly (R9-A87.7 F3).
         expect(runtime.getBytes).toHaveBeenCalledWith(
           0,
           3,

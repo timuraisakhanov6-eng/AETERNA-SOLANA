@@ -438,6 +438,7 @@ export function createByteRuntime(
      */
     async function getChunkBytes(
         chunk: PublishedChunkMetadata,
+        signal?: AbortSignal,
     ): Promise<Uint8Array> {
 
         const cached =
@@ -448,12 +449,25 @@ export function createByteRuntime(
             return cached;
         }
 
+        /**
+         * R9-A87.7 (F3) - the signal is passed only when the caller actually
+         * supplied one. The legacy three-argument call shape is preserved
+         * exactly, so an unchanged reader path is not silently re-plumbed and
+         * existing call-shape contracts (spies, adapters) still hold.
+         */
         const decrypted =
-            await loadChunk(
-                capsuleId,
-                chunk,
-                cryptoKey,
-            );
+            signal === undefined
+                ? await loadChunk(
+                      capsuleId,
+                      chunk,
+                      cryptoKey,
+                  )
+                : await loadChunk(
+                      capsuleId,
+                      chunk,
+                      cryptoKey,
+                      signal,
+                  );
 
         /**
          * Copy before caching so cache zeroization never
@@ -544,6 +558,7 @@ export function createByteRuntime(
         async getBytes(
             start: number,
             end: number,
+            signal?: AbortSignal,
         ): Promise<Uint8Array<ArrayBuffer>> {
 
             const plan =
@@ -555,6 +570,19 @@ export function createByteRuntime(
             if (outputLength <= 0) {
                 throw new Error(
                     "Invalid byte range.",
+                );
+            }
+
+            /**
+             * R9-A87.7 (F3) - a cancelled read must never start, and must
+             * never return cached plaintext to a consumer that cancelled.
+             * The typed storage failure still wins wherever a real network
+             * read is involved; this guard covers the fully-cached case,
+             * which the storage layer would never see.
+             */
+            if (signal?.aborted) {
+                throw new Error(
+                    "[AETERNA] Read aborted",
                 );
             }
 
@@ -597,8 +625,14 @@ export function createByteRuntime(
 
                 for (const entry of plan) {
 
+                    if (signal?.aborted) {
+                        throw new Error(
+                            "[AETERNA] Read aborted",
+                        );
+                    }
+
                     chunkBytes.push(
-                        await getChunkBytes(entry.chunk),
+                        await getChunkBytes(entry.chunk, signal),
                     );
 
                 }

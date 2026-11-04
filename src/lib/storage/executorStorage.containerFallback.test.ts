@@ -10,7 +10,9 @@
  *   • triggers ONLY on a confirmed status-gate rejection
  *     (`status-not-206` — the `PREVIEW_RANGE_STATUS_REJECTED` condition);
  *   • performs a SEPARATE ordinary GET (no `Range` header);
- *   • is capped at 20 MiB BEFORE any network I/O;
+ *   • is capped at 20 MiB BEFORE any network I/O (the BUFFERED path);
+ *   • above that ceiling the window is served by a bounded STREAM instead
+ *     (R9-A87.5 — see `executorStorage.windowedStream.test.ts`);
  *   • streams the body with a running byte counter (never
  *     arrayBuffer-then-check);
  *   • validates exact length + header + `chunkCount` against the TRUSTED,
@@ -502,10 +504,20 @@ describe("F3.3 — integrity failures fall through to the original error", () =>
     );
   });
 
-  it("a container larger than 20 MiB never triggers a plain GET", async () => {
+  it("a container larger than 20 MiB is STREAMED, never buffered as a whole object", async () => {
     const pointer = freshPointer();
     options = { rangeStatus: 200, fullChunks: [] };
 
+    /**
+     * R9-A87.5 — the policy changed from "refuse above the ceiling" to
+     * "stream the window above the ceiling", because the buffered path is what
+     * the 20 MiB constant actually bounds. The safety property is unchanged
+     * (memory is still bounded); what changed is that a large container is now
+     * READABLE instead of unconditionally rejected.
+     *
+     * An empty body still fails closed with the ORIGINAL typed error, and the
+     * attempt is now a streamed plain GET — one per gateway, bounded.
+     */
     await expectOriginalError(
       storage.downloadRange(pointer, HEADER_SIZE, CHUNK_A, {
         size: CONTAINER_FULL_FALLBACK_MAX_BYTES + 1,
@@ -513,7 +525,7 @@ describe("F3.3 — integrity failures fall through to the original error", () =>
       })
     );
 
-    expect(fullCallCount()).toBe(0);
+    expect(fullCallCount()).toBe(2); // one streamed GET per gateway
   });
 
   it("a structural-only hint (no safe integers) never triggers a plain GET", async () => {

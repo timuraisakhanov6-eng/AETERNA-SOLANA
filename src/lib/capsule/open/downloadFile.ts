@@ -2,6 +2,10 @@ import type {
     ByteRuntime,
 } from "../runtime/runtimeTypes";
 
+import {
+    createSessionReadGuard,
+} from "./sessionReadGuard";
+
 import type {
     DownloadFileSession,
     OpenMediaRequest,
@@ -32,11 +36,14 @@ export async function downloadFile(
      */
     let disposed = false;
 
+    const guard = createSessionReadGuard();
+
     const session: DownloadFileSession = {
 
         async read(
             start: number,
             end: number,
+            signal?: AbortSignal,
         ): Promise<Uint8Array<ArrayBuffer>> {
 
             if (disposed) {
@@ -63,9 +70,20 @@ export async function downloadFile(
                 );
             }
 
-            return runtime.getBytes(
-                start,
-                end,
+            /**
+             * R9-A87.7 (F3) - the read runs under a controller owned by
+             * THIS session: a caller abort reaches the storage stream, and
+             * disposing the session aborts the read even if the caller's
+             * signal never fires.
+             */
+            return guard.run(
+                signal,
+                (linked) =>
+                    runtime.getBytes(
+                        start,
+                        end,
+                        linked,
+                    ),
             );
 
         },
@@ -77,6 +95,9 @@ export async function downloadFile(
             }
 
             disposed = true;
+
+            // Abort any read still in flight BEFORE the runtime cache dies.
+            guard.dispose();
 
             runtime.dispose();
 
