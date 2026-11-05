@@ -51,6 +51,8 @@ export default defineConfig({
       "src/pages/capsule/Create.admission.test.tsx",
       "src/pages/capsule/VaultRenderer.media.test.tsx",
       "src/pages/capsule/VaultRenderer.multiVideo.test.tsx",
+      // R9-A88.1 — full-screen image viewer (jsdom interaction suite).
+      "src/pages/capsule/VaultRenderer.imageViewer.test.tsx",
       "src/pages/capsule/LetterCard.test.tsx",
       "src/pages/capsule/CapsuleController.openState.test.tsx",
       "src/pages/Protocol.legalCenter.test.tsx",

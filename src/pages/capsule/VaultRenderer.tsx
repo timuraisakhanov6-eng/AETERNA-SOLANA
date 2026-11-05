@@ -19,6 +19,8 @@ import {
 
 import { LetterCard } from "./LetterCard";
 
+import { ImageViewer } from "@/components/capsule/ImageViewer";
+
 import type {
   MediaSession,
   OpenableMediaItem,
@@ -2236,15 +2238,52 @@ function MediaBlock({
   filename?: string;
 }) {
 
+  /**
+   * R9-A88.1 — full-screen viewer state for THIS image only.
+   *
+   * Local to the block on purpose: one image's viewer can never open
+   * another image's bytes, and closing returns focus to this block's own
+   * trigger (Radix restores focus to the element that opened the dialog).
+   */
+  const [viewerOpen, setViewerOpen] = useState(false);
+
+  /** The image control that opened the viewer; focus returns here. */
+  const imageTriggerRef = useRef<HTMLButtonElement | null>(null);
+
   switch (mediaType) {
 
     case "image":
       return (
-        <img
-          src={src}
-          alt={filename}
-          className="w-full rounded-xl"
-        />
+        <>
+          <button
+            ref={imageTriggerRef}
+            type="button"
+            onClick={() => setViewerOpen(true)}
+            aria-label={`Open ${filename ?? "image"} full screen`}
+            aria-haspopup="dialog"
+            className="block w-full cursor-zoom-in rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <img
+              src={src}
+              alt={filename}
+              className="w-full rounded-xl"
+            />
+          </button>
+
+          {/*
+            The viewer receives the URL this block already displays. It
+            creates no object URL, fetches nothing and revokes nothing —
+            the inline image above stays the owner of `src`.
+          */}
+          {viewerOpen && (
+            <ImageViewer
+              src={src}
+              alt={filename ?? "Image"}
+              returnFocusTo={imageTriggerRef}
+              onClose={() => setViewerOpen(false)}
+            />
+          )}
+        </>
       );
 
     case "video":
