@@ -1196,14 +1196,24 @@ export default function CapsuleBuilder() {
   return (
     <div className="min-h-screen bg-background relative">
 
+      {/*
+        R9-A88.11 — `viewport-fit=cover` is global, so `top-0` is the PHYSICAL
+        screen edge. The bar keeps its original 64 px usable band, but that band
+        has to start below the iOS status bar / sensor housing.
+
+        With Tailwind preflight's `box-sizing: border-box` the padding is taken
+        inside the declared height, so `height = 64 + inset` and
+        `padding-top = inset` leave the previous content box (63 px content plus
+        the 1 px bottom border, exactly as before) sitting below the inset.
+      */}
       <header
-        className="fixed top-0 left-0 right-0 z-50 border-b border-border bg-background/90 backdrop-blur"
-        style={{ height: HEADER_HEIGHT }}
+        className="fixed top-0 left-0 right-0 z-50 border-b border-border bg-background/90 backdrop-blur pt-[env(safe-area-inset-top)]"
+        style={{ height: `calc(${HEADER_HEIGHT}px + env(safe-area-inset-top))` }}
       >
         <div className="relative h-full px-4 sm:px-5 flex items-center justify-center gap-2">
           <Link
             to="/"
-            className="absolute left-5 flex items-center gap-2 opacity-80 hover:opacity-100"
+            className="absolute left-[calc(env(safe-area-inset-left)+1.25rem)] flex items-center gap-2 opacity-80 hover:opacity-100"
           >
             <ChevronLeft size={20} />
             Back
@@ -1218,7 +1228,11 @@ export default function CapsuleBuilder() {
 
       <main
         className="mx-auto px-5 pb-[160px] sm:pb-[200px] lg:pb-[240px]"
-        style={{ paddingTop: HEADER_HEIGHT + 32 }}
+        style={{
+          // R9-A88.11 — the header grew by the top inset, so the original
+          // 32 px gap after the complete bar is preserved by adding it here too.
+          paddingTop: `calc(${HEADER_HEIGHT + 32}px + env(safe-area-inset-top))`,
+        }}
       >
         <div className="mx-auto w-full max-w-[720px] space-y-8">
 

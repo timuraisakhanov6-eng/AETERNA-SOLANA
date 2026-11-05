@@ -357,4 +357,61 @@ describe("R9-A88.1 — full-screen image viewer", () => {
     expect(classes).toContain("flex");
     expect(classes).not.toContain("grid");
   });
+
+  it("16: horizontal safe areas — image and close control clear the landscape notch", async () => {
+    await renderImage();
+    const dialog = openViewer();
+
+    /**
+     * R9-A88.9 — horizontal safe-area contract.
+     *
+     * R9-A88.8 found that only the vertical insets were applied: `px-4` on the
+     * image area and `right-4` on the close control both put a 16 px margin
+     * against the RAW screen edge, i.e. inside the ~47 px side inset on a
+     * notched iPhone in landscape.
+     *
+     * jsdom has no layout engine and no notion of a sensor housing, so
+     * `env(safe-area-inset-*)` cannot be evaluated here. What is pinned is the
+     * class contract that actually reaches the DOM — the base margin (`+1rem`)
+     * and the two horizontal insets. That the expressions compile and win the
+     * cascade is verified against the built stylesheet, not here.
+     */
+    const backdrop = within(dialog).getByTestId("image-viewer-backdrop");
+    const imageClasses = backdrop.className.split(/\s+/);
+
+    expect(imageClasses).toContain("pl-[calc(env(safe-area-inset-left)+1rem)]");
+    expect(imageClasses).toContain("pr-[calc(env(safe-area-inset-right)+1rem)]");
+
+    // The flat `px-4` is gone rather than merely overridden, so no cascade
+    // order can reintroduce a 16 px edge on the notched axis.
+    expect(imageClasses).not.toContain("px-4");
+
+    // Vertical math untouched, exactly as reviewed in R9-A88.3/.4.
+    expect(imageClasses).toContain("pt-[calc(env(safe-area-inset-top)+4.5rem)]");
+    expect(imageClasses).toContain("pb-[calc(env(safe-area-inset-bottom)+1.5rem)]");
+
+    const close = within(dialog).getByRole("button", {
+      name: "Close image viewer",
+    });
+    const closeClasses = close.className.split(/\s+/);
+
+    expect(closeClasses).toContain("right-[calc(env(safe-area-inset-right)+1rem)]");
+    expect(closeClasses).not.toContain("right-4");
+
+    // Vertical placement, hit area and glyph size unchanged.
+    expect(closeClasses).toContain("top-4");
+    expect(closeClasses).toContain("mt-[env(safe-area-inset-top)]");
+    expect(closeClasses).toContain("h-10");
+    expect(closeClasses).toContain("w-10");
+
+    // Zero-inset devices keep the original 16 px margin: `+1rem` is additive.
+    expect(closeClasses.join(" ")).toMatch(/\+1rem\)\]/);
+
+    // 7/8 — the interaction contract is untouched by the placement change.
+    closeByButton(dialog);
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(document.activeElement).toBe(trigger());
+  });
 });

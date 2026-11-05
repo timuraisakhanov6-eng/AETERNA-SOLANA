@@ -369,7 +369,7 @@ const CapsulePreview = (): JSX.Element => {
 
   return (
 
-<div className="h-screen bg-background flex flex-col overflow-hidden">
+<div className="h-[100dvh] bg-background flex flex-col overflow-hidden">
 
 {/* HEADER */}
 
@@ -525,7 +525,7 @@ className="p-1 rounded hover:text-red-500 transition-colors"
 
 {/* ADD FILE */}
 
-<div className="sticky bottom-0 border-t bg-background p-4">
+<div className="sticky bottom-0 border-t bg-background px-4 pt-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
 
 <button
 onClick={() =>

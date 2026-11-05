@@ -18,7 +18,13 @@ export default function AppLayout() {
 
       {/* GLOBAL HEADER */}
 
-      <header className="fixed top-4 right-4 z-50">
+      {/*
+        R9-A88.9 — `viewport-fit=cover` is global, so this header is positioned
+        against the physical screen edge. Without the insets the control lands
+        inside the iOS status bar (portrait) and inside the sensor housing in
+        landscape. 1rem is preserved beyond each inset.
+      */}
+      <header className="fixed right-[calc(env(safe-area-inset-right)+1rem)] top-[calc(env(safe-area-inset-top)+1rem)] z-50">
 
         <ThemeToggle />
 

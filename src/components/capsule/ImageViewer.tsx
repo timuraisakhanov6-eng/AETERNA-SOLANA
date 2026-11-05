@@ -135,10 +135,19 @@ export function ImageViewer({
           }}
           className={[
             "flex h-full w-full items-center justify-center",
-            "px-4",
-            // Keep the image clear of the close button and of the notch /
-            // home indicator on phones. Browsers without `env()` keep the
-            // plain padding above.
+            /**
+             * R9-A88.9 — all FOUR safe-area insets, not only the vertical pair.
+             *
+             * With `viewport-fit=cover` the layer runs under the notch and the
+             * rounded screen corners. In landscape the horizontal insets are
+             * the ones that matter (about 47 px on a notched iPhone), and a
+             * flat `px-4` left the image inside that band.
+             *
+             * Each edge is `inset + 1rem`, so a device with no notch keeps the
+             * original 16 px margin exactly.
+             */
+            "pl-[calc(env(safe-area-inset-left)+1rem)]",
+            "pr-[calc(env(safe-area-inset-right)+1rem)]",
             "pt-[calc(env(safe-area-inset-top)+4.5rem)]",
             "pb-[calc(env(safe-area-inset-bottom)+1.5rem)]",
           ].join(" ")}
@@ -156,7 +165,14 @@ export function ImageViewer({
           onClick={onClose}
           aria-label="Close image viewer"
           className={[
-            "absolute right-4 top-4 z-10 mt-[env(safe-area-inset-top)]",
+            /**
+             * R9-A88.9 — the close control must clear the landscape sensor
+             * housing too. `right-4` alone put a 40 px disc 16 px from the raw
+             * edge, i.e. inside the ~47 px side inset on a notched iPhone.
+             * Vertical placement is unchanged.
+             */
+            "absolute top-4 z-10 mt-[env(safe-area-inset-top)]",
+            "right-[calc(env(safe-area-inset-right)+1rem)]",
             "flex h-10 w-10 items-center justify-center rounded-full",
             "border border-white/25 bg-black/60 text-white",
             "transition-colors hover:bg-black/80",
