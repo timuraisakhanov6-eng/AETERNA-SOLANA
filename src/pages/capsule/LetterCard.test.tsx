@@ -418,7 +418,7 @@ describe("LetterCard — media player isolation", () => {
 
     // --- open the letter ---
     await act(async () => {
-      await user.click(screen.getByRole("button", { name: /read letter/i }));
+      await user.click(screen.getByRole("button", { name: /open letter/i }));
     });
     expect(screen.getByRole("dialog")).toBeTruthy();
 

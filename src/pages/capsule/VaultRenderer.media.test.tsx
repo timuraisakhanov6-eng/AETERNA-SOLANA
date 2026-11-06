@@ -112,8 +112,9 @@ describe("MediaItemV2Block lifecycle", () => {
     ]);
     render(<VaultRenderer vault={vault as never} cryptoKey={fakeKey} />);
 
-    // Text renders independently and immediately.
-    expect(screen.getByText("Hello capsule")).toBeTruthy();
+    // The letter is collapsed; its body is not part of the initial page.
+    expect(screen.getByRole("button", { name: "Open letter" })).toBeTruthy();
+    expect(screen.queryByText("Hello capsule")).toBeNull();
 
     // R9-A86.2: the video renders a lazy card — nothing loads on mount.
     expect(screen.queryByText(/Loading/i)).toBeNull();
@@ -295,7 +296,7 @@ describe("#3: sessionToDownloadStream reads are bounded", () => {
 });
 
 describe("#5: image preview size policy on the UI surface", () => {
-  it("an image within the limit renders an inline preview", async () => {
+  it("an image within the limit opens only after the explicit View photo action", async () => {
     vi.mocked(openRuntime.openImage).mockResolvedValue({
       objectUrl: "blob:img",
     } as never);
@@ -305,8 +306,18 @@ describe("#5: image preview size policy on the UI surface", () => {
         cryptoKey={fakeKey}
       />,
     );
-    await waitFor(() => expect(document.querySelector("img")).not.toBeNull());
-    expect(screen.queryByText(/Loading/i)).toBeNull();
+
+    // Nothing is loaded or shown on mount.
+    expect(document.querySelector("img")).toBeNull();
+    expect(openRuntime.openImage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "View photo: photo.png" }));
+    });
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    expect(openRuntime.openImage).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("img", { name: "photo.png" })).toBeTruthy();
   });
 
   it("an over-limit image shows a precise terminal notice (no preview, no hang)", async () => {
@@ -320,6 +331,11 @@ describe("#5: image preview size policy on the UI surface", () => {
         cryptoKey={fakeKey}
       />,
     );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "View photo: photo.png" }));
+    });
+
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
     expect(
       screen.getByText(/too large for an inline preview/i),
@@ -338,6 +354,11 @@ describe("#5: image preview size policy on the UI surface", () => {
         cryptoKey={fakeKey}
       />,
     );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "View photo: photo.png" }));
+    });
+
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
     // An image read FAILURE (not a timeout) is a stream-read failure —
     // never mislabelled as an MSE/network error.
@@ -357,6 +378,11 @@ describe("#5: image preview size policy on the UI surface", () => {
         cryptoKey={fakeKey}
       />,
     );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "View photo: photo.png" }));
+    });
+
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
     expect(screen.getByText(/PREVIEW_OBJECT_URL_FAILED/)).toBeTruthy();
     expect(screen.queryByText(/STREAM_READ_FAILED/)).toBeNull();
@@ -375,7 +401,17 @@ describe("#5: image preview size policy on the UI surface", () => {
         cryptoKey={fakeKey}
       />,
     );
-    expect(screen.getByText(/Loading/i)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "View photo: photo.png" }));
+    });
+
+    // The explicit action is in its preparing state — never a hang.
+    const preparing = screen.getByRole("button", {
+      name: "View photo: photo.png",
+    });
+    expect(preparing.hasAttribute("disabled")).toBe(true);
+    expect(preparing.getAttribute("aria-busy")).toBe("true");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(31_000);
@@ -427,8 +463,9 @@ describe("range read deadline — media layer", () => {
       />,
     );
 
-    // Text renders independently; the video card is still idle.
-    expect(screen.getByText("Hello capsule")).toBeTruthy();
+    // The letter is collapsed; the video card is still idle.
+    expect(screen.getByRole("button", { name: "Open letter" })).toBeTruthy();
+    expect(screen.queryByText("Hello capsule")).toBeNull();
     expect(openRuntime.openVideo).not.toHaveBeenCalled();
 
     clickPlay();
@@ -862,6 +899,10 @@ describe("Phase E2.4 — the fallback trigger is shown beside the final failure"
       />,
     );
 
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "View photo: photo.png" }));
+    });
+
     await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
 
     // The final failure is shown…
@@ -984,7 +1025,7 @@ describe("A/V element is mounted BEFORE the load resolves", () => {
     expect((after as HTMLVideoElement).src).toContain("blob");
   });
 
-  it("an <audio> item is mounted early too", async () => {
+  it("an <audio> item is lazy: it mounts only after Play audio", async () => {
     vi.mocked(openRuntime.openAudio).mockImplementation(
       () => new Promise(() => {}),
     );
@@ -1007,6 +1048,17 @@ describe("A/V element is mounted BEFORE the load resolves", () => {
       />,
     );
 
+    // Nothing is mounted and nothing is read before the explicit action.
+    expect(document.querySelectorAll("audio").length).toBe(0);
+    expect(openRuntime.openAudio).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Play audio: clip.webm" }),
+      );
+    });
+
+    expect(openRuntime.openAudio).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Loading clip\.webm/i)).toBeTruthy();
     expect(document.querySelectorAll("audio").length).toBe(1);
   });
@@ -1364,7 +1416,7 @@ describe("R9-A85.2 — file attachments download ONLY on explicit request", () =
     expect(screen.getByText(/application\/x-zip-compressed/)).toBeTruthy();
     expect(screen.getByText(/42596 bytes/)).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: /Download file/i })
+      screen.getByRole("button", { name: /Download/i })
     ).toBeTruthy();
   });
 
@@ -1376,7 +1428,7 @@ describe("R9-A85.2 — file attachments download ONLY on explicit request", () =
 
     renderZip();
 
-    const first = screen.getByRole("button", { name: /Download file/i });
+    const first = screen.getByRole("button", { name: /Download/i });
     await act(async () => {
       first.click();
     });
@@ -1387,7 +1439,7 @@ describe("R9-A85.2 — file attachments download ONLY on explicit request", () =
       expect(url.create).toHaveBeenCalledTimes(1)
     );
 
-    const second = screen.getByRole("button", { name: /Download file/i });
+    const second = screen.getByRole("button", { name: /Download/i });
     await act(async () => {
       second.click();
     });
@@ -1404,7 +1456,7 @@ describe("R9-A85.2 — file attachments download ONLY on explicit request", () =
 
     renderZip();
 
-    const button = screen.getByRole("button", { name: /Download file/i });
+    const button = screen.getByRole("button", { name: /Download/i });
     await act(async () => {
       button.click();
       button.click();
@@ -1426,7 +1478,7 @@ describe("R9-A85.2 — file attachments download ONLY on explicit request", () =
     );
 
     const view = renderZip();
-    const button = screen.getByRole("button", { name: /Download file/i });
+    const button = screen.getByRole("button", { name: /Download/i });
 
     await act(async () => {
       button.click();
@@ -1444,7 +1496,7 @@ describe("R9-A85.2 — file attachments download ONLY on explicit request", () =
     await waitFor(() => expect(url.create).toHaveBeenCalledTimes(1));
   });
 
-  it("8: a text item alongside a ZIP still renders, with no download", async () => {
+  it("8: a text item alongside a ZIP stays collapsed, with no download", async () => {
     countingUrl();
     render(
       <VaultRenderer
@@ -1458,7 +1510,8 @@ describe("R9-A85.2 — file attachments download ONLY on explicit request", () =
       />
     );
 
-    expect(screen.getByText("Hello capsule")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open letter" })).toBeTruthy();
+    expect(screen.queryByText("Hello capsule")).toBeNull();
     expect(screen.getByText(ZIP_NAME)).toBeTruthy();
     expect(openRuntime.downloadFile).not.toHaveBeenCalled();
   });

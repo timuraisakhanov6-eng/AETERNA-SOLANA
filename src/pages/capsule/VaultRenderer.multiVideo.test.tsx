@@ -569,11 +569,11 @@ describe("R9-A86.2 — one-video capsules and individual play", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 13: non-video behaviour unchanged                                    */
+/* 13: non-video behaviour under the R9-A90 collapsed presentation      */
 /* ------------------------------------------------------------------ */
 
-describe("R9-A86.2 — non-video items keep their mount-time behaviour", () => {
-  it("13: image + audio still auto-initialize on mount; text renders; ZIP stays manual", async () => {
+describe("R9-A90 — non-video items are collapsed and explicit", () => {
+  it("13: letter hides its body, photo/audio load only on action, ZIP stays manual", async () => {
     vi.mocked(openRuntime.openImage).mockResolvedValue({
       objectUrl: "blob:img",
     } as never);
@@ -596,20 +596,43 @@ describe("R9-A86.2 — non-video items keep their mount-time behaviour", () => {
       />,
     );
 
-    // Text is immediate.
-    expect(screen.getByText("Hello capsule")).toBeTruthy();
+    // The letter is a collapsed card: no body text is exposed.
+    expect(screen.queryByText("Hello capsule")).toBeNull();
+    expect(screen.getByRole("button", { name: "Open letter" })).toBeTruthy();
 
-    // Image and audio AUTO-initialize on mount (unchanged).
-    await waitFor(() => expect(document.querySelector("img")).not.toBeNull());
-    await waitFor(() => expect(document.querySelector("audio")).not.toBeNull());
+    // The summary counts the descriptors without any storage access.
+    expect(screen.getByText("4 files")).toBeTruthy();
+    expect(openRuntime.openImage).not.toHaveBeenCalled();
+    expect(openRuntime.openAudio).not.toHaveBeenCalled();
+    expect(document.querySelector("img")).toBeNull();
+    expect(document.querySelector("audio")).toBeNull();
+
+    // Photo opens only after the explicit action.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "View photo: photo.png" }));
+    });
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
     expect(openRuntime.openImage).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("img", { name: "photo.png" })).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close image viewer" }));
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // Audio loads only after the explicit action, and never autoplays.
+    expect(openRuntime.openAudio).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Play audio: clip.webm" }));
+    });
+    await waitFor(() => expect(document.querySelector("audio")).not.toBeNull());
     expect(openRuntime.openAudio).toHaveBeenCalledTimes(1);
 
     // The ZIP card is metadata-only and downloads nothing.
     expect(screen.getByText("album.zip")).toBeTruthy();
     expect(openRuntime.downloadFile).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("button", { name: /Download file/i }),
+      screen.getByRole("button", { name: /Download/i }),
     ).toBeTruthy();
 
     // And no video item exists to activate — the zero-video invariant.

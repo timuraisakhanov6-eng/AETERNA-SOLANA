@@ -1,6 +1,15 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import type { ReactNode, RefObject } from "react";
 
-import { Play } from "lucide-react";
+import {
+  AudioLines,
+  Download,
+  File as FileIcon,
+  FileArchive,
+  Image as ImageIcon,
+  Play,
+  Video,
+} from "lucide-react";
 
 import type {
   Vault,
@@ -20,6 +29,10 @@ import {
 } from "@/lib/capsule/open/openRuntime";
 
 import { LetterCard } from "./LetterCard";
+
+import { CapsuleContentsSummary } from "./CapsuleContentsSummary";
+
+import { isZipFileDescriptor } from "./capsuleContents";
 
 import { ImageViewer } from "@/components/capsule/ImageViewer";
 
@@ -1054,14 +1067,25 @@ function VaultV2Renderer({
 
   if (!items.length) {
     return (
-      <p className="text-sm text-muted-foreground">
-        Capsule is empty
-      </p>
+      <div className="space-y-6">
+        <CapsuleContentsSummary items={items} />
+        <p className="text-sm text-muted-foreground">
+          Capsule is empty
+        </p>
+      </div>
     );
   }
 
   return (
     <div className="space-y-6">
+      {/*
+        R9-A90.1 — the capsule opens with a derived overview of what it
+        contains. It is computed from the same descriptors the cards
+        below render, so it costs no extra storage read and cannot drift
+        from the list.
+      */}
+      <CapsuleContentsSummary items={items} />
+
       {items.map((item, index) => (
         <div key={index}>
           {renderItemV2(
@@ -1210,21 +1234,80 @@ function MediaItemV2Block({
   const isVideo =
     item.mediaType === "video";
 
+  const isImage =
+    item.mediaType === "image";
+
+  const isAudio =
+    item.mediaType === "audio";
+
   /**
-   * R9-A86.2 — a video item is ACTIVE only when the parent's single
-   * authority says so, and a video whose control is somehow MISSING can
-   * never self-activate (fail closed). Non-video types are always active,
-   * which reproduces their original mount-time pipeline exactly.
+   * R9-A90.1 — explicit activation for the media types whose player or
+   * bytes used to be mounted eagerly.
+   *
+   * `imageRequested` / `audioRequested` become true only when the user
+   * activates the card's explicit action. Once requested they stay true
+   * for this item's lifetime, so reopening a viewer reuses the SAME
+   * object URL instead of re-reading the container; the effect's own
+   * unmount cleanup remains the single release point.
+   */
+  const [imageRequested, setImageRequested] =
+    useState(false);
+
+  const [audioRequested, setAudioRequested] =
+    useState(false);
+
+  /**
+   * Whether the full-screen photo viewer is open. Kept separate from
+   * `imageRequested`: closing the viewer must not revoke the URL the
+   * item still owns, and reopening must be instantaneous.
+   */
+  const [imageViewerOpen, setImageViewerOpen] =
+    useState(false);
+
+  /** The photo action that opened the viewer; focus returns here. */
+  const photoTriggerRef =
+    useRef<HTMLButtonElement>(null);
+
+  /**
+   * R9-A86.2 / R9-A90.1 — an item is ACTIVE only when the user has
+   * explicitly asked for it (or, for video, when the parent's single
+   * authority says so). An inactive item owns nothing: no session, no
+   * ByteRuntime, no bytes, no MediaSource and no object URL.
+   * A video whose control is somehow MISSING can never self-activate
+   * (fail closed).
    */
   const active = isVideo
     ? videoControl !== undefined &&
       videoControl.activeIndex === videoControl.index
-    : true;
+    : isImage
+      ? imageRequested
+      : isAudio
+        ? audioRequested
+        : true;
 
   /** Activate THIS item as the single active video. */
   const activateVideo = useCallback(() => {
     videoControl?.onSelect(videoControl.index);
   }, [videoControl]);
+
+  /**
+   * Explicit photo activation. `imageViewerOpen` is raised immediately:
+   * the viewer mounts only once the URL exists, so the user sees the
+   * card's "Preparing photo…" state rather than an empty dialog.
+   */
+  const requestPhoto = useCallback(() => {
+    setImageRequested(true);
+    setImageViewerOpen(true);
+  }, []);
+
+  const closePhotoViewer = useCallback(() => {
+    setImageViewerOpen(false);
+  }, []);
+
+  /** Explicit audio activation — nothing loads before this click. */
+  const requestAudio = useCallback(() => {
+    setAudioRequested(true);
+  }, []);
 
   /**
    * R9-A86.2 — explicit retry. Bumped ONLY by the Retry control on the
@@ -1426,23 +1509,22 @@ function MediaItemV2Block({
     if (item.mediaType === "file") return;
 
     /**
-     * R9-A86.2 — LAZY VIDEO INITIALIZATION.
+     * R9-A86.2 / R9-A90.1 — LAZY MEDIA INITIALIZATION.
      *
-     * A video that is not the single active video must never open a
-     * session, read bytes, or create any media object. Reaching this body
-     * with `active === false` means the PREVIOUS run's cleanup (below) has
+     * An item that has not been explicitly activated must never open a
+     * session, read bytes, or create any media object. This covers
+     * video (parent-owned single-active authority), image and audio
+     * (each card's explicit action). Reaching this body with
+     * `active === false` means the PREVIOUS run's cleanup (below) has
      * already aborted the attempt, disposed the session and revoked its
-     * URL — React runs every effect destroy before any effect create in a
-     * commit, so the previous owner is disposed BEFORE any newly selected
-     * video starts. The generation bump here additionally invalidates any
-     * still-in-flight async work of a deactivated attempt, so a stale
-     * initialization can never write state or reactivate a disposed
-     * player after a newer selection.
-     *
-     * Audio keeps its mount-time pipeline: `active` is always true for
-     * non-video types, so this branch is unreachable for them.
+     * URL — React runs every effect destroy before any effect create in
+     * a commit, so the previous owner is disposed BEFORE any newly
+     * selected item starts. The generation bump here additionally
+     * invalidates any still-in-flight async work of a deactivated
+     * attempt, so a stale initialization can never write state or
+     * reactivate a disposed player after a newer selection.
      */
-    if (item.mediaType === "video" && !active) {
+    if (!active) {
       generationRef.current += 1;
       startedSignatureRef.current = null;
       return;
@@ -1819,8 +1901,9 @@ function MediaItemV2Block({
 
 
   /**
-   * A/V items mount their media element for the WHOLE lifetime of the
-   * item — including while loading.
+   * A/V items mount their media element only once the user has
+   * explicitly activated them; from that point it stays the SINGLE
+   * player for the item.
    *
    * This is what makes progressive playback possible at all: a
    * MediaSource only opens once its object URL is attached to an
@@ -1832,50 +1915,93 @@ function MediaItemV2Block({
    * imperatively (see the `src` effect above) so the MediaSource
    * attachment is never re-written.
    */
-  if (item.mediaType === "video" || item.mediaType === "audio") {
+  if (isVideo || isAudio) {
     const filename = sanitizeFilename(item.filename);
 
-    /**
-     * R9-A86.2 — Step 1: an INACTIVE video renders a lightweight metadata
-     * card and owns nothing: no <video> element, no session, no ByteRuntime,
-     * no chunk resolution, no MediaSource/SourceBuffer, no Blob URL. The
-     * only metadata shown is what the Vault itself carries (filename, MIME
-     * type, size); no poster is invented, because a poster would require
-     * reading the encrypted bytes — which is exactly what the card must not
-     * do. Audio never reaches this branch (always active) and keeps its
-     * pre-existing element-plus-mount-time-pipeline behaviour.
-     */
-    if (isVideo && !active) {
-      return (
-        <VideoCard
-          filename={filename}
-          mimeType={item.mimeType}
-          size={item.size}
-          onPlay={videoControl ? activateVideo : undefined}
-        />
-      );
-    }
+    if (isVideo) {
+      /**
+       * R9-A86.2 — an INACTIVE video renders a lightweight metadata
+       * card and owns nothing: no <video> element, no session, no
+       * ByteRuntime, no chunk resolution, no MediaSource/SourceBuffer,
+       * no Blob URL. The only metadata shown is what the Vault itself
+       * carries (filename, MIME type, size); no poster is invented,
+       * because a poster would require reading the encrypted bytes —
+       * which is exactly what the card must not do.
+       */
+      if (!active) {
+        return (
+          <VideoCard
+            filename={filename}
+            mimeType={item.mimeType}
+            size={item.size}
+            onPlay={videoControl ? activateVideo : undefined}
+          />
+        );
+      }
 
-    return (
-      <div className="space-y-2">
-        {item.mediaType === "video" ? (
+      return (
+        <div className="space-y-2">
           <video
             ref={setMediaEl}
             controls
             playsInline
             className="w-full rounded-xl"
           />
-        ) : (
-          <audio
-            ref={setMediaEl}
-            controls
-            className="w-full"
+
+          {loading && <LoadingBlock filename={filename} />}
+
+          {!loading && (error || !objectUrl) && (
+            <ErrorBlock
+              filename={filename}
+              mimeType={item.mimeType}
+              mediaType={item.mediaType}
+              size={item.size}
+              notice={notice ?? undefined}
+              fallbackTrigger={fallbackTriggerNotice ?? undefined}
+              onRetry={retryLoad}
+            />
+          )}
+
+          {objectUrl && (
+            <a
+              href={objectUrl}
+              download={filename}
+              className="underline text-sm"
+            >
+              Download file
+            </a>
+          )}
+        </div>
+      );
+    }
+
+    /**
+     * R9-A90.1 — AUDIO is lazy. Until `Play audio` is activated the
+     * item owns no element, no session and no URL, exactly like video.
+     * After activation the native player appears; it never autoplays.
+     */
+    if (!audioRequested) {
+      return (
+        <AudioCard
+          filename={filename}
+          mimeType={item.mimeType}
+          size={item.size}
+          state="idle"
+          onPlay={requestAudio}
+        />
+      );
+    }
+
+    if (!loading && error) {
+      return (
+        <div className="space-y-3">
+          <AudioCard
+            filename={filename}
+            mimeType={item.mimeType}
+            size={item.size}
+            state="failed"
+            onPlay={retryLoad}
           />
-        )}
-
-        {loading && <LoadingBlock filename={filename} />}
-
-        {!loading && (error || !objectUrl) && (
           <ErrorBlock
             filename={filename}
             mimeType={item.mimeType}
@@ -1883,9 +2009,35 @@ function MediaItemV2Block({
             size={item.size}
             notice={notice ?? undefined}
             fallbackTrigger={fallbackTriggerNotice ?? undefined}
-            onRetry={isVideo ? retryLoad : undefined}
+            onRetry={retryLoad}
           />
-        )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-3">
+        <AudioCard
+          filename={filename}
+          mimeType={item.mimeType}
+          size={item.size}
+          state={loading ? "loading" : "ready"}
+          onPlay={requestAudio}
+        />
+
+        {/*
+          Mounted BEFORE the load starts (the effect runs after this
+          commit) so the MediaSource handshake has an element to attach
+          to. `src` is assigned by the imperative effect, never by React.
+        */}
+        <audio
+          ref={setMediaEl}
+          controls
+          className="w-full"
+          aria-label={`Audio player for ${filename}`}
+        />
+
+        {loading && <LoadingBlock filename={filename} />}
 
         {objectUrl && (
           <a
@@ -1913,49 +2065,74 @@ function MediaItemV2Block({
         filename={sanitizeFilename(item.filename)}
         mimeType={item.mimeType}
         size={item.size}
+        kind={isZipFileDescriptor(item) ? "zip" : "other"}
         state={fileDownload}
         onDownload={onDownloadFile}
       />
     );
   }
 
-  if (loading)
-    return (
-      <LoadingBlock
-        filename={sanitizeFilename(
-          item.filename
-        )}
-      />
-    );
-
-
   /**
-   * Reached only for `image` items now: video/audio returned above and every
-   * `file` item renders the metadata card, so no media-shaped surface can be
-   * produced without a URL.
+   * R9-A90.1 — PHOTO: compact card by default, full image only after
+   * the explicit `View photo` action.
+   *
+   * The card is metadata-only and renders no <img>. Clicking the action
+   * starts the existing image pipeline; once its URL exists the existing
+   * `ImageViewer` is mounted. Closing the viewer only hides it — the URL
+   * remains owned by this item until unmount, so a second open is
+   * instantaneous and performs no second container read.
    */
-  if (error || !objectUrl)
+  if (isImage) {
+    if (imageRequested && !loading && error) {
+      return (
+        <ErrorBlock
+          filename={sanitizeFilename(item.filename)}
+          mimeType={item.mimeType}
+          mediaType={item.mediaType}
+          size={item.size}
+          notice={notice ?? undefined}
+          fallbackTrigger={fallbackTriggerNotice ?? undefined}
+          onRetry={retryLoad}
+        />
+      );
+    }
+
+    const filename = sanitizeFilename(item.filename);
+
     return (
-      <ErrorBlock
-        filename={sanitizeFilename(item.filename)}
-        mimeType={item.mimeType}
-        mediaType={item.mediaType}
-        size={item.size}
-        notice={notice ?? undefined}
-        fallbackTrigger={fallbackTriggerNotice ?? undefined}
-      />
+      <>
+        <PhotoCard
+          filename={filename}
+          mimeType={item.mimeType}
+          size={item.size}
+          state={
+            !imageRequested
+              ? "idle"
+              : objectUrl
+                ? "ready"
+                : "loading"
+          }
+          onView={requestPhoto}
+          actionRef={photoTriggerRef}
+        />
+
+        {/*
+          The viewer receives the URL this item already owns. It creates
+          no object URL, fetches nothing and revokes nothing.
+        */}
+        {imageViewerOpen && objectUrl && (
+          <ImageViewer
+            src={objectUrl}
+            alt={filename}
+            returnFocusTo={photoTriggerRef}
+            onClose={closePhotoViewer}
+          />
+        )}
+      </>
     );
+  }
 
-
-  return (
-    <MediaBlock
-      mediaType={item.mediaType}
-      src={objectUrl}
-      filename={sanitizeFilename(
-        item.filename
-      )}
-    />
-  );
+  return null;
 
 }
 
@@ -2084,6 +2261,66 @@ function resolveOpenableMedia(
 
 
 /**
+ * R9-A90.1 — shared compact file-card frame.
+ *
+ * One visual hierarchy for every item type: icon, type badge, filename,
+ * technical metadata, then a single explicit action supplied by the
+ * concrete card. The frame itself is NOT interactive, so the action is
+ * never a button nested inside another button.
+ */
+function FileCardFrame({
+  icon,
+  badge,
+  filename,
+  mimeType,
+  size,
+  children,
+}: {
+  icon: ReactNode;
+  badge: string;
+  filename: string;
+  mimeType?: string | undefined;
+  size?: number | undefined;
+  children: ReactNode;
+}) {
+  return (
+    <article className="rounded-2xl border border-border/60 bg-card/40 p-4 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.75)] sm:p-5">
+      <div className="flex items-start gap-3">
+        <span
+          aria-hidden="true"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-accent/25 bg-accent/10 text-accent"
+        >
+          {icon}
+        </span>
+
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex shrink-0 items-center rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+              {badge}
+            </span>
+
+            <span className="min-w-0 flex-1 font-medium break-all">
+              {filename}
+            </span>
+          </div>
+
+          <div className="text-xs text-muted-foreground break-all">
+            {mimeType ?? "unknown type"}
+            {" · "}
+            {typeof size === "number"
+              ? `${size} bytes`
+              : "unknown size"}
+          </div>
+        </div>
+      </div>
+
+      {children}
+    </article>
+  );
+}
+
+
+/**
  * R9-A86.2 — the lazy video card: the ONLY surface an inactive video item
  * renders.
  *
@@ -2093,6 +2330,9 @@ function resolveOpenableMedia(
  * activates the control, which asks the parent's single-active-video
  * authority to select this item. The metadata shown is exactly what the
  * Vault carries — nothing invented, no poster decoded.
+ *
+ * R9-A89.1 — the prominent gold VIDEO badge and Play video control are
+ * preserved verbatim; R9-A90.1 only places them in the shared card frame.
  */
 function VideoCard({
   filename,
@@ -2107,45 +2347,153 @@ function VideoCard({
 }) {
 
   return (
-    <div className="space-y-3 text-sm">
+    <FileCardFrame
+      icon={<Video className="h-4 w-4" strokeWidth={1.75} />}
+      badge="VIDEO"
+      filename={filename ?? "file"}
+      mimeType={mimeType}
+      size={size}
+    >
+      <div className="mt-3 space-y-3 text-sm">
+        <Button
+          type="button"
+          onClick={onPlay}
+          disabled={!onPlay}
+          variant="capsule"
+          size="lg"
+          className="h-12 min-h-12 w-full justify-center rounded-lg px-5 text-sm sm:w-auto sm:px-6"
+        >
+          <Play aria-hidden="true" className="h-4 w-4 fill-current" />
+          Play video
+        </Button>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="inline-flex shrink-0 items-center rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
-          VIDEO
-        </span>
-
-        <span className="min-w-0 flex-1 font-medium break-all">
-          {filename}
-        </span>
+        <div className="text-muted-foreground">
+          Video is loaded only when you start it.
+        </div>
       </div>
-
-      <div className="text-muted-foreground">
-        {mimeType ?? "unknown type"}
-        {" · "}
-        {typeof size === "number"
-          ? `${size} bytes`
-          : "unknown size"}
-      </div>
-
-      <Button
-        type="button"
-        onClick={onPlay}
-        disabled={!onPlay}
-        variant="capsule"
-        size="lg"
-        className="h-12 min-h-12 w-full justify-center rounded-lg px-5 text-sm sm:w-auto sm:px-6"
-      >
-        <Play aria-hidden="true" className="h-4 w-4 fill-current" />
-        Play video
-      </Button>
-
-      <div className="text-muted-foreground">
-        Video is loaded only when you start it.
-      </div>
-
-    </div>
+    </FileCardFrame>
   );
 
+}
+
+
+/**
+ * R9-A90.1 — the collapsed photo card: metadata only, no <img>.
+ *
+ * Clicking `View photo` starts the existing bounded image pipeline. The
+ * full image is presented by the existing ImageViewer only after that
+ * explicit action, and the card remains the collapsed surface behind it.
+ */
+function PhotoCard({
+  filename,
+  mimeType,
+  size,
+  state,
+  onView,
+  actionRef,
+}: {
+  filename: string;
+  mimeType?: string | undefined;
+  size?: number | undefined;
+  state: "idle" | "loading" | "ready";
+  onView: () => void;
+  actionRef: RefObject<HTMLButtonElement>;
+}) {
+  const isLoading = state === "loading";
+
+  return (
+    <FileCardFrame
+      icon={<ImageIcon className="h-4 w-4" strokeWidth={1.75} />}
+      badge="PHOTO"
+      filename={filename}
+      mimeType={mimeType}
+      size={size}
+    >
+      <p className="mt-3 text-xs text-muted-foreground">
+        Photo is loaded only when you open it.
+      </p>
+
+      <div className="mt-3">
+        <Button
+          ref={actionRef}
+          type="button"
+          onClick={onView}
+          disabled={isLoading}
+          aria-label={`View photo: ${filename}`}
+          aria-haspopup="dialog"
+          aria-busy={isLoading || undefined}
+          variant="capsuleOutline"
+          size="lg"
+          className="h-12 min-h-12 w-full justify-center rounded-lg px-5 text-sm sm:w-auto sm:px-6"
+        >
+          <ImageIcon aria-hidden="true" className="h-4 w-4" />
+          {isLoading ? "Preparing photo…" : "View photo"}
+        </Button>
+      </div>
+    </FileCardFrame>
+  );
+}
+
+
+/**
+ * R9-A90.1 — the collapsed audio card.
+ *
+ * Nothing is loaded or played before the explicit `Play audio` action.
+ * After activation the existing openAudio session and the native player
+ * are revealed; the element never autoplays.
+ */
+function AudioCard({
+  filename,
+  mimeType,
+  size,
+  state,
+  onPlay,
+}: {
+  filename: string;
+  mimeType?: string | undefined;
+  size?: number | undefined;
+  state: "idle" | "loading" | "ready" | "failed";
+  onPlay: () => void;
+}) {
+  const isLoading = state === "loading";
+
+  return (
+    <FileCardFrame
+      icon={<AudioLines className="h-4 w-4" strokeWidth={1.75} />}
+      badge="AUDIO"
+      filename={filename}
+      mimeType={mimeType}
+      size={size}
+    >
+      <p className="mt-3 text-xs text-muted-foreground">
+        {state === "ready"
+          ? "Audio is ready. Use the player below."
+          : "Audio is loaded only when you start it."}
+      </p>
+
+      <div className="mt-3">
+        <Button
+          type="button"
+          onClick={onPlay}
+          disabled={isLoading}
+          aria-label={`Play audio: ${filename}`}
+          aria-busy={isLoading || undefined}
+          variant="capsuleOutline"
+          size="lg"
+          className="h-12 min-h-12 w-full justify-center rounded-lg px-5 text-sm sm:w-auto sm:px-6"
+        >
+          <AudioLines aria-hidden="true" className="h-4 w-4" />
+          {isLoading
+            ? "Preparing audio…"
+            : state === "ready"
+              ? "Audio ready"
+              : state === "failed"
+                ? "Retry audio"
+                : "Play audio"}
+        </Button>
+      </div>
+    </FileCardFrame>
+  );
 }
 
 
@@ -2155,54 +2503,67 @@ function VideoCard({
  * Shows what the item is (filename, MIME type, size) and exactly ONE action.
  * Rendering it performs no I/O: the download begins only when the user
  * activates the control.
+ *
+ * R9-A90.1 — ZIP archives carry a visible ZIP badge; every other generic
+ * file is an OTHER card. Both use the same explicit Download action and
+ * the existing download handler.
  */
 function FileAttachmentCard({
   filename,
   mimeType,
   size,
+  kind,
   state,
   onDownload,
 }: {
   filename: string;
-  mimeType?: string;
-  size?: number;
+  mimeType?: string | undefined;
+  size?: number | undefined;
+  kind: "zip" | "other";
   state: "idle" | "busy" | "failed";
   onDownload: () => void;
 }) {
+  const isZip = kind === "zip";
+  const isBusy = state === "busy";
 
   return (
-    <div className="space-y-2 text-sm">
+    <FileCardFrame
+      icon={
+        isZip
+          ? <FileArchive className="h-4 w-4" strokeWidth={1.75} />
+          : <FileIcon className="h-4 w-4" strokeWidth={1.75} />
+      }
+      badge={isZip ? "ZIP" : "OTHER"}
+      filename={filename}
+      mimeType={mimeType}
+      size={size}
+    >
+      <p className="mt-3 text-xs text-muted-foreground">
+        {isZip
+          ? "ZIP archive. Downloaded only when you ask."
+          : "No preview is available for this file type."}
+      </p>
 
-      <div className="font-medium break-all">
-        {filename}
+      <div className="mt-3">
+        <Button
+          type="button"
+          onClick={onDownload}
+          disabled={isBusy}
+          aria-label={`Download: ${filename}`}
+          aria-busy={isBusy || undefined}
+          variant="capsuleOutline"
+          size="lg"
+          className="h-12 min-h-12 w-full justify-center rounded-lg px-5 text-sm sm:w-auto sm:px-6"
+        >
+          <Download aria-hidden="true" className="h-4 w-4" />
+          {isBusy
+            ? "Downloading…"
+            : state === "failed"
+              ? "Download failed — retry"
+              : "Download"}
+        </Button>
       </div>
-
-      <div className="text-muted-foreground">
-        {mimeType ?? "unknown type"}
-        {" · "}
-        {typeof size === "number"
-          ? `${size} bytes`
-          : "unknown size"}
-      </div>
-
-      <div className="text-muted-foreground">
-        No preview is available for this file type.
-      </div>
-
-      <button
-        type="button"
-        onClick={onDownload}
-        disabled={state === "busy"}
-        className="underline text-sm disabled:opacity-50"
-      >
-        {state === "busy"
-          ? "Downloading…"
-          : state === "failed"
-            ? "Download failed — retry"
-            : "Download file"}
-      </button>
-
-    </div>
+    </FileCardFrame>
   );
 
 }
@@ -2223,15 +2584,16 @@ function TextBlock({
     return null;
 
   /**
-   * Letter presentation (F3.3.6).
+   * R9-A90.1 — opened-capsule letters are COLLAPSED.
    *
-   * The text is rendered unchanged — the card clamps it visually for
-   * the preview and opens the FULL original string in a reader. No
-   * letter title is invented (the vault stores none), and the
-   * decrypted text never leaves the browser.
+   * The card carries only a content-type badge, a neutral label and an
+   * `Open letter` action. The letter's text is rendered inside the
+   * dedicated paper reader after the user asks for it; nothing from the
+   * body is exposed in the capsule list, and the reader itself uses an
+   * explicit fixed white surface independent of the active theme.
    */
   return (
-    <LetterCard content={content} />
+    <LetterCard content={content} variant="compact" />
   );
 
 }

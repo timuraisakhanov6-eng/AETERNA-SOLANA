@@ -53,6 +53,8 @@ export default defineConfig({
       "src/pages/capsule/VaultRenderer.multiVideo.test.tsx",
       // R9-A88.1 — full-screen image viewer (jsdom interaction suite).
       "src/pages/capsule/VaultRenderer.imageViewer.test.tsx",
+      // R9-A90.1 — compact capsule contents, photo/letter/audio/file cards.
+      "src/pages/capsule/VaultRenderer.r9a90.test.tsx",
       // R9-A88.9 — global header safe-area contract (jsdom class contract).
       "src/components/AppLayout.safeArea.test.tsx",
       // R9-A88.11 — creator-flow safe areas (builder header, preview bar).

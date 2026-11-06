@@ -9,21 +9,31 @@
  * (no network, no crypto, no capability secrets); `URL` is stubbed so
  * object URLs are deterministic and their revocation is observable.
  *
+ * R9-A90.1 changed the entry point, not the viewer:
+ *
+ *  • the capsule initially renders a compact photo card and NO <img>;
+ *  • `openImage` is not called until `View photo` is activated;
+ *  • the same ImageViewer, URL ownership and focus restoration are used;
+ *  • closing the viewer reuses the cached URL (no second container read);
+ *  • the URL is released when the capsule unmounts.
+ *
  * What is pinned here:
- *  1  clicking an image opens the viewer
- *  2  the image is exposed as an operable, named control
+ *  1  clicking View photo opens the viewer
+ *  2  the photo action is an operable, named control
  *  3  the viewer shows THAT image's URL
  *  4  the viewer's presentation preserves aspect ratio (object-contain)
- *  5  the close button closes
+ *  5  the close button closes and restores focus
  *  6  Escape closes
  *  7  a backdrop click closes
  *  8  a click on the image itself does NOT close
  *  9  closing returns to the same capsule view, no navigation
  * 10  no ZIP/download path is triggered
  * 11  no second read of the image is triggered
- * 12  existing object-URL ownership and revocation is unchanged
+ * 12  opening/closing reuses the item-owned object URL; unmount revokes it
  * 13  multiple images: the selected one is shown, not a previous one
  * 14  repeated open/close cycles leak neither listeners nor URLs
+ * 15  the full-screen surface cancels the dialog's panel motion and radius
+ * 16  all four horizontal/vertical safe-area insets are present
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -79,7 +89,7 @@ function stubUrl(): void {
   });
 }
 
-/** Renders one image item and waits until its inline <img> exists. */
+/** Renders one image item and waits for its collapsed card, not its bytes. */
 async function renderImage(
   overrides: Record<string, unknown> = {},
   objectUrl = "blob:photo",
@@ -88,6 +98,9 @@ async function renderImage(
     objectUrl,
   } as never);
 
+  const filename =
+    (overrides["filename"] as string | undefined) ?? "photo.png";
+
   render(
     <VaultRenderer
       vault={makeVault([imageItem(overrides)]) as never}
@@ -95,18 +108,23 @@ async function renderImage(
     />,
   );
 
-  await screen.findByRole("img", { name: "photo.png" });
+  await screen.findByRole("button", { name: `View photo: ${filename}` });
+
+  // The initial capsule has no decoded image and performed no read.
+  expect(screen.queryByRole("img", { name: filename })).toBeNull();
+  expect(document.querySelector("img")).toBeNull();
+  expect(openRuntime.openImage).not.toHaveBeenCalled();
 }
 
-function trigger(): HTMLElement {
+function trigger(filename = "photo.png"): HTMLElement {
   return screen.getByRole("button", {
-    name: "Open photo.png full screen",
+    name: `View photo: ${filename}`,
   });
 }
 
-function openViewer(): HTMLElement {
-  fireEvent.click(trigger());
-  return screen.getByRole("dialog");
+async function openViewer(filename = "photo.png"): Promise<HTMLElement> {
+  fireEvent.click(trigger(filename));
+  return screen.findByRole("dialog");
 }
 
 function closeByButton(dialog: HTMLElement): void {
@@ -125,20 +143,21 @@ afterEach(() => {
   cleanup();
 });
 
-describe("R9-A88.1 — full-screen image viewer", () => {
-  it("1/2/3/4: clicking the image opens a dialog showing that image, uncropped", async () => {
+describe("R9-A88.1 + R9-A90.1 — collapsed photo card opens the full-screen viewer", () => {
+  it("1/2/3/4: View photo opens a dialog showing that image, uncropped", async () => {
     await renderImage();
 
-    // 2 — the inline image is an operable control with an accessible name.
-    const inlineTrigger = trigger();
-    expect(inlineTrigger.tagName).toBe("BUTTON");
-    expect(inlineTrigger.getAttribute("aria-haspopup")).toBe("dialog");
+    // 2 — the collapsed card's action is an operable control with a name.
+    const photoTrigger = trigger();
+    expect(photoTrigger.tagName).toBe("BUTTON");
+    expect(photoTrigger.getAttribute("aria-haspopup")).toBe("dialog");
 
-    // 1 — a real click opens the dialog.
-    const dialog = openViewer();
+    // 1 — a real click starts the image pipeline and opens the dialog.
+    const dialog = await openViewer();
     expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(openRuntime.openImage).toHaveBeenCalledTimes(1);
 
-    // 3 — the viewer displays the SAME object URL the item already owns.
+    // 3 — the viewer displays the SAME object URL the item owns.
     const viewerImage = within(dialog).getByRole("img", { name: "photo.png" });
     expect(viewerImage.getAttribute("src")).toBe("blob:photo");
 
@@ -152,24 +171,25 @@ describe("R9-A88.1 — full-screen image viewer", () => {
     expect(dialog.getAttribute("aria-labelledby")).toBeTruthy();
   });
 
-  it("5: the close button closes and returns focus to the trigger", async () => {
+  it("5: the close button closes and returns focus to the photo action", async () => {
     await renderImage();
-    const inlineTrigger = trigger();
-    const dialog = openViewer();
+    const photoTrigger = trigger();
+    const dialog = await openViewer();
 
     closeByButton(dialog);
 
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
+
     // The capsule view is untouched and focus is back on the opener.
-    expect(screen.getByRole("img", { name: "photo.png" })).toBeTruthy();
-    expect(document.activeElement).toBe(inlineTrigger);
+    expect(screen.getByRole("button", { name: "View photo: photo.png" })).toBeTruthy();
+    expect(document.activeElement).toBe(photoTrigger);
   });
 
   it("6: Escape closes the viewer", async () => {
     await renderImage();
-    openViewer();
+    await openViewer();
 
     fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
 
@@ -180,7 +200,7 @@ describe("R9-A88.1 — full-screen image viewer", () => {
 
   it("7/8: a backdrop click closes, a click on the image does not", async () => {
     await renderImage();
-    const dialog = openViewer();
+    const dialog = await openViewer();
     const viewerImage = within(dialog).getByRole("img", { name: "photo.png" });
 
     // 8 — clicking the image itself must NOT close.
@@ -201,14 +221,14 @@ describe("R9-A88.1 — full-screen image viewer", () => {
     const scrollBefore = window.scrollY;
 
     await renderImage();
-    const dialog = openViewer();
+    const dialog = await openViewer();
     closeByButton(dialog);
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
 
     // 9 — same capsule view, no scroll jump, no navigation.
-    expect(screen.getByRole("img", { name: "photo.png" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "View photo: photo.png" })).toBeTruthy();
     expect(window.location.href).toBe(hrefBefore);
     expect(window.scrollY).toBe(scrollBefore);
 
@@ -217,18 +237,30 @@ describe("R9-A88.1 — full-screen image viewer", () => {
 
     // 11 — the image was read exactly once; the viewer reused it.
     expect(openRuntime.openImage).toHaveBeenCalledTimes(1);
+
+    // A second open still reuses that same read.
+    await openViewer();
+    expect(openRuntime.openImage).toHaveBeenCalledTimes(1);
   });
 
-  it("12: the item keeps owning and revoking its object URL", async () => {
+  it("12: the item keeps owning its object URL until unmount", async () => {
     await renderImage();
-    const dialog = openViewer();
+    const dialog = await openViewer();
     closeByButton(dialog);
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
 
-    // Opening/closing the viewer must not revoke the inline image's URL.
+    // Closing the viewer must not revoke the URL the item still owns;
+    // reopening is instantaneous and performs no second read.
     expect(revoked).toEqual([]);
+    await openViewer();
+    expect(openRuntime.openImage).toHaveBeenCalledTimes(1);
+
+    closeByButton(screen.getByRole("dialog"));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
 
     // Unmounting the item still releases it exactly as before.
     cleanup();
@@ -258,15 +290,15 @@ describe("R9-A88.1 — full-screen image viewer", () => {
       />,
     );
 
-    await screen.findByRole("img", { name: "small.png" });
-    await screen.findByRole("img", { name: "large.png" });
+    await screen.findByRole("button", { name: "View photo: small.png" });
+    await screen.findByRole("button", { name: "View photo: large.png" });
+
+    expect(document.querySelector("img")).toBeNull();
+    expect(openRuntime.openImage).not.toHaveBeenCalled();
 
     // Open the SECOND image.
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open large.png full screen" }),
-    );
-
-    const dialog = screen.getByRole("dialog");
+    const dialog = await openViewer("large.png");
+    expect(openRuntime.openImage).toHaveBeenCalledTimes(1);
     expect(
       within(dialog).getByRole("img", { name: "large.png" }).getAttribute("src"),
     ).toBe("blob:large");
@@ -280,13 +312,14 @@ describe("R9-A88.1 — full-screen image viewer", () => {
     });
 
     // …and the first image still opens its own.
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open small.png full screen" }),
-    );
-    const dialog2 = screen.getByRole("dialog");
+    const dialog2 = await openViewer("small.png");
+    expect(openRuntime.openImage).toHaveBeenCalledTimes(2);
     expect(
       within(dialog2).getByRole("img", { name: "small.png" }).getAttribute("src"),
     ).toBe("blob:small");
+    expect(
+      within(dialog2).queryByRole("img", { name: "large.png" }),
+    ).toBeNull();
   });
 
   it("14: repeated open/close cycles leak neither listeners nor object URLs", async () => {
@@ -300,7 +333,7 @@ describe("R9-A88.1 — full-screen image viewer", () => {
     ): number => spy.mock.calls.filter((call) => call[0] === "keydown").length;
 
     for (let cycle = 0; cycle < 3; cycle += 1) {
-      const dialog = openViewer();
+      const dialog = await openViewer();
       closeByButton(dialog);
       await waitFor(() => {
         expect(screen.queryByRole("dialog")).toBeNull();
@@ -310,7 +343,7 @@ describe("R9-A88.1 — full-screen image viewer", () => {
     // No listener survives a cycle: every keydown registration is matched.
     expect(countKeydown(addSpy)).toBe(countKeydown(removeSpy));
 
-    // No dialog is left mounted, and no extra URL was ever created.
+    // No dialog is left mounted, and the image was read exactly once.
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(openRuntime.openImage).toHaveBeenCalledTimes(1);
     expect(
@@ -324,7 +357,7 @@ describe("R9-A88.1 — full-screen image viewer", () => {
 
   it("15: the full-screen surface cancels the dialog's panel motion and radius", async () => {
     await renderImage();
-    const dialog = openViewer();
+    const dialog = await openViewer();
 
     const classes = dialog.className.split(/\s+/);
 
@@ -360,21 +393,15 @@ describe("R9-A88.1 — full-screen image viewer", () => {
 
   it("16: horizontal safe areas — image and close control clear the landscape notch", async () => {
     await renderImage();
-    const dialog = openViewer();
+    const dialog = await openViewer();
 
     /**
      * R9-A88.9 — horizontal safe-area contract.
      *
-     * R9-A88.8 found that only the vertical insets were applied: `px-4` on the
-     * image area and `right-4` on the close control both put a 16 px margin
-     * against the RAW screen edge, i.e. inside the ~47 px side inset on a
-     * notched iPhone in landscape.
-     *
      * jsdom has no layout engine and no notion of a sensor housing, so
      * `env(safe-area-inset-*)` cannot be evaluated here. What is pinned is the
      * class contract that actually reaches the DOM — the base margin (`+1rem`)
-     * and the two horizontal insets. That the expressions compile and win the
-     * cascade is verified against the built stylesheet, not here.
+     * and the two horizontal insets.
      */
     const backdrop = within(dialog).getByTestId("image-viewer-backdrop");
     const imageClasses = backdrop.className.split(/\s+/);
@@ -382,11 +409,9 @@ describe("R9-A88.1 — full-screen image viewer", () => {
     expect(imageClasses).toContain("pl-[calc(env(safe-area-inset-left)+1rem)]");
     expect(imageClasses).toContain("pr-[calc(env(safe-area-inset-right)+1rem)]");
 
-    // The flat `px-4` is gone rather than merely overridden, so no cascade
-    // order can reintroduce a 16 px edge on the notched axis.
+    // The flat `px-4` is gone rather than merely overridden.
     expect(imageClasses).not.toContain("px-4");
 
-    // Vertical math untouched, exactly as reviewed in R9-A88.3/.4.
     expect(imageClasses).toContain("pt-[calc(env(safe-area-inset-top)+4.5rem)]");
     expect(imageClasses).toContain("pb-[calc(env(safe-area-inset-bottom)+1.5rem)]");
 
@@ -398,7 +423,6 @@ describe("R9-A88.1 — full-screen image viewer", () => {
     expect(closeClasses).toContain("right-[calc(env(safe-area-inset-right)+1rem)]");
     expect(closeClasses).not.toContain("right-4");
 
-    // Vertical placement, hit area and glyph size unchanged.
     expect(closeClasses).toContain("top-4");
     expect(closeClasses).toContain("mt-[env(safe-area-inset-top)]");
     expect(closeClasses).toContain("h-10");
