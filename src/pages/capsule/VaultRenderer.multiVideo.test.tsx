@@ -788,3 +788,230 @@ describe("R9-A86.2 — the bounded Blob fallback keeps its existing limits", () 
     }
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* R9-A89.1 — prominent video card presentation and controls            */
+/* ------------------------------------------------------------------ */
+
+describe("R9-A89.1 — prominent video card presentation", () => {
+  function renderVideos(items: unknown[] = [videoItem(), videoItem({ filename: "two.webm" })]) {
+    return render(
+      <VaultRenderer vault={makeVault(items) as never} cryptoKey={fakeKey} />,
+    );
+  }
+
+  it("1: renders a visible gold VIDEO badge for every video item", () => {
+    renderVideos();
+
+    const badges = screen.getAllByText("VIDEO");
+    expect(badges).toHaveLength(2);
+
+    for (const badge of badges) {
+      expect(badge.className).toContain("border-accent/40");
+      expect(badge.className).toContain("bg-accent/10");
+      expect(badge.className).toContain("text-amber-700");
+      expect(badge.className).toContain("dark:text-amber-300");
+    }
+  });
+
+  it("2: renders Play video as a semantic button, not a text link", () => {
+    renderVideos();
+
+    const buttons = playButtons();
+    expect(buttons).toHaveLength(2);
+
+    for (const button of buttons) {
+      expect(button.tagName).toBe("BUTTON");
+      expect(button.getAttribute("type")).toBe("button");
+    }
+
+    expect(screen.queryByRole("link", { name: "Play video" })).toBeNull();
+  });
+
+  it("3: Play video uses the gold capsule styling and visible hover/focus states", () => {
+    renderVideos();
+
+    const button = playButtons()[0];
+    expect(button).toBeTruthy();
+
+    expect(button!.className).toContain("bg-gradient-to-r");
+    expect(button!.className).toContain("from-amber-600");
+    expect(button!.className).toContain("via-yellow-500");
+    expect(button!.className).toContain("to-amber-600");
+    expect(button!.className).toContain("text-slate-900");
+    expect(button!.className).toContain("hover:shadow-xl");
+    expect(button!.className).toContain("focus-visible:ring-2");
+    expect(button!.className).toContain("focus-visible:ring-ring");
+  });
+
+  it("4: Play video has a 48px touch target and fits narrow screens", () => {
+    renderVideos();
+
+    const button = playButtons()[0];
+    expect(button).toBeTruthy();
+
+    expect(button!.className).toContain("h-12");
+    expect(button!.className).toContain("min-h-12");
+    expect(button!.className).toContain("w-full");
+    expect(button!.className).toContain("sm:w-auto");
+  });
+
+  it("5: pressing Play activates the correct video item", async () => {
+    vi.mocked(openRuntime.openVideo).mockImplementation((request: unknown) => {
+      const name = (request as { media: { filename: string } }).media.filename;
+      return Promise.resolve(makeSession(name) as never);
+    });
+
+    renderVideos();
+
+    await clickPlayAt(1);
+
+    expect(openRuntime.openVideo).toHaveBeenCalledTimes(1);
+    expect(openRuntime.openVideo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        media: expect.objectContaining({ filename: "two.webm" }),
+      }),
+    );
+    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(1));
+  });
+
+  it("6: loads no video media automatically before Play is pressed", () => {
+    renderVideos();
+
+    expect(openRuntime.openVideo).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(createdUrls).toHaveLength(0);
+    expect(document.querySelectorAll("video")).toHaveLength(0);
+  });
+
+  it("7: pressing Play begins the established lazy loading path", async () => {
+    vi.mocked(openRuntime.openVideo).mockImplementation((request: unknown) => {
+      const name = (request as { media: { filename: string } }).media.filename;
+      return Promise.resolve(makeSession(name) as never);
+    });
+
+    renderVideos();
+    await clickPlayAt(0);
+
+    expect(openRuntime.openVideo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        media: expect.objectContaining({ filename: "one.webm" }),
+      }),
+    );
+    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(1));
+
+    expect(events.some((event) => event.startsWith("read:one.webm"))).toBe(true);
+    expect(createdUrls.length).toBeGreaterThan(0);
+  });
+
+  it("8: a second Play disposes the first player before activating the second", async () => {
+    const first = makeSession("one.webm");
+    const second = makeSession("two.webm");
+    stubOpenVideoByCall([
+      Promise.resolve(first as never),
+      Promise.resolve(second as never),
+    ]);
+
+    renderVideos();
+
+    await clickPlayAt(0);
+    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(1));
+
+    events = [];
+    await clickPlayAt(0);
+    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(1));
+
+    const disposeIdx = events.indexOf("dispose:one.webm");
+    const openTwoIdx = events.indexOf("open:two.webm");
+
+    expect(disposeIdx).toBeGreaterThanOrEqual(0);
+    expect(openTwoIdx).toBeGreaterThan(disposeIdx);
+    expect(first.dispose).toHaveBeenCalledTimes(1);
+    expect(second.dispose).not.toHaveBeenCalled();
+  });
+
+  it("9: keeps exactly one active player and one remaining card", async () => {
+    const first = makeSession("one.webm");
+    const second = makeSession("two.webm");
+    stubOpenVideoByCall([
+      Promise.resolve(first as never),
+      Promise.resolve(second as never),
+    ]);
+
+    renderVideos();
+
+    await clickPlayAt(0);
+    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(1));
+
+    await clickPlayAt(0);
+    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(1));
+
+    expect(openRuntime.openVideo).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll("video")).toHaveLength(1);
+    expect(screen.getAllByText("VIDEO")).toHaveLength(1);
+    expect(first.dispose).toHaveBeenCalledTimes(1);
+    expect(second.dispose).not.toHaveBeenCalled();
+  });
+
+  it("10: unmount still disposes the active session and revokes its URL", async () => {
+    vi.mocked(openRuntime.openVideo).mockImplementation((request: unknown) => {
+      const name = (request as { media: { filename: string } }).media.filename;
+      return Promise.resolve(makeSession(name) as never);
+    });
+
+    const { unmount } = renderVideos();
+    await clickPlayAt(0);
+    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(1));
+
+    const attached = (document.querySelector("video") as HTMLVideoElement).src;
+    const firstResult = vi.mocked(openRuntime.openVideo).mock.results[0];
+    if (!firstResult) throw new Error("openVideo was never called");
+
+    const session = firstResult.value as unknown as {
+      dispose: ReturnType<typeof vi.fn>;
+    };
+
+    events = [];
+    unmount();
+
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    expect(revokedUrls).toContain(attached);
+  });
+
+  it("11: keeps the filename and technical metadata visible", () => {
+    renderVideos([
+      videoItem({
+        filename: "clip.mp4",
+        mimeType: "video/mp4",
+        size: 12345,
+      }),
+    ]);
+
+    expect(screen.getByText("clip.mp4")).toBeTruthy();
+    expect(screen.getByText(/video\/mp4/)).toBeTruthy();
+    expect(screen.getByText(/12345 bytes/)).toBeTruthy();
+    expect(screen.getByText("VIDEO")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Play video" })).toBeTruthy();
+  });
+
+  it("12: long filenames and narrow layouts stay contained", () => {
+    const longFilename = `${"a-very-long-video-filename-".repeat(8)}clip.webm`;
+
+    renderVideos([videoItem({ filename: longFilename })]);
+
+    const filename = screen.getByText(longFilename);
+    expect(filename.className).toContain("break-all");
+    expect(filename.className).toContain("min-w-0");
+
+    const badge = screen.getByText("VIDEO");
+    expect(badge.parentElement?.className).toContain("flex-wrap");
+    expect(badge.parentElement?.className).toContain("items-center");
+    expect(badge.parentElement?.className).toContain("gap-2");
+
+    const button = playButtons()[0];
+    expect(button).toBeTruthy();
+    expect(button!.className).toContain("w-full");
+    expect(button!.className).toContain("sm:w-auto");
+    expect(screen.getByRole("button", { name: "Play video" })).toBeTruthy();
+  });
+});

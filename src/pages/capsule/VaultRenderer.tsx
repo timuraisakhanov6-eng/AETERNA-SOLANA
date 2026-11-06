@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
+import { Play } from "lucide-react";
+
 import type {
   Vault,
   VaultV1,
@@ -20,6 +22,8 @@ import {
 import { LetterCard } from "./LetterCard";
 
 import { ImageViewer } from "@/components/capsule/ImageViewer";
+
+import { Button } from "@/components/ui/button";
 
 import type {
   MediaSession,
@@ -2103,10 +2107,16 @@ function VideoCard({
 }) {
 
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-3 text-sm">
 
-      <div className="font-medium break-all">
-        {filename}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex shrink-0 items-center rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+          VIDEO
+        </span>
+
+        <span className="min-w-0 flex-1 font-medium break-all">
+          {filename}
+        </span>
       </div>
 
       <div className="text-muted-foreground">
@@ -2117,14 +2127,17 @@ function VideoCard({
           : "unknown size"}
       </div>
 
-      <button
+      <Button
         type="button"
         onClick={onPlay}
         disabled={!onPlay}
-        className="underline text-sm disabled:opacity-50"
+        variant="capsule"
+        size="lg"
+        className="h-12 min-h-12 w-full justify-center rounded-lg px-5 text-sm sm:w-auto sm:px-6"
       >
+        <Play aria-hidden="true" className="h-4 w-4 fill-current" />
         Play video
-      </button>
+      </Button>
 
       <div className="text-muted-foreground">
         Video is loaded only when you start it.
