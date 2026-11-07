@@ -9,9 +9,10 @@
  *
  *  - a deterministic 402 PAYMENT_REQUIRED / PAYMENT_INVALID refusal
  *    performs EXACTLY ONE seal attempt, propagates the allowlisted
- *    server code to the error UI, runs the existing cleanup (runtime
- *    destroy, seal-lock removal, TRY AGAIN surface) and does NOT
- *    remove the unfinished-lifecycle hint;
+ *    server code to the error UI, removes the seal lock, shows TRY AGAIN
+ *    and — R9-A92 F2 — PRESERVES the prepared Runtime (the old
+ *    unconditional destroy is the production defect). The
+ *    unfinished-lifecycle hint is NOT removed;
  *  - a transient failure keeps the existing bounded 3-attempt retry.
  *
  * No network, no wallet, no payment, no Irys, no blockchain.
@@ -237,8 +238,11 @@ describe("CapsuleHold seal retry loop — terminal vs transient", () => {
       screen.getByText(/Capsule sealing failed: PAYMENT_REQUIRED/)
     ).toBeTruthy();
     expect(screen.getByText("TRY AGAIN")).toBeTruthy();
-    // The existing cleanup still ran on the terminal failure.
-    expect(destroyRuntimeMock).toHaveBeenCalled();
+    // R9-A92 F2: a terminal seal failure is NOT a finalization. The
+ // prepared Runtime is a resumable resource and MUST survive so a
+ // later continuation can reuse the prepared payload. (The old
+ // unconditional finally destroyed it — that is the defect.)
+    expect(destroyRuntimeMock).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem("aeterna-seal-lock")).toBeNull();
     // The unfinished-lifecycle hint is NOT removed: the attempt is not
     // finalized, so the recovery surface must stay intact.

@@ -132,3 +132,46 @@ export async function destroyRuntime(
   }
 
 }
+
+/**
+ * R9-A92.1 — discard the PERSISTED Runtime of an authoritatively abandoned
+ * attempt, even when no live session is registered in this page.
+ *
+ * WHY `destroyRuntime` ALONE IS NOT ENOUGH
+ * ---------------------------------------
+ * The session registry is in-memory only. After a reload (or in a fresh
+ * tab) it is empty while IndexedDB can still hold the prepared encrypted
+ * Vault and every encrypted chunk. `destroyRuntime` returns early when no
+ * session is registered, so it can never reach that data.
+ *
+ * WHAT THIS DOES
+ * --------------
+ * `getRuntime` re-opens the SAME persistent store for exactly this
+ * capsuleId and registers it; `destroyRuntime` then clears that store
+ * (prefix `<capsuleId>:`) and unregisters the session. Both are the
+ * EXISTING Runtime primitives — no new storage system, no sweeper, no TTL.
+ *
+ * WHAT IT DOES NOT DO
+ * -------------------
+ * • It never opens, creates or clears any OTHER capsule: both calls take
+ *   this exact id and the store is keyed by its prefix.
+ * • It writes no plaintext and no metadata of its own. Opening may create
+ *   the empty object store on a browser that never prepared anything;
+ *   that is an empty container, not a record.
+ * • Errors propagate: callers decide whether local cleanup is best effort.
+ *   For the recovery transition it is (a server-side restore must never be
+ *   undone or misreported by a local deletion failure).
+ */
+export async function discardRuntime(
+  capsuleId: string,
+): Promise<void> {
+
+  await getRuntime(
+    capsuleId,
+  );
+
+  await destroyRuntime(
+    capsuleId,
+  );
+
+}

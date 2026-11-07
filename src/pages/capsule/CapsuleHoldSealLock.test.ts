@@ -54,9 +54,14 @@ vi.mock("@/context/AETERNAWalletContext", async () => {
   };
 });
 
-vi.mock("@/lib/capsule/sealCapsuleCore", () => ({
-  sealCapsuleCore: hoisted.sealCapsuleCore,
-}));
+vi.mock("@/lib/capsule/sealCapsuleCore", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/capsule/sealCapsuleCore")>();
+  // R9-A92 F2/F3: the component also imports isTerminalSealFailure and
+  // shouldReleaseRuntimeAfterSeal. Keep the REAL helpers; only the core
+  // seal call is replaced.
+  return { ...actual, sealCapsuleCore: hoisted.sealCapsuleCore };
+});
 
 vi.mock("@/lib/storage/creatorIrysStorage", () => ({
   createCreatorIrysStorage: vi.fn(() => ({

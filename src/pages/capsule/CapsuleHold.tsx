@@ -4,6 +4,7 @@ import { Loader2, Lock, AlertTriangle, RefreshCw } from "lucide-react";
 import {
   isTerminalSealFailure,
   sealCapsuleCore,
+  shouldReleaseRuntimeAfterSeal,
 } from "@/lib/capsule/sealCapsuleCore";
 import { createCreatorIrysStorage } from "@/lib/storage/creatorIrysStorage";
 import { toCreatorIrysWallet } from "@/lib/storage/creatorIrys";
@@ -1016,6 +1017,14 @@ export default function CapsuleHold() {
                   lifecycleId: canonicalLifecycleId,
                   capsuleId: holdState.prepared.capsuleId,
                   storagePaymentId,
+                  /**
+                   * R9-A92 F1 — authoritative-read address for the
+                   * publication claim's Durable Object fallback (the
+                   * same address upload-token already receives). An
+                   * address only: every authorizing field is taken from
+                   * the server-persisted record and re-validated.
+                   */
+                  creatorCreditId: creatorCreditId ?? null,
                 });
 
                 result =
@@ -1053,6 +1062,14 @@ export default function CapsuleHold() {
                     canonicalLifecycleId,
 
                     creatorIdentityId,
+
+                    /**
+                     * R9-A92.3 — the same address the claim and
+                     * upload-token already receive, now forwarded to the
+                     * downstream lifecycle readers so a KV-null window can
+                     * resolve through the authoritative coordinator.
+                     */
+                    creatorCreditId: creatorCreditId ?? null,
 
                     storage: creatorStorage,
 
@@ -1108,10 +1125,25 @@ export default function CapsuleHold() {
 
             /* ── STEP 6: cleanup ── */
 
-            // Runtime is a resource — must be released regardless of outcome.
-            await destroyRuntime(
-              holdState.prepared.capsuleId
-            );
+            // R9-A92 F2 — the prepared Runtime is a RESUMABLE resource:
+            // it is released ONLY when this attempt reached successful
+            // full finalization. Any incomplete exit (publication-claim
+            // conflict, failure before Vault upload, pending
+            // finalization) must PRESERVE the encrypted Vault payload
+            // and the cached container transaction for a legitimate
+            // later continuation. `shouldReleaseRuntimeAfterSeal` owns
+            // this decision; retry caches keep their existing
+            // clear-on-finalization behaviour unchanged.
+            if (
+              shouldReleaseRuntimeAfterSeal(
+                result,
+                holdState.prepared.capsuleId
+              )
+            ) {
+              await destroyRuntime(
+                holdState.prepared.capsuleId
+              );
+            }
 
           }
 

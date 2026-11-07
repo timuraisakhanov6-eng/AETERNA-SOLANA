@@ -297,6 +297,12 @@ async function authorizeSealViaDurableCredit(
     lifecycleId: string;
     capsuleId: string;
     paymentIntentId: string;
+    /**
+     * R9-A92.3 — optional ADDRESS used only when the KV lifecycle
+     * projection is absent. The DO record fetched below still has to
+     * match identity, capsule, lifecycle and payment intent exactly.
+     */
+    creatorCreditId?: string | null;
   }
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const bindings = env as SealEnv & {
@@ -314,28 +320,44 @@ async function authorizeSealViaDurableCredit(
         `creator:credit:lifecycle:${params.creatorIdentityId}:${params.lifecycleId}`
       )
     : null;
-  if (!lifecycleRaw) {
-    return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_MISSING" };
-  }
 
-  let lifecycleIndex: { id?: unknown; creatorIdentityId?: unknown };
-  try {
-    lifecycleIndex = JSON.parse(lifecycleRaw) as {
-      id?: unknown;
-      creatorIdentityId?: unknown;
-    };
-  } catch {
-    return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_CORRUPT" };
-  }
+  /**
+   * R9-A92.3 — resolve the credit id from the projection, or from the
+   * request-supplied ADDRESS when the projection is absent. The address is
+   * never authorization: every field is re-proven against the DO record
+   * below (status, identity, capsule, lifecycle, payment intent), exactly
+   * as on the KV path.
+   */
+  let creditId = "";
 
-  const creditId =
-    typeof lifecycleIndex.id === "string" ? lifecycleIndex.id : "";
-  if (
-    !creditId ||
-    (typeof lifecycleIndex.creatorIdentityId === "string" &&
-      lifecycleIndex.creatorIdentityId !== params.creatorIdentityId)
+  if (lifecycleRaw) {
+    let lifecycleIndex: { id?: unknown; creatorIdentityId?: unknown };
+    try {
+      lifecycleIndex = JSON.parse(lifecycleRaw) as {
+        id?: unknown;
+        creatorIdentityId?: unknown;
+      };
+    } catch {
+      return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_CORRUPT" };
+    }
+
+    creditId =
+      typeof lifecycleIndex.id === "string" ? lifecycleIndex.id : "";
+
+    if (
+      !creditId ||
+      (typeof lifecycleIndex.creatorIdentityId === "string" &&
+        lifecycleIndex.creatorIdentityId !== params.creatorIdentityId)
+    ) {
+      return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_INVALID" };
+    }
+  } else if (
+    typeof params.creatorCreditId === "string" &&
+    params.creatorCreditId.trim().length > 0
   ) {
-    return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_INVALID" };
+    creditId = params.creatorCreditId.trim();
+  } else {
+    return { ok: false, reason: "DURABLE_CREDIT_LIFECYCLE_INDEX_MISSING" };
   }
 
   const coordinator = bindings.CREDIT_OP_COORDINATOR;
@@ -359,11 +381,13 @@ async function authorizeSealViaDurableCredit(
 
   try {
     const stub = coordinator.get(coordinator.idFromName(creditId));
-    const doResponse = await stub.fetch("http://localhost", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ op: "read", creatorCreditId: creditId }),
-    });
+    const doResponse = await stub.fetch(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op: "read", creatorCreditId: creditId }),
+      })
+    );
     payload = (await doResponse.json().catch(() => null)) as typeof payload;
   } catch {
     return { ok: false, reason: "DURABLE_CREDIT_COORDINATOR_UNAVAILABLE" };
@@ -450,7 +474,8 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
   const {
     uploadToken,
     manifest,
-    creatorAuthorityFragment
+    creatorAuthorityFragment,
+    creatorCreditId: requestedCreatorCreditId,
   } =
     body as Record<string, unknown>;
 
@@ -687,6 +712,10 @@ async (context: EventContext<SealEnv, unknown, unknown>) => {
             : "",
         capsuleId,
         paymentIntentId,
+        creatorCreditId:
+          typeof requestedCreatorCreditId === "string"
+            ? requestedCreatorCreditId.trim()
+            : null,
       });
       paymentAuthorized = durable.ok;
     }

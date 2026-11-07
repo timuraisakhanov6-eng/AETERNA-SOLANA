@@ -31,7 +31,11 @@ import type { RuntimeStorage } from "@/lib/runtime/runtimeStorage";
 import type { ChunkMetadata } from "@/types/vault";
 import { uploadPreparedContainer } from "./uploadPreparedContainer";
 import { executorStorage } from "./executorStorage";
-import { tagSealFailure } from "@/lib/capsule/sealDiagnostic";
+import {
+  tagSealFailure,
+  tagSealRetryPolicy,
+  type SealRetryPolicy,
+} from "@/lib/capsule/sealDiagnostic";
 
 export interface CreatorIrysStorageContext {
   /**
@@ -51,6 +55,15 @@ export interface CreatorIrysStorageContext {
   /** Server-quoted storage payment, already PAYMENT_VERIFIED. */
   storagePaymentId: string;
   rpcUrl?: string;
+  /**
+   * R9-A92 F1 — OPTIONAL authoritative-read ADDRESS for the publication
+   * claim's Durable Object fallback (the same pattern as upload-token's
+   * `creatorCreditId`). It is an address ONLY: every field that
+   * authorizes the claim is taken from the server-persisted record and
+   * re-validated against the request. Omitted → the claim runs on the
+   * KV projection alone and fails closed exactly as before.
+   */
+  creatorCreditId?: string | null;
 }
 
 interface ClaimResponse {
@@ -125,6 +138,59 @@ const CONFLICT_409 = new Set([
  * everything else propagates as a failure (fail closed).
  */
 type ClaimFailureClass = "replay" | "conflict" | "unknown";
+
+/* ── R9-A92 F3 — bounded claim retry policy ───────────────────────
+ *
+ * Separates a DEFINITIVE server answer (an authoritative state conflict
+ * or a malformed request — repeating the identical request cannot
+ * change the outcome) from a TRANSIENT one (node not yet confirming,
+ * coordination unavailable, rate limit, unknown/5xx). Classification
+ * uses ONLY the fixed server error code — every terminal code below is
+ * a fixed literal the server can only return for this exact request
+ * state. PUBLICATION_NOT_CONFIRMED is deliberately RETRYABLE: it is
+ * the one 409 the server defines as retryable (claim.ts), and the DO
+ * fallback of R9-A92 F1 does not change that. Unknown codes keep the
+ * pre-existing bounded-retry behaviour instead of narrowing it.
+ */
+
+const TERMINAL_CLAIM_CONFLICT_CODES = new Set([
+  "LIFECYCLE_NOT_RESERVED",
+  "CREDIT_NOT_CONSUMING",
+  "IDENTITY_MISMATCH",
+  "CAPSULE_MISMATCH",
+  "LIFECYCLE_NOT_FOUND",
+  "STORAGE_PAYMENT_NOT_VERIFIED",
+  "STORAGE_PAYMENT_BINDING_MISMATCH",
+  "TX_ALREADY_CLAIMED",
+  "PUBLICATION_ALREADY_BOUND",
+  "CONTAINER_ALREADY_PUBLISHED",
+]);
+
+const TERMINAL_CLAIM_CLIENT_ERROR_CODES = new Set([
+  "INVALID_ORIGIN",
+  "UNSUPPORTED_MEDIA_TYPE",
+  "INVALID_JSON",
+  "INVALID_BODY",
+  "INVALID_FIELDS",
+  "INVALID_KIND",
+  "INVALID_TX_ID",
+  "CONTAINER_CHUNK_IDS_REQUIRED",
+  "INVALID_CONTAINER_CHUNK_ID",
+  "DUPLICATE_CONTAINER_CHUNK_ID",
+  "INVALID_CONTAINER_LAYOUT_DIGEST",
+]);
+
+function classifyClaimRetryPolicy(
+  code: string | null
+): SealRetryPolicy {
+  if (code !== null && TERMINAL_CLAIM_CONFLICT_CODES.has(code)) {
+    return "terminal";
+  }
+  if (code !== null && TERMINAL_CLAIM_CLIENT_ERROR_CODES.has(code)) {
+    return "terminal";
+  }
+  return "retryable";
+}
 
 /**
  * Classifies a parsed claim error body. A benign replay is recognised
@@ -202,9 +268,24 @@ async function claimPublication(
         ...(container !== undefined
           ? { chunkIds: [...container.chunkIds], layoutDigest: container.layoutDigest }
           : {}),
+        /**
+         * R9-A92 F1 — optional authoritative-read address. Omitted when
+         * unknown so legacy deployments see a byte-identical body.
+         */
+        ...(typeof ctx.creatorCreditId === "string" && ctx.creatorCreditId.length > 0
+          ? { creatorCreditId: ctx.creatorCreditId }
+          : {}),
       }),
       signal: controller.signal,
     });
+  } catch (error) {
+    /**
+     * Transport/timeout failures are transient by definition: the
+     * bounded retry policy is attached without altering the error, so
+     * the existing deadline semantics and message are unchanged.
+     */
+    clearTimeout(timeoutId);
+    throw tagSealRetryPolicy(error, "retryable");
   } finally {
     clearTimeout(timeoutId);
   }
@@ -235,7 +316,18 @@ async function claimPublication(
       }
     }
 
-    throw new Error(`[AETERNA] creatorIrys: publication claim failed: ${detail}`);
+    /**
+     * R9-A92 F3 — the failure carries its bounded retry policy so the
+     * caller's retry loop can stop on a definitive conflict instead of
+     * repeating an identical, outcome-neutral request.
+     */
+    const claimErrorCode =
+      typeof body?.error === "string" && body.error.length > 0 ? body.error : null;
+
+    throw tagSealRetryPolicy(
+      new Error(`[AETERNA] creatorIrys: publication claim failed: ${detail}`),
+      classifyClaimRetryPolicy(claimErrorCode)
+    );
   }
 
   const json = (await res.json().catch(() => null)) as ClaimResponse | null;

@@ -63,6 +63,7 @@ import { getTrustedTime } from "@/shared/time/getTrustedTime";
 
 import {
   SEAL_FAILURE_MESSAGE,
+  readSealRetryPolicy,
   tagSealFailure,
   type SealDiagnosticCode,
 } from "@/lib/capsule/sealDiagnostic";
@@ -432,11 +433,43 @@ export function classifySealHttpResponse(
 /**
  * True when the failure is a DETERMINISTIC seal refusal (allowlisted
  * server payment-gate code): retrying cannot change the outcome.
+ *
+ * R9-A92 F3 — a failure may also carry a bounded retry policy attached
+ * by the boundary that saw the server's own answer (the publication
+ * claim). A "terminal" policy means the same thing as the 402
+ * allowlist: the server authoritatively refused this exact request, so
+ * repeating it identically cannot change the outcome. Transient
+ * failures (node not yet confirming, coordination unavailable, rate
+ * limit, transport) stay retryable under the existing bounded policy.
  */
 export function isTerminalSealFailure(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    (error as Error & { sealTerminal?: unknown }).sealTerminal === true
+    (error instanceof Error &&
+      (error as Error & { sealTerminal?: unknown }).sealTerminal === true) ||
+    readSealRetryPolicy(error) === "terminal"
+  );
+}
+
+/**
+ * R9-A92 F2 — the cleanup decision for the prepared Runtime.
+ *
+ * INVARIANT: prepared encrypted Vault data and container metadata must
+ * remain available until successful full finalization. The Runtime is
+ * therefore released ONLY when this attempt resolved to a result for
+ * THIS capsule whose finalization completed. Every other exit — a
+ * failure before Vault upload, a publication-claim conflict, a pending
+ * finalization — must PRESERVE the prepared payload and the cached
+ * container transaction so a legitimate later continuation can reuse
+ * them without re-encrypting, re-uploading or re-signing anything.
+ */
+export function shouldReleaseRuntimeAfterSeal(
+  result: SealCapsuleResult | null,
+  capsuleId: string
+): boolean {
+  return (
+    result !== null &&
+    result.capsuleId === capsuleId &&
+    result.finalized === true
   );
 }
 
@@ -487,7 +520,8 @@ async function verifyPublicationOrThrow(
   creatorIdentityId: string,
   canonicalLifecycleId: string,
   capsuleId: string,
-  publicationId: string
+  publicationId: string,
+  creatorCreditId: string | null
 ): Promise<void> {
 
   for (let attempt = 1; ; attempt++) {
@@ -503,6 +537,7 @@ async function verifyPublicationOrThrow(
           lifecycleId: canonicalLifecycleId,
           capsuleId,
           publicationId,
+          ...(creatorCreditId ? { creatorCreditId } : {}),
         }
       );
 
@@ -537,7 +572,8 @@ async function verifySealOrThrow(
   creatorIdentityId: string,
   canonicalLifecycleId: string,
   capsuleId: string,
-  manifest: ManifestV1
+  manifest: ManifestV1,
+  creatorCreditId: string | null
 ): Promise<void> {
 
   for (let attempt = 1; ; attempt++) {
@@ -553,6 +589,7 @@ async function verifySealOrThrow(
           lifecycleId: canonicalLifecycleId,
           capsuleId,
           manifest,
+          ...(creatorCreditId ? { creatorCreditId } : {}),
         }
       );
 
@@ -593,7 +630,8 @@ async function verifySealOrThrow(
 async function finalizeCreditOrPending(
   creatorIdentityId: string,
   canonicalLifecycleId: string,
-  capsuleId: string
+  capsuleId: string,
+  creatorCreditId: string | null
 ): Promise<boolean> {
 
   for (let attempt = 1; ; attempt++) {
@@ -608,6 +646,7 @@ async function finalizeCreditOrPending(
           creatorIdentityId,
           lifecycleId: canonicalLifecycleId,
           capsuleId,
+          ...(creatorCreditId ? { creatorCreditId } : {}),
         }
       );
 
@@ -1014,6 +1053,15 @@ export async function sealCapsuleCore(
     creatorIdentityId: string;
 
     /**
+     * R9-A92.3 — OPTIONAL authoritative-read ADDRESS forwarded to the
+     * downstream lifecycle readers (publication verify, seal, seal verify,
+     * finalize). Address only: each endpoint re-validates every field
+     * against the server-persisted coordinator record. Omitted → the
+     * legacy KV-only behaviour is preserved byte-for-byte.
+     */
+    creatorCreditId?: string | null;
+
+    /**
      * Phase D2b — storage DI. Storage is required for the sealing
      * path: the Creator-paid canonical caller injects the
      * creatorIrysStorage adapter. There is no Executor write-path
@@ -1049,6 +1097,7 @@ export async function sealCapsuleCore(
     uploadToken,
     canonicalLifecycleId,
     creatorIdentityId,
+    creatorCreditId = null,
     encryptedVaultPointer,
     encryptedSizeBytes,
     vaultSha256,
@@ -1246,6 +1295,7 @@ export async function sealCapsuleCore(
               uploadToken: token,
               manifest: reusedManifest,
               creatorAuthorityFragment,
+              ...(creatorCreditId ? { creatorCreditId } : {}),
             })
         );
 
@@ -1276,7 +1326,8 @@ export async function sealCapsuleCore(
             creatorIdentityId,
             canonicalLifecycleId,
             capsuleId,
-            reusedManifest
+            reusedManifest,
+            creatorCreditId
           )
       );
 
@@ -1287,7 +1338,8 @@ export async function sealCapsuleCore(
             finalizeCreditOrPending(
               creatorIdentityId,
               canonicalLifecycleId,
-              capsuleId
+              capsuleId,
+              creatorCreditId
             )
         );
 
@@ -1574,7 +1626,8 @@ export async function sealCapsuleCore(
           creatorIdentityId,
           canonicalLifecycleId,
           capsuleId,
-          txId
+          txId,
+          creatorCreditId
         )
     );
 
@@ -1659,6 +1712,7 @@ export async function sealCapsuleCore(
             uploadToken: token,
             manifest,
             creatorAuthorityFragment,
+            ...(creatorCreditId ? { creatorCreditId } : {}),
           })
       );
 
@@ -1696,7 +1750,8 @@ export async function sealCapsuleCore(
           creatorIdentityId,
           canonicalLifecycleId,
           capsuleId,
-          manifest
+          manifest,
+          creatorCreditId
         )
     );
 
@@ -1707,7 +1762,8 @@ export async function sealCapsuleCore(
           finalizeCreditOrPending(
             creatorIdentityId,
             canonicalLifecycleId,
-            capsuleId
+            capsuleId,
+            creatorCreditId
           )
       );
 

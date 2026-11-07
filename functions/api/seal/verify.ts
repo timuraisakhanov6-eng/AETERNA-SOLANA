@@ -14,6 +14,11 @@ import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { sha256 } from "../../lib/sha256";
 import { canonicalStringify } from "../../lib/canonicalManifest";
+import {
+  readAuthoritativeLifecycle,
+  type LifecycleAuthorityFailure,
+  type LifecycleCoordinatorBinding,
+} from "../../lib/lifecycleAuthority";
 
 /* ================= ENV ================= */
 
@@ -32,6 +37,8 @@ interface SealVerifyEnv {
     get(key: string): Promise<string | null>;
     put(key: string, value: string): Promise<void>;
   };
+  /** R9-A92.3 — authoritative read fallback when the projection is absent. */
+  CREDIT_OP_COORDINATOR?: LifecycleCoordinatorBinding;
   DEBUG?: "true" | "false";
 }
 
@@ -70,6 +77,23 @@ function baseHeaders(origin: string): Record<string, string> {
 
 function fail(origin: string, status = 400, error = "error"): Response {
   return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders(origin) });
+}
+
+/** R9-A92.3 — this endpoint's existing refusal vocabulary. */
+function failLifecycleAuthority(
+  origin: string,
+  reason: LifecycleAuthorityFailure
+): Response {
+  switch (reason) {
+    case "UNAVAILABLE":
+      return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+    case "IDENTITY_MISMATCH":
+      return fail(origin, 409, "IDENTITY_MISMATCH");
+    case "CAPSULE_MISMATCH":
+      return fail(origin, 409, "CAPSULE_MISMATCH");
+    default:
+      return fail(origin, 409, "LIFECYCLE_NOT_RESERVED");
+  }
 }
 
 type SealState = "NOT_VERIFIED" | "PENDING" | "VERIFIED";
@@ -144,11 +168,39 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
     return fail(origin, 400, "INVALID_FIELDS");
   }
 
+  /**
+   * R9-A92.3 — OPTIONAL authoritative-read ADDRESS. Address only; the DO
+   * record supplies every compared value.
+   */
+  const creatorCreditId =
+    typeof body.creatorCreditId === "string" ? body.creatorCreditId.trim() : "";
+
   const creditRaw = await env.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
-  if (!creditRaw) {
+
+  let credit: { id: string; status: string; creatorIdentityId: string };
+
+  if (creditRaw) {
+    credit = JSON.parse(creditRaw) as typeof credit;
+  } else if (creatorCreditId) {
+    /**
+     * R9-A92.3 — the projection is absent. Resolve the authoritative
+     * reservation through the same read-only coordinator op the claim
+     * uses; the status/identity checks below are unchanged.
+     */
+    const authority = await readAuthoritativeLifecycle(env, {
+      creatorCreditId,
+      creatorIdentityId,
+      lifecycleId,
+      capsuleId,
+    });
+    if (!authority.ok) {
+      return failLifecycleAuthority(origin, authority.reason);
+    }
+    credit = authority.credit;
+  } else {
     return fail(origin, 409, "LIFECYCLE_NOT_RESERVED");
   }
-  const credit = JSON.parse(creditRaw) as { id: string; status: string; creatorIdentityId: string };
+
   if (credit.status !== "CONSUMING") {
     return fail(origin, 409, "CREDIT_NOT_CONSUMING");
   }

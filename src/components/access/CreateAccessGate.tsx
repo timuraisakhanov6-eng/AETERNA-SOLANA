@@ -87,6 +87,9 @@ import {
   type UnfinishedLifecycleRecord,
 } from "@/lib/access/unfinishedLifecycle";
 import {
+  discardAbandonedRuntime,
+} from "@/lib/access/abandonedRuntime";
+import {
   PREPARED_CAPSULE_SESSION_KEY,
   RESUME_UNAVAILABLE_MESSAGE,
   planResumeFinalization,
@@ -1118,6 +1121,21 @@ export default function CreateAccessGate() {
         // canonical discovery, which now finds the AVAILABLE credit.
         // No second $1.
         removeUnfinishedLifecycle(record.lifecycleId);
+        /**
+         * R9-A92.1 — the Durable Object authoritatively released this
+         * attempt (ABORT_AND_RESTORE_AVAILABLE), so its prepared ciphertext
+         * can never be resumed. Drop the PERSISTED Runtime for EXACTLY the
+         * capsule id of this verified record — including after a reload,
+         * where no in-memory Runtime session exists.
+         *
+         * Deliberately NOT awaited: this is best-effort local cleanup, and
+         * an open of a wedged IndexedDB is bounded at 30 s. A successful
+         * server-side restore must never wait on it, let alone fail with it.
+         */
+        void discardAbandonedRuntime(
+          outcome.kind,
+          record.capsuleId
+        );
         setLocalHints(readUnfinishedLifecycles());
         setRecoveryOutcome(null);
         dispatchCreateFlow("RESET");

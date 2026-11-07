@@ -79,6 +79,60 @@ export const WALLET_SIGN_FAILURE = "WALLET_SIGN_FAILURE" as const;
 export const SEAL_FAILURE_MESSAGE =
   "[AETERNA] Capsule sealing failed";
 
+/* ── Bounded retry policy (R9-A92 F3) ──────────────────────────────
+ *
+ * A failure may carry a NON-SECRET, fixed-literal retry policy so the
+ * caller's retry loop can distinguish a DEFINITIVE state conflict (the
+ * server authoritatively answered; repeating the identical request
+ * cannot change the outcome) from a TRANSIENT one (bounded retry may
+ * help). No message, body, header, token or payload is stored — the
+ * value is one of two fixed literals, exactly like the stage code.
+ *
+ * The policy is ATTACHED by the boundary that knows the server's own
+ * answer (the publication claim) and is PRESERVED by `tagSealFailure`
+ * when it re-wraps the failure into the canonical public error — the
+ * same way the stage code survives re-wrapping.
+ */
+
+export type SealRetryPolicy = "terminal" | "retryable";
+
+/** Error property carrying the bounded retry policy. */
+export const SEAL_RETRY_PROPERTY = "sealRetryPolicy";
+
+/** Reads the bounded retry policy carried by a failure, if any. */
+export function readSealRetryPolicy(error: unknown): SealRetryPolicy | null {
+  if (error === null || typeof error !== "object") return null;
+
+  const value = (error as Record<string, unknown>)[SEAL_RETRY_PROPERTY];
+
+  return value === "terminal" || value === "retryable" ? value : null;
+}
+
+/**
+ * Attaches the bounded retry policy to an EXISTING failure without
+ * altering its message or identity. Idempotent: an already-present
+ * policy is never overwritten (the innermost boundary wins, matching
+ * the stage-code rule).
+ */
+export function tagSealRetryPolicy(error: unknown, policy: SealRetryPolicy): unknown {
+  if (error === null || typeof error !== "object") return error;
+
+  const candidate = error as Record<string, unknown>;
+
+  if (candidate[SEAL_RETRY_PROPERTY] === "terminal" || candidate[SEAL_RETRY_PROPERTY] === "retryable") {
+    return error;
+  }
+
+  Object.defineProperty(candidate, SEAL_RETRY_PROPERTY, {
+    value: policy,
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+
+  return error;
+}
+
 /**
  * Any code a boundary may attach: a final stage code, or the neutral
  * context-free wallet tag that a context-owning boundary replaces.
@@ -134,6 +188,22 @@ export function tagSealFailure(
     writable: false,
     configurable: false,
   });
+
+  /**
+   * R9-A92 F3 — the bounded retry policy survives re-wrapping, so the
+   * caller's retry loop sees the boundary's classification even after
+   * this module replaces the error with the canonical public one.
+   * Never overwritten here: the innermost boundary's policy wins.
+   */
+  const retryPolicy = readSealRetryPolicy(error);
+  if (retryPolicy !== null) {
+    Object.defineProperty(tagged, SEAL_RETRY_PROPERTY, {
+      value: retryPolicy,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
 
   return tagged;
 }

@@ -16,15 +16,24 @@ import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { confirmTxOnIrysNode, type IrysNodeConfirmation } from "../../lib/irys/node";
 import { getTrustedTime } from "../time";
+import {
+  readAuthoritativeLifecycle,
+  type LifecycleAuthorityFailure,
+  type LifecycleCoordinatorBinding,
+} from "../../lib/lifecycleAuthority";
 
 /* ================= ENV ================= */
 
 interface PublicationVerifyEnv {
-  CREATOR_CREDITS: unknown;
+  CREATOR_CREDITS: {
+    get(key: string): Promise<string | null>;
+  };
   PUBLICATION_VERIFICATIONS: {
     get(key: string): Promise<string | null>;
     put(key: string, value: string): Promise<void>;
   };
+  /** R9-A92.3 — authoritative read fallback when the projection is absent. */
+  CREDIT_OP_COORDINATOR?: LifecycleCoordinatorBinding;
   DEBUG?: "true" | "false";
 }
 
@@ -63,6 +72,27 @@ function baseHeaders(origin: string): Record<string, string> {
 
 function fail(origin: string, status = 400, error = "error"): Response {
   return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders(origin) });
+}
+
+/**
+ * R9-A92.3 — map an authoritative-read failure onto THIS endpoint's
+ * existing vocabulary. A mismatched or missing reservation is the same
+ * class of refusal the KV path already produced.
+ */
+function failLifecycleAuthority(
+  origin: string,
+  reason: LifecycleAuthorityFailure
+): Response {
+  switch (reason) {
+    case "UNAVAILABLE":
+      return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+    case "IDENTITY_MISMATCH":
+      return fail(origin, 409, "IDENTITY_MISMATCH");
+    case "CAPSULE_MISMATCH":
+      return fail(origin, 409, "CAPSULE_MISMATCH");
+    default:
+      return fail(origin, 409, "LIFECYCLE_NOT_RESERVED");
+  }
 }
 
 type PublicationState = "NOT_VERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
@@ -190,6 +220,12 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   const lifecycleId = parsePublicationInput(body.lifecycleId);
   const capsuleId = parsePublicationInput(body.capsuleId);
   const clientPublicationId = parsePublicationInput(body.publicationId);
+  /**
+   * R9-A92.3 — OPTIONAL authoritative-read ADDRESS. Never an authority
+   * field: it selects the coordinator instance consulted only when the KV
+   * projection is absent.
+   */
+  const creatorCreditId = parsePublicationInput(body.creatorCreditId);
 
   if (!creatorIdentityId || !lifecycleId || !capsuleId) {
     return fail(origin, 400, "INVALID_FIELDS");
@@ -225,10 +261,32 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   }
 
   const creditRaw = await env.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
-  if (!creditRaw) {
+
+  let credit: { id: string; status: string; creatorIdentityId: string };
+
+  if (creditRaw) {
+    credit = JSON.parse(creditRaw) as typeof credit;
+  } else if (creatorCreditId) {
+    /**
+     * R9-A92.3 — the projection is absent. Resolve the SAME authority the
+     * claim used: a read-only `op:"read"` on the per-credit coordinator,
+     * re-validated against this request. The stage's own status check
+     * below is unchanged and still runs on the authoritative status.
+     */
+    const authority = await readAuthoritativeLifecycle(env, {
+      creatorCreditId,
+      creatorIdentityId,
+      lifecycleId,
+      capsuleId,
+    });
+    if (!authority.ok) {
+      return failLifecycleAuthority(origin, authority.reason);
+    }
+    credit = authority.credit;
+  } else {
     return fail(origin, 409, "LIFECYCLE_NOT_RESERVED");
   }
-  const credit = JSON.parse(creditRaw) as { id: string; status: string; creatorIdentityId: string };
+
   if (credit.status !== "CONSUMING") {
     return fail(origin, 409, "CREDIT_NOT_CONSUMING");
   }

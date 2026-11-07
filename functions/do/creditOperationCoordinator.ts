@@ -466,6 +466,34 @@ async function handleReserve(state: DurableObjectState, env: CoordinatorEnv, req
   const idempotent = await getOpResult(state, idempotencyKey);
   if (idempotent && idempotent.ok) {
     const refreshed = await getCreditRecord(state, creatorCreditId);
+    /**
+     * R9-A92.1 — the idempotent replay performs NO KV write.
+     *
+     * R9-A92 F1 added a "projection repair" here that re-wrote the
+     * lifecycle projection from the authoritative record. It was removed
+     * because it could not be made safe:
+     *
+     * • The initial reservation ALREADY writes the projection
+     *   (writeLifecycleIndex below, unchanged). A KV put that is accepted
+     *   but not yet readable at an edge is a READ-cache effect; the record
+     *   exists and becomes visible without any repair.
+     * • The only consumer that needed immediate visibility was the
+     *   publication claim, and that path now has the authoritative
+     *   Durable Object fallback (R9-A92 F1). Every other reader
+     *   (publication verify, seal, credit-status, recover-lifecycle) runs
+     *   later and tolerates normal KV convergence.
+     * • The repair was a read -> KV PUT across an await with no
+     *   conditional write (KV has none). A concurrent finalize/recover
+     *   could land between the read and the put, letting an older
+     *   CONSUMING projection reappear after the lifecycle was consumed or
+     *   released. No revision pre-check can close that window, and the
+     *   Durable Object does not serialize an outbound KV subrequest the
+     *   way it serializes storage operations.
+     *
+     * Removing the write closes the race by construction: this branch is
+     * read-only, so it can never resurrect a cleared index or overwrite a
+     * newer lifecycle state.
+     */
     return successResponse({
       ok: true,
       outcome: idempotent.outcome,

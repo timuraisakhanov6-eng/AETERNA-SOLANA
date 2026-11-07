@@ -14,6 +14,10 @@
 import type { EventContext } from "@cloudflare/workers-types";
 import { rateLimit, getClientIp } from "../../lib/rateLimit";
 import { noteIdentityTransition } from "../../lib/identityIndexMaintenance";
+import {
+  readAuthoritativeLifecycle,
+  type LifecycleAuthorityFailure,
+} from "../../lib/lifecycleAuthority";
 
 /* ================= ENV ================= */
 
@@ -71,6 +75,23 @@ function fail(origin: string, status = 400, error = "error"): Response {
   return new Response(JSON.stringify({ ok: false, error }), { status, headers: baseHeaders(origin) });
 }
 
+/** R9-A92.3 — this endpoint's existing refusal vocabulary. */
+function failLifecycleAuthority(
+  origin: string,
+  reason: LifecycleAuthorityFailure
+): Response {
+  switch (reason) {
+    case "UNAVAILABLE":
+      return fail(origin, 503, "CREDIT_COORDINATOR_UNAVAILABLE");
+    case "IDENTITY_MISMATCH":
+      return fail(origin, 409, "IDENTITY_MISMATCH");
+    case "CAPSULE_MISMATCH":
+      return fail(origin, 409, "CAPSULE_MISMATCH");
+    default:
+      return fail(origin, 409, "LIFECYCLE_NOT_FOUND");
+  }
+}
+
 /* ================= ENDPOINT ================= */
 
 export async function onRequestOptions(context: EventContext<Record<string, unknown>, string, FinalizeEnv>): Promise<Response> {
@@ -103,6 +124,12 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   const creatorIdentityId = typeof body.creatorIdentityId === "string" ? body.creatorIdentityId.trim() : "";
   const lifecycleId = typeof body.lifecycleId === "string" ? body.lifecycleId.trim() : "";
   const capsuleId = typeof body.capsuleId === "string" ? body.capsuleId.trim() : "";
+  /**
+   * R9-A92.3 — OPTIONAL authoritative-read ADDRESS. Address only; the DO
+   * record supplies every compared value.
+   */
+  const creatorCreditId =
+    typeof body.creatorCreditId === "string" ? body.creatorCreditId.trim() : "";
 
   if (!creatorIdentityId || !lifecycleId || !capsuleId) {
     return fail(origin, 400, "INVALID_FIELDS");
@@ -119,10 +146,41 @@ export async function onRequestPost(context: EventContext<Record<string, unknown
   };
 
   const lifecycleRaw = await bindings.CREATOR_CREDITS.get(`creator:credit:lifecycle:${creatorIdentityId}:${lifecycleId}`);
-  if (!lifecycleRaw) {
+
+  let lifecycle: { id: string };
+
+  if (lifecycleRaw) {
+    lifecycle = JSON.parse(lifecycleRaw) as { id: string };
+  } else if (creatorCreditId) {
+    /**
+     * R9-A92.3 — the projection is absent. Resolve the authoritative
+     * reservation (address only) and re-validate the full binding. The
+     * coordinator's own `finalize` op remains the sole authority for the
+     * state transition; this read only supplies the credit id.
+     */
+    const authority = await readAuthoritativeLifecycle(bindings, {
+      creatorCreditId,
+      creatorIdentityId,
+      lifecycleId,
+      capsuleId,
+    });
+    if (!authority.ok) {
+      return failLifecycleAuthority(origin, authority.reason);
+    }
+    /**
+     * A CONSUMED record is legitimate here (idempotent finalize replay).
+     * Anything else is not finalizable and must not reach the DO.
+     */
+    if (
+      authority.credit.status !== "CONSUMING" &&
+      authority.credit.status !== "CONSUMED"
+    ) {
+      return fail(origin, 409, "LIFECYCLE_NOT_FOUND");
+    }
+    lifecycle = { id: authority.credit.id };
+  } else {
     return fail(origin, 409, "LIFECYCLE_NOT_FOUND");
   }
-  const lifecycle = JSON.parse(lifecycleRaw) as { id: string };
 
   const publicationRaw = await bindings.PUBLICATION_VERIFICATIONS.get(`creator:publication:${lifecycleId}`);
   const publication = publicationRaw ? (JSON.parse(publicationRaw) as { state: string }) : { state: "NOT_VERIFIED" };
